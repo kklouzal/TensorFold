@@ -216,10 +216,12 @@ class Loader:
 
     CHUNK_BYTES = 64 << 20
 
-    def __init__(self, shards: Shards, rank: int, device, staging, *, expert_tensor_parallel_size: int | None = None):
+    def __init__(self, shards: Shards, rank: int, device, staging, *,
+                 expert_tensor_parallel_size: int | None = None, compact_expert_down: bool = False):
         import torch
         self.s, self.rank, self.device = shards, rank, device
         self.etp = checked_etp(expert_tensor_parallel_size)
+        self.compact_expert_down = compact_expert_down and self.etp == ETP
         self.t, self.e, self.g = rank, rank % self.etp, rank // self.etp
         self.torch = torch
         self.staging = staging          # staging.Staging: pinned-buffer uploads of the large byte ranges
@@ -353,11 +355,25 @@ class Loader:
             blocks = -(-(left + share) // block)
             if (b0 + blocks) * block > inter:
                 raise ValueError("down carrier does not cover the rank's input columns")
-            # The group's experts are contiguous. Cut the rank's complete blocks per row on the GPU.
-            whole = torch.empty((local, out_rows, row), dtype=torch.uint8, device=self.device)
-            self.staging.copy(t.path, [(t.offset + first * out_rows * row, local * out_rows * row)], whole)
-            out = whole[:, :, b0 * size:(b0 + blocks) * size].contiguous()
-            del whole
+            offset = t.offset + first * out_rows * row
+            if self.compact_expert_down:
+                from tensorfold.cuda.sm70 import ds41_decode_moe
+
+                if (inter, block, share) != (2304, 256, 576):
+                    raise ValueError("compact ETP4 down rows require nine source blocks and a 576-column slice")
+                ext = ds41_decode_moe.extension()
+                width = ext.compact_down_row_bytes(kind)
+                start_group = self.e * share // 32
+                out = torch.empty((local, out_rows, width), dtype=torch.uint8, device=self.device)
+
+                def pack(source, destination):
+                    ext.pack_down_fragments(source, destination, kind, start_group)
+
+                self.staging.copy_packed_rows(t.path, offset, row, out, pack)
+            else:
+                whole = torch.empty((local, out_rows, row), dtype=torch.uint8, device=self.device)
+                self.staging.copy(t.path, [(offset, local * out_rows * row)], whole)
+                out = whole[:, :, b0 * size:(b0 + blocks) * size].contiguous()
         else:
             share = out_rows // self.etp
             out = torch.empty((local, share, row), dtype=torch.uint8, device=self.device)
@@ -430,6 +446,7 @@ class Weights:
     engram_multipliers: object
     dense_scratch: object = None   # ds41_dense.Scratch shared by every dmv13 group of this rank
     expert_tensor_parallel_size: int = ETP
+    compact_expert_down: bool = False
 
     @property
     def group(self):
@@ -447,7 +464,8 @@ def load(shards: Shards, geometry: Geometry, rank: int, device, layers: range | 
     from .staging import Staging
     staging = Staging()
     try:
-        loader = Loader(shards, rank, device, staging, expert_tensor_parallel_size=expert_tensor_parallel_size)
+        loader = Loader(shards, rank, device, staging, expert_tensor_parallel_size=expert_tensor_parallel_size,
+                        compact_expert_down=True)
         return _load(loader, shards, geometry, rank, device, layers)
     finally:
         staging.close()
@@ -516,7 +534,7 @@ def _load(L, shards, geometry, rank, device, layers):
     embed, embed_type = _embedding_shard(shards, L.t * vocab, vocab, device)
     head = group(L.planes("output.weight", rows=(L.t * vocab, vocab)))
     return Weights(geometry=g, rank=rank, layers=out, embed=embed, embed_type=embed_type,
-                   expert_tensor_parallel_size=L.etp,
+                   expert_tensor_parallel_size=L.etp, compact_expert_down=L.compact_expert_down,
                    embed_first=L.t * vocab, head=head, dense_scratch=scratch,
                    norm=L.floating("output_norm.weight", f32),
                    engram_token_map=L.integers("engram_token_map.weight", torch.int32),

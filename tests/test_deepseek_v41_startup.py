@@ -114,6 +114,78 @@ def test_deepseek_expert_carriers_match_rank_ownership(degree, experts, width, o
         loader.expert_bank("down", geometry, down=True)
 
 
+@pytest.mark.parametrize("kind,block_bytes,packed_bytes", [(16, 66, 150), (17, 74, 168), (29, 56, 132)])
+def test_compact_etp4_loader_selects_whole_rows_and_rank_cut(monkeypatch, kind, block_bytes, packed_bytes):
+    from tensorfold.cuda.sm70 import ds41_decode_moe
+    from tensorfold.families.deepseek_v4.cuda.weights import Geometry, Loader
+
+    calls = []
+    ext = types.SimpleNamespace(compact_down_row_bytes=lambda codec: packed_bytes,
+                                pack_down_fragments=lambda *args: calls.append(args))
+    monkeypatch.setattr(ds41_decode_moe, "extension", lambda: ext)
+    tensor = types.SimpleNamespace(ggml_type=kind, shape=(384, 5120, 2304), path="down", offset=64)
+    gguf = types.SimpleNamespace(tensors={"down": tensor})
+
+    def copy(path, offset, source_row_bytes, out, pack):
+        calls.append((path, offset, source_row_bytes, tuple(out.shape)))
+        pack("input", "output")
+        return out
+
+    staging = types.SimpleNamespace(copy_packed_rows=copy)
+    for rank in range(8):
+        loader = Loader(gguf, rank, "meta", staging, expert_tensor_parallel_size=4, compact_expert_down=True)
+        result, codec, left = loader.expert_bank("down", Geometry(), down=True)
+        row = 9 * block_bytes
+        assert loader.compact_expert_down and codec == kind and left == rank % 4 * 64
+        assert tuple(result.shape) == (192, 5120, packed_bytes)
+        assert calls[-2:] == [
+            ("down", 64 + rank // 4 * 192 * 5120 * row, row, tuple(result.shape)),
+            ("input", "output", kind, rank % 4 * 18),
+        ]
+    for degree in (1, 2):
+        assert not Loader(gguf, 0, "meta", staging, expert_tensor_parallel_size=degree,
+                          compact_expert_down=True).compact_expert_down
+
+
+def test_compact_staging_keeps_row_boundaries_across_buffer_reuse(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    from tensorfold.families.deepseek_v4.cuda.staging import Staging
+
+    empty = torch.empty
+    monkeypatch.setattr(torch, "empty", lambda *args, pin_memory=False, **kw: empty(*args, **kw))
+    monkeypatch.setattr(torch._C, "_host_emptyCache", lambda: None)
+
+    class Event:
+        recorded = False
+
+        def record(self):
+            self.recorded = True
+
+        def synchronize(self):
+            assert self.recorded
+
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    path = tmp_path / "rows"
+    payload = torch.arange(54, dtype=torch.uint8).view(9, 6)
+    path.write_bytes(b"pad" + bytes(payload.flatten().tolist()))
+    packed = empty((9, 3), dtype=torch.uint8)
+    raw = empty(13, dtype=torch.uint8)
+    staging = Staging(chunk=23, buffers=2)
+    try:
+        def pack(source, destination):
+            destination.view(-1, 3).copy_(source.view(-1, 6)[:, 1::2])
+
+        assert staging.copy_packed_rows(path, 3, 6, packed, pack) is packed
+        assert torch.equal(packed, payload[:, 1::2])
+        assert staging.copy(path, [(4, 7), (26, 6)], raw) is raw
+        assert torch.equal(raw, torch.cat((payload.flatten()[1:8], payload.flatten()[23:29])))
+        oversized = empty((10, 3), dtype=torch.uint8)
+        with pytest.raises(OSError, match="short read"):
+            staging.copy_packed_rows(path, 3, 6, oversized, pack)
+    finally:
+        staging.close()
+
+
 def test_deepseek_q4_and_yarn_flags_are_family_bound(tmp_path, monkeypatch):
     from tensorfold import cli, families
     from tensorfold.families import deepseek_v4

@@ -56,7 +56,8 @@ def extension():
         raise RuntimeError("DeepSeek-V4.1 decode experts require a Volta-enabled PyTorch build and SM70 device")
     here = Path(__file__).parent
     sources = [here / "ds41_decode_moe.cpp", here / "ds41_decode_moe.cu"]
-    headers = [here / "onecat_ds41_dp4a.cuh", here / "onecat_ds41_codebooks.cuh"]
+    headers = [here / name for name in ("onecat_ds41_dp4a.cuh", "onecat_ds41_codebooks.cuh",
+                                        "ds41_down_fragments.cuh", "ds41_down_fragment_pack.h")]
     flags = ["-O3"]  # onecat_ds41's (upstream's) options: the bit-exact reference is built with them
     identity = hashlib.sha256(repr(flags).encode())
     for path in [*sources, *headers]:
@@ -90,13 +91,23 @@ class Workspace:
         ext.init(self.buffer)
 
     def experts(self, x, ids, probabilities, gate, up, down, gate_type, down_type, left, *, out=None,
-                schedule=None):
-        """Routed experts for FP16 x [M >= 1, 5120], int32 top-6 local ids / FP32 probabilities -> FP16 [M, 5120]."""
+                schedule=None, fragment_down=False):
+        """Routed experts for FP16 x [M >= 1, 5120], int32 top-6 local ids and FP32 probabilities.
+
+        With fragment_down, the ETP4 down bank uses compact fragments of the original GGUF rows.
+        """
         if gate_type not in EXPERT_TYPES or down_type not in EXPERT_TYPES:
             raise ValueError("V4.1 decode experts require IQ2_XXS/IQ2_XS/IQ1_M carriers")
+        if fragment_down and self.intermediate != ROWS:
+            raise ValueError("down fragments require ETP4")
         if out is None:
             out = torch.empty_like(x)
         ext = extension()
+        if fragment_down:
+            def launch(*args):
+                ext.experts_fragments(*args, False)
+        else:
+            launch = ext.experts
         rows = x.shape[0]
         for at in range(0, rows, MAX_ROWS):
             end = min(at + MAX_ROWS, rows)
@@ -106,6 +117,6 @@ class Workspace:
             else:
                 gate_variant = pick("g", gate_type, m, schedule)
                 down_variant = pick("d", down_type, m, schedule)
-            ext.experts(self.buffer, out[at:end], x[at:end], ids[at:end], probabilities[at:end], gate, up, down,
-                        int(gate_type), int(down_type), int(left), gate_variant, down_variant)
+            launch(self.buffer, out[at:end], x[at:end], ids[at:end], probabilities[at:end], gate, up, down,
+                   int(gate_type), int(down_type), int(left), gate_variant, down_variant)
         return out

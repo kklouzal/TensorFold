@@ -419,10 +419,12 @@ class Target:
                                   torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
         if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
             out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
-                                      ly.gate_up_type, ly.down_type, ly.down_left, self.lattice)
+                                      ly.gate_up_type, ly.down_type, ly.down_left, self.lattice,
+                                      fragment_down=self.w.compact_expert_down)
         else:  # EM3 expert-major decode is graph-capturable.
             out = self.decode_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
-                                          ly.gate_up_type, ly.down_type, ly.down_left)
+                                          ly.gate_up_type, ly.down_type, ly.down_left,
+                                          fragment_down=self.w.compact_expert_down)
         hidden = native.shared_swiglu(*ly.sh_gu(x))
         if shard is not None:
             total = shard.padded(out)

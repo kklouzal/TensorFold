@@ -18,7 +18,7 @@ void require_disjoint(const torch::Tensor& a, const torch::Tensor& b) {
               "prefill transcode: input and output spans must be disjoint");
 }
 
-template <int Type, bool Exact = false>
+template <int Type, bool Exact = false, bool Fragment = false>
 void launch(torch::Tensor& dst_w, torch::Tensor& dst_s, int64_t w_stride,
             int64_t s_stride, const torch::Tensor& src0,
             const std::optional<torch::Tensor>& src1,
@@ -45,7 +45,7 @@ void launch(torch::Tensor& dst_w, torch::Tensor& dst_s, int64_t w_stride,
   const int grid = static_cast<int>(std::min<int64_t>(ctas, items));
   const size_t smem = size_t(kPack) * src_stride;
   TORCH_CHECK(smem <= std::numeric_limits<int>::max(), "prefill transcode: source pack is too large");
-  auto kernel = transcode_kernel<Type, Exact>;
+  auto kernel = transcode_kernel<Type, Exact, Fragment>;
   if (smem > 48 * 1024)
     C10_CUDA_CHECK(cudaFuncSetAttribute(
         kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem)));
@@ -67,17 +67,16 @@ void launch(torch::Tensor& dst_w, torch::Tensor& dst_s, int64_t w_stride,
 // columns are source columns [k_offset, k_offset + k) (a TP slice inside
 // whole source blocks). dst_w/dst_s: uint8 banks, expert e at e * w_stride /
 // e * s_stride bytes.
-void gguf_prefill_transcode_sm70(torch::Tensor dst_w, torch::Tensor dst_s,
-                                 int64_t w_stride, int64_t s_stride,
-                                 torch::Tensor src0,
-                                 std::optional<torch::Tensor> src1,
-                                 torch::Tensor experts, torch::Tensor count,
-                                 int64_t ctas, int64_t source_type,
-                                 int64_t n_out, int64_t k, int64_t k_offset, torch::Tensor error) {
+template <bool Fragment>
+void transcode(torch::Tensor& dst_w, torch::Tensor& dst_s, int64_t w_stride, int64_t s_stride,
+               const torch::Tensor& src0, const std::optional<torch::Tensor>& src1,
+               const torch::Tensor& experts, const torch::Tensor& count, int64_t ctas,
+               int64_t source_type, int64_t n_out, int64_t k, int64_t k_offset, torch::Tensor& error) {
   const auto device = src0.device();
   const int64_t max_int = std::numeric_limits<int>::max();
   TORCH_CHECK(src0.is_cuda(), "prefill transcode: source must be CUDA");
-  for (const auto* tensor : {&src0, &dst_w, &dst_s, &experts, &count, &error})
+  const torch::Tensor* const tensors[] = {&src0, &dst_w, &dst_s, &experts, &count, &error};
+  for (const auto* tensor : tensors)
     TORCH_CHECK(tensor->device() == device && tensor->is_contiguous(),
                 "prefill transcode: tensors must be contiguous on one CUDA device");
   TORCH_CHECK(
@@ -97,6 +96,11 @@ void gguf_prefill_transcode_sm70(torch::Tensor dst_w, torch::Tensor dst_s,
                   src0.size(0) > 0 && src0.size(0) <= max_int &&
                   w_stride > 0 && s_stride > 0 && experts.numel() <= max_int,
               "prefill transcode: bad geometry");
+  if constexpr (Fragment) {
+    TORCH_CHECK(!src1 && n_out == 5120 && k == 576 && k_offset >= 0 &&
+                    k_offset < 256 && k_offset % 64 == 0,
+                "prefill down fragment transcode: expected [E, 5120, row_bytes] for K576 and an ETP4 cut");
+  }
   // The persistent grid advances a signed work index by one grid size at a time.
   const int64_t items = experts.numel() * (n_out / kPack);
   TORCH_CHECK(items + std::min(ctas, items) <= max_int, "prefill transcode: worklist is too large");
@@ -111,25 +115,45 @@ void gguf_prefill_transcode_sm70(torch::Tensor dst_w, torch::Tensor dst_s,
   require_disjoint(dst_w, error);
   require_disjoint(dst_s, error);
   const at::cuda::CUDAGuard guard(dst_w.device());
-  // Source rows must hold whole blocks covering [k_offset, k_offset + k).
-  auto rows_ok = [&](int block, int bytes) {
-    return k % 32 == 0 && src_stride % bytes == 0 &&
-           src_stride / bytes * block >= k_offset + k;
-  };
   // TensorFold: only the exact-sub-scale stats encoding (GroupExact) is built, IQ2_XXS / IQ2_XS / IQ1_M (the
   // friend's FP16-scale encodings and its other GGUF types were removed with his FP16 arithmetic).
   switch (source_type) {
 #define EXACT(TYPE, BLOCK, BYTES)                                              \
-  case TYPE:                                                                   \
-    TORCH_CHECK(rows_ok(BLOCK, BYTES), "prefill transcode: GGUF type ", TYPE,  \
-                " rows do not cover the requested columns");                   \
-    launch<TYPE, true>(dst_w, dst_s, w_stride, s_stride, src0, src1, experts,  \
-                       count, ctas, n_out, k, k_offset, src_stride, error);    \
-    return;
+  case TYPE: {                                                                 \
+    if constexpr (Fragment) {                                                  \
+      TORCH_CHECK(tensorfold::ds41_down_fragments::Layout<TYPE>::accepts_stride(int(src_stride)), \
+                  "prefill down fragment transcode: invalid row width for type ", TYPE); \
+    } else {                                                                   \
+      TORCH_CHECK(k % 32 == 0 && src_stride % BYTES == 0 &&                      \
+                      src_stride / BYTES * BLOCK >= k_offset + k,              \
+                  "prefill transcode: GGUF type ", TYPE, " rows do not cover the requested columns"); \
+    }                                                                          \
+    launch<TYPE, true, Fragment>(dst_w, dst_s, w_stride, s_stride, src0, src1, experts, \
+                                count, ctas, n_out, k, k_offset, src_stride, error); \
+    return;                                                                    \
+  }
     EXACT(16, 256, 66)
     EXACT(17, 256, 74)
     EXACT(29, 256, 56)
 #undef EXACT
   }
   TORCH_CHECK(false, "prefill transcode: no exact encoding for GGUF type ", source_type);
+}
+
+void gguf_prefill_transcode_sm70(torch::Tensor dst_w, torch::Tensor dst_s,
+                                 int64_t w_stride, int64_t s_stride, torch::Tensor src0,
+                                 std::optional<torch::Tensor> src1, torch::Tensor experts,
+                                 torch::Tensor count, int64_t ctas, int64_t source_type,
+                                 int64_t n_out, int64_t k, int64_t k_offset, torch::Tensor error) {
+  transcode<false>(dst_w, dst_s, w_stride, s_stride, src0, src1, experts, count, ctas,
+                   source_type, n_out, k, k_offset, error);
+}
+
+void gguf_prefill_transcode_down_fragments_sm70(torch::Tensor dst_w, torch::Tensor dst_s,
+                                                int64_t w_stride, int64_t s_stride, torch::Tensor src0,
+                                                std::optional<torch::Tensor> src1, torch::Tensor experts,
+                                                torch::Tensor count, int64_t ctas, int64_t source_type,
+                                                int64_t n_out, int64_t k, int64_t k_offset, torch::Tensor error) {
+  transcode<true>(dst_w, dst_s, w_stride, s_stride, src0, src1, experts, count, ctas,
+                  source_type, n_out, k, k_offset, error);
 }

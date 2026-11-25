@@ -67,7 +67,8 @@ def _exercise_sp_routes(patch, rank, device, comm=None):
         result = (4 * (lo.sum(-1).half().float() + hi.sum(-1).half().float())).half()
         calls = []
 
-        def experts(values, local, weights, *_):
+        def experts(values, local, weights, *_, fragment_down=False):
+            assert not fragment_down
             calls.append((local, weights))
             return weights.sum(-1, keepdim=True).half().expand_as(values).contiguous()
 
@@ -85,7 +86,8 @@ def _exercise_sp_routes(patch, rank, device, comm=None):
         else:
             collectives = comm
         owner = SimpleNamespace(c=collectives, g=geometry, local=range(first, first + count),
-                                lattice=None, bias_vl=image_bias[None], _linear=lambda y, w: torch.zeros_like(y))
+                                w=SimpleNamespace(compact_expert_down=False), lattice=None,
+                                bias_vl=image_bias[None], _linear=lambda y, w: torch.zeros_like(y))
         actual = target.Target.moe(owner, layer, x, image=image, shard=shard, x_rows=shard.take(x))
         (local, weights), = calls
         assert torch.equal(local, expected_ids), f"incorrect local expert IDs on rank {rank}"

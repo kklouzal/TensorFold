@@ -66,6 +66,7 @@
 #include <cstdint>
 #include <vector>
 #include "onecat_ds41_dp4a.cuh"
+#include "ds41_down_fragments.cuh"
 
 namespace tensorfold::ds41_decode_moe {
 using tensorfold::onecat_ds41::Q8_1;
@@ -156,20 +157,43 @@ __device__ __forceinline__ uint32_t apply_sign(uint32_t magnitude, uint32_t mask
 // ---- one 32-weight group -----------------------------------------------------
 // book / signs: this lane's copy (base + (lane & (copies - 1))); entry e at [e * copies].
 // F (IQ1_M): book is the 4096-entry folded table (entry = final words).
-template <int Type, int RG = 1, int SR = 1, int F = 0, bool Bounded = false>
+enum class DownStorage { raw, compact, padded };
+
+template <int Type, int RG = 1, int SR = 1, int F = 0, bool Bounded = false, DownStorage Storage = DownStorage::raw>
 struct Group {
   uint32_t w[8];
   float d;
   int m0, m1;
 
   __device__ __forceinline__ Group(const uint8_t* row, int group, const uint2* book,
-                                   const uint2* signs) {
-    const uint8_t* b = row + (group >> 3) * block_bytes<Type>();
-    const int sub = group & 7;
+                                   const uint2* signs, int left_groups = 0) {
+    using Fragment = tensorfold::ds41_down_fragments::Layout<Type>;
+    const uint8_t* b = nullptr;
+    const int source_group = group + left_groups;
+    if constexpr (Storage == DownStorage::raw) {
+      b = row + (source_group >> 3) * block_bytes<Type>();
+    }
     if constexpr (Type == 29) {
-      const uint32_t qs = __ldg(reinterpret_cast<const uint32_t*>(b + 4 * sub));
-      const uint32_t qh = ld16(b + 32 + 2 * sub);
-      const uint2 sc = __ldg(reinterpret_cast<const uint2*>(b + 48));
+      uint32_t qs, qh;
+      uint2 sc;
+      int sub;
+      if constexpr (Storage == DownStorage::raw) {
+        sub = source_group & 7;
+        qs = __ldg(reinterpret_cast<const uint32_t*>(b + 4 * sub));
+        qh = ld16(b + 32 + 2 * sub);
+        sc = __ldg(reinterpret_cast<const uint2*>(b + 48));
+      } else {
+        const auto fragment = Fragment::group(row, group, left_groups);
+        sub = fragment.source_subgroup;
+        qs = __ldg(reinterpret_cast<const uint32_t*>(fragment.low_codes));
+        qh = ld16(fragment.high_codes);
+        if constexpr (Storage == DownStorage::padded) {
+          sc = __ldg(reinterpret_cast<const uint2*>(fragment.scale_block));
+        } else {
+          const auto* scale = reinterpret_cast<const uint32_t*>(fragment.scale_block);
+          sc = make_uint2(__ldg(scale), __ldg(scale + 1));
+        }
+      }
       if constexpr (F) {
         // index(octet) = qs byte | qh nibble << 8: bytes (qs0, n0, qs2, n2), (qs1, n1, qs3, n3).
         const uint32_t a = qh & 0x0F0FU, c = (qh >> 4) & 0x0F0FU;
@@ -199,11 +223,27 @@ struct Group {
       m1 = 2 * int((s >> (shift + 3)) & 7) + 1;
     } else {
       uint32_t w0, w1;
-      if constexpr (Bounded)
-        ld8_bounded(b + 2 + 8 * sub, w0, w1);
-      else
-        ld8(b + 2 + 8 * sub, w0, w1);
-      d = __half2float(__ushort_as_half(uint16_t(ld16(b))));
+      const uint8_t* local_scale = nullptr;
+      if constexpr (Storage == DownStorage::raw) {
+        const int sub = source_group & 7;
+        if constexpr (Bounded)
+          ld8_bounded(b + 2 + 8 * sub, w0, w1);
+        else
+          ld8(b + 2 + 8 * sub, w0, w1);
+        d = __half2float(__ushort_as_half(uint16_t(ld16(b))));
+        if constexpr (Type == 17) local_scale = b + 66 + sub;
+      } else {
+        const auto fragment = Fragment::group(row, group, left_groups);
+        if constexpr (Storage == DownStorage::padded || Type == 17) {
+          const uint2 codes = __ldg(reinterpret_cast<const uint2*>(fragment.codes));
+          w0 = codes.x;
+          w1 = codes.y;
+        } else {
+          ld8(fragment.codes, w0, w1);
+        }
+        d = __half2float(__ushort_as_half(uint16_t(ld16(fragment.block_scale))));
+        if constexpr (Type == 17) local_scale = fragment.local_scale;
+      }
       if constexpr (Type == 16) {
 #pragma unroll
         for (int octet = 0; octet < 4; ++octet) {
@@ -222,7 +262,7 @@ struct Group {
           w[2 * octet] = apply_sign(e.x, s.x);
           w[2 * octet + 1] = apply_sign(e.y, s.y);
         }
-        const int sc = __ldg(b + 66 + sub);
+        const int sc = __ldg(local_scale);
         m0 = 1 + 2 * (sc & 15);
         m1 = 1 + 2 * (sc >> 4);
       }
@@ -519,7 +559,7 @@ __global__ __launch_bounds__(WARPS * 32) void gate_up_kernel(
 
 // ---- down -------------------------------------------------------------------
 // CTA = WARPS warps x 8 columns (4 lanes per column) x TILES column tiles (EM2).
-template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, int kGroups>
+template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, int kGroups, DownStorage Storage>
 __device__ __forceinline__ void down_body(int u, int bx, const uint2* lbook, const uint2* lsigns,
                                           half* __restrict__ partial, const Q8_1* __restrict__ input,
                                           const int32_t* __restrict__ units,
@@ -546,8 +586,8 @@ __device__ __forceinline__ void down_body(int u, int bx, const uint2* lbook, con
       const int group = start + q;
       // Lanes past the last group decode a valid group and contribute 0.f,
       // like raw_down_unroute's `group < groups ? dot : 0.f`.
-      const Group<Type, RG, SR, F, kGroups != kEtp4Intermediate / 32>
-          dg(row, min(group, kGroups - 1) + left_groups, lbook, lsigns);
+      const Group<Type, RG, SR, F, kGroups != kEtp4Intermediate / 32, Storage>
+          dg(row, min(group, kGroups - 1), lbook, lsigns, left_groups);
 #pragma unroll
       for (int j = 0; j < C; ++j) {
         if (j >= n) break;  // uniform
@@ -569,7 +609,7 @@ __device__ __forceinline__ void down_body(int u, int bx, const uint2* lbook, con
 // Down, staged (EM2 pass 2): the unit's Q8_1 inputs staged in the aligned layout
 // (scale folded), per-lane group values in shared memory, one lane per (route,
 // column) adds the 18 values in ascending order from 0.f.
-template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F>
+template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, DownStorage Storage>
 __device__ __forceinline__ void down_staged_body(
     int u, int bx, const uint2* lbook, const uint2* lsigns, int4 (*xq)[18][2], float (*xd)[18],
     float (*vals)[C][8][19], int* s_route, half* __restrict__ partial,
@@ -599,7 +639,7 @@ __device__ __forceinline__ void down_staged_body(
     for (int start = 0; start < kGroups; start += 4) {
       const int group = start + q;
       if (group < kGroups) {
-        const Group<Type, RG, SR, F> dg(row, group + left_groups, lbook, lsigns);
+        const Group<Type, RG, SR, F, false, Storage> dg(row, group, lbook, lsigns, left_groups);
 #pragma unroll
         for (int j = 0; j < C; ++j)
           if (j < n) vals[warp][j][c][group] = dg.apply(xq[j][group][0], xq[j][group][1], xd[j][group]);
@@ -619,7 +659,8 @@ __device__ __forceinline__ void down_staged_body(
   }
 }
 
-template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, int STAGED, int PERSIST, int Groups = 18>
+template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, int STAGED, int PERSIST, int Groups = 18,
+          DownStorage Storage = DownStorage::raw>
 __global__ __launch_bounds__(WARPS * 32) void down_kernel(
     half* __restrict__ partial, const Q8_1* __restrict__ input,
     const int32_t* __restrict__ units, const int32_t* __restrict__ count,
@@ -628,6 +669,7 @@ __global__ __launch_bounds__(WARPS * 32) void down_kernel(
     const uint2* __restrict__ gsigns) {
   constexpr int NB = 5120 / (WARPS * 8 * TILES);
   static_assert(!STAGED || Groups == 18, "staged layouts own the eighteen-group buffers");
+  static_assert(Storage == DownStorage::raw || Groups == 18, "fragments hold one ETP4 slice");
   __shared__ __align__(16) uint2 book[table_entries<Type, RG, F>()];
   __shared__ __align__(16) uint2 signs[sign_entries<Type, SR>()];
   __shared__ __align__(16) int4 xq[STAGED ? C : 1][18][2];
@@ -641,11 +683,11 @@ __global__ __launch_bounds__(WARPS * 32) void down_kernel(
   const uint2* lsigns = lane_view<Type, SR>(signs);
   auto body = [&](int u, int bx) {
     if constexpr (STAGED)
-      down_staged_body<Type, WARPS, TILES, C, RG, SR, F>(u, bx, lbook, lsigns, xq, xd, vals,
+      down_staged_body<Type, WARPS, TILES, C, RG, SR, F, Storage>(u, bx, lbook, lsigns, xq, xd, vals,
                                                          s_route, partial, input, units, order,
                                                          weights, row_stride, left_groups);
     else
-      down_body<Type, WARPS, TILES, C, RG, SR, F, Groups>(u, bx, lbook, lsigns, partial, input, units,
+      down_body<Type, WARPS, TILES, C, RG, SR, F, Groups, Storage>(u, bx, lbook, lsigns, partial, input, units,
                                                   order, weights, row_stride, left_groups);
   };
   if constexpr (PERSIST) {
@@ -825,7 +867,7 @@ void launch_gate_up_v(cudaStream_t stream, int routes, Q8_1* down_in, half* proj
   }
 }
 
-template <int Type, int V, int Groups = 18>
+template <int Type, int V, int Groups = 18, DownStorage Storage = DownStorage::raw>
 void launch_down_v(cudaStream_t stream, int routes, half* partial, const Q8_1* input,
                    const int32_t* units, const int32_t* count, const int32_t* order,
                    const uint8_t* weights, int row_stride, int left_groups, const uint2* book,
@@ -837,7 +879,7 @@ void launch_down_v(cudaStream_t stream, int routes, half* partial, const Q8_1* i
   constexpr int sr = dn_sr<Type, s.warps, s.chunk, s.staged, mode>();
   constexpr int f = dn_f<Type, s.warps, s.chunk, s.staged, mode>();
   constexpr int blocks = 5120 / (s.warps * 8 * s.tiles);
-  auto kernel = down_kernel<Type, s.warps, s.tiles, s.chunk, rg, sr, f, s.staged, persist, Groups>;
+  auto kernel = down_kernel<Type, s.warps, s.tiles, s.chunk, rg, sr, f, s.staged, persist, Groups, Storage>;
   if constexpr (persist) {
     static int grid = 0;
     if (!grid) grid = persistent_grid(kernel, s.warps * 32, 1 << 30);
@@ -851,6 +893,9 @@ void launch_down_v(cudaStream_t stream, int routes, half* partial, const Q8_1* i
 }
 
 #define DS41MU_EM3_CASES4(F, B) F(B + 0); F(B + 1); F(B + 2); F(B + 3)
+#define DS41_FRAGMENT_16(F) F(19); F(21); F(22)
+#define DS41_FRAGMENT_17(F) F(12); F(13); F(16); F(20); F(21)
+#define DS41_FRAGMENT_29(F) F(35)
 template <int Type>
 void launch_gate_up(int variant, cudaStream_t stream, int routes, Q8_1* down_in,
                     half* projection, const int4* xq, const float* xd, const float* prob,
@@ -876,32 +921,61 @@ void launch_gate_up(int variant, cudaStream_t stream, int routes, Q8_1* down_in,
 #undef DS41MU_EM3_GU
 }
 
-template <int Type>
+template <int Type, DownStorage Storage>
 void launch_down(int variant, cudaStream_t stream, int routes, half* partial, const Q8_1* input,
                  const int32_t* units, const int32_t* count, const int32_t* order,
                  const uint8_t* weights, int row_stride, int left_groups, const uint2* book,
                  const uint2* signs) {
-#define DS41MU_EM3_DN(V)                                                                     \
-  case V:                                                                                    \
-    launch_down_v<Type, V>(stream, routes, partial, input, units, count, order, weights,     \
-                           row_stride, left_groups, book, signs);                            \
+#define DS41MU_EM3_DN(V)                                                                              \
+  case V:                                                                                             \
+    launch_down_v<Type, V, 18, Storage>(stream, routes, partial, input, units, count, order, weights, \
+                           row_stride, left_groups, book, signs);                                     \
     break
-  switch (variant) {
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 0);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 4);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 8);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 12);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 16);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 20);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 24);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 28);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 32);
-    default:
-      break;
+  // Compact readers are only instantiated for the actual ordinary schedule.
+  if constexpr (Storage == DownStorage::raw) {
+    switch (variant) {
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 0);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 4);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 8);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 12);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 16);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 20);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 24);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 28);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 32);
+    }
+  } else if constexpr (Type == 16) {
+    switch (variant) {
+      DS41_FRAGMENT_16(DS41MU_EM3_DN);
+    }
+  } else if constexpr (Type == 17) {
+    switch (variant) {
+      DS41_FRAGMENT_17(DS41MU_EM3_DN);
+    }
+  } else {
+    switch (variant) {
+      DS41_FRAGMENT_29(DS41MU_EM3_DN);
+    }
   }
 #undef DS41MU_EM3_DN
 }
 #undef DS41MU_EM3_CASES4
+
+bool supports_fragment_variant(int type, int variant) {
+#define DS41_FRAGMENT_SUPPORTED(V) case V: return true
+  if (type == 16) {
+    switch (variant) { DS41_FRAGMENT_16(DS41_FRAGMENT_SUPPORTED); }
+  } else if (type == 17) {
+    switch (variant) { DS41_FRAGMENT_17(DS41_FRAGMENT_SUPPORTED); }
+  } else if (type == 29) {
+    switch (variant) { DS41_FRAGMENT_29(DS41_FRAGMENT_SUPPORTED); }
+  }
+#undef DS41_FRAGMENT_SUPPORTED
+  return false;
+}
+#undef DS41_FRAGMENT_16
+#undef DS41_FRAGMENT_17
+#undef DS41_FRAGMENT_29
 
 inline int block_bytes_of(int type) { return type == 16 ? 66 : type == 17 ? 74 : 56; }
 inline int book_entries_of(int type) {
@@ -991,15 +1065,38 @@ void check_gate_banks(const torch::Tensor& gate, const torch::Tensor& up, int64_
           "gate/up must be aligned original uint8 [E <= 1024, intermediate, 20 * block] matching workspace");
 }
 
+template <DownStorage Storage, int Type>
+constexpr int fragment_row_width() {
+  using Fragment = tensorfold::ds41_down_fragments::Layout<Type>;
+  static_assert(Storage != DownStorage::raw, "fragment width requires fragment storage");
+  if constexpr (Storage == DownStorage::compact)
+    return Fragment::compact_row_bytes;
+  else
+    return Fragment::padded_row_bytes;
+}
+
+template <DownStorage Storage = DownStorage::raw>
 void check_down_bank(const torch::Tensor& down, int64_t type, int64_t left, int width, const torch::Tensor& like) {
   require(is_type(type), "down type must be IQ2_XXS(16)/IQ2_XS(17)/IQ1_M(29)");
+  if constexpr (Storage != DownStorage::raw)
+    require(width == kEtp4Intermediate, "down fragments require ETP4");
   const bool valid_left = width == kEtp4Intermediate ? left >= 0 && left % 64 == 0 && left < 256
                         : width == kEtp2Intermediate ? left == 0 || left == 128 : left == 0;
   require(valid_left, "down left offset must be 0 for ETP1, 0/128 for ETP2, or 0/64/128/192 for ETP4");
+
+  int64_t row_width;
+  if constexpr (Storage == DownStorage::raw) {
+    row_width = ((left + width + 255) / 256) * block_bytes_of(type);
+  } else {
+    row_width = type == 16 ? fragment_row_width<Storage, 16>()
+               : type == 17 ? fragment_row_width<Storage, 17>() : fragment_row_width<Storage, 29>();
+  }
   require(down.device() == like.device() && down.scalar_type() == torch::kUInt8 && down.is_contiguous() &&
               down.dim() == 3 && down.size(0) >= 1 && down.size(0) <= kMaxExperts && down.size(1) == 5120 &&
-              down.size(2) == ((left + width + 255) / 256) * block_bytes_of(type) && aligned(down, 8),
-          "down must be aligned original uint8 [E, 5120, blocks * block_bytes] matching workspace and left");
+              down.size(2) == row_width && aligned(down, Storage == DownStorage::padded ? 16 : 8),
+          Storage == DownStorage::raw
+              ? "down must be aligned original uint8 [E, 5120, blocks * block_bytes] matching workspace and left"
+              : "down fragment row width or alignment disagrees with the selected storage");
 }
 
 void launch_prep(const Views& v, const torch::Tensor& x, const torch::Tensor& ids,
@@ -1047,6 +1144,7 @@ void launch_gate_up_any(const Views& v, const torch::Tensor& probabilities, cons
                                                           probabilities.data_ptr<float>());
 }
 
+template <DownStorage Storage = DownStorage::raw>
 void launch_down_any(const Views& v, const torch::Tensor& probabilities, const torch::Tensor& down, int type,
                      int left, int variant, cudaStream_t stream) {
   const int routes = rows_of(probabilities) * kTopK;
@@ -1054,14 +1152,16 @@ void launch_down_any(const Views& v, const torch::Tensor& probabilities, const t
 #define DS41_DOWN_ARGS(T)                                                                              \
   stream, routes, v.partial(), v.down_in(), v.units(), v.count(), v.order(), down.data_ptr<uint8_t>(),  \
       int(down.size(2)), left / 32, v.book(T), v.signs()
-#define DS41_DOWN(T)                                                                                   \
-  do {                                                                                                 \
-    if (width == kEtp4Intermediate)                                                                     \
-      launch_down<T>(variant, DS41_DOWN_ARGS(T));                                                       \
-    else if (width == kEtp2Intermediate)                                                                \
-      launch_down_v<T, kWideDown, kEtp2Intermediate / 32>(DS41_DOWN_ARGS(T));                            \
-    else                                                                                               \
-      launch_down_v<T, kWideDown, kEtp1Intermediate / 32>(DS41_DOWN_ARGS(T));                            \
+#define DS41_DOWN(T)                                                          \
+  do {                                                                        \
+    if constexpr (Storage != DownStorage::raw)                                \
+      launch_down<T, Storage>(variant, DS41_DOWN_ARGS(T));                    \
+    else if (width == kEtp4Intermediate)                                      \
+      launch_down<T, DownStorage::raw>(variant, DS41_DOWN_ARGS(T));           \
+    else if (width == kEtp2Intermediate)                                      \
+      launch_down_v<T, kWideDown, kEtp2Intermediate / 32>(DS41_DOWN_ARGS(T)); \
+    else                                                                      \
+      launch_down_v<T, kWideDown, kEtp1Intermediate / 32>(DS41_DOWN_ARGS(T)); \
   } while (false)
   if (type == 16)
     DS41_DOWN(16);
@@ -1120,24 +1220,50 @@ std::vector<std::vector<int64_t>> ds41_decode_moe_variants() {
   return out;
 }
 
-void ds41_decode_moe_experts(torch::Tensor ws, torch::Tensor out, const torch::Tensor& x,
-                             const torch::Tensor& ids, const torch::Tensor& probabilities,
-                             const torch::Tensor& gate, const torch::Tensor& up, const torch::Tensor& down,
-                             int64_t gate_type, int64_t down_type, int64_t left, int64_t gate_up_variant_,
-                             int64_t down_variant_) {
+template <DownStorage Storage>
+void experts_impl(const torch::Tensor& ws, const torch::Tensor& out, const torch::Tensor& x,
+                  const torch::Tensor& ids, const torch::Tensor& probabilities, const torch::Tensor& gate,
+                  const torch::Tensor& up, const torch::Tensor& down, int64_t gate_type, int64_t down_type,
+                  int64_t left, int64_t gate_up_variant_, int64_t down_variant_) {
   const Views v = workspace_of(ws, x);
   check_gate_banks(gate, up, gate_type, v.layout.intermediate, x);
-  check_down_bank(down, down_type, left, v.layout.intermediate, x);
+  check_down_bank<Storage>(down, down_type, left, v.layout.intermediate, x);
   require(gate.size(0) == down.size(0), "gate/up and down expert counts must match");
   check_variants(gate_up_variant_, down_variant_, v.layout.intermediate);
+  if constexpr (Storage != DownStorage::raw)
+    require(supports_fragment_variant(int(down_type), int(down_variant_)),
+            "down fragment requires a scheduled ordinary variant");
   const c10::cuda::CUDAGuard guard(x.device());
   const auto stream = at::cuda::getCurrentCUDAStream();
   launch_prep(v, x, ids, probabilities, int(gate.size(0)), chunk_of(int(gate_up_variant_), int(down_variant_)),
               stream);
   launch_gate_up_any(v, probabilities, gate, up, int(gate_type), int(gate_up_variant_), stream);
-  launch_down_any(v, probabilities, down, int(down_type), int(left), int(down_variant_), stream);
+  launch_down_any<Storage>(v, probabilities, down, int(down_type), int(left), int(down_variant_), stream);
   launch_combine(v, out, probabilities, stream);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void ds41_decode_moe_experts(torch::Tensor ws, torch::Tensor out, const torch::Tensor& x,
+                             const torch::Tensor& ids, const torch::Tensor& probabilities,
+                             const torch::Tensor& gate, const torch::Tensor& up, const torch::Tensor& down,
+                             int64_t gate_type, int64_t down_type, int64_t left, int64_t gate_up_variant_,
+                             int64_t down_variant_) {
+  experts_impl<DownStorage::raw>(ws, out, x, ids, probabilities, gate, up, down,
+                                gate_type, down_type, left, gate_up_variant_, down_variant_);
+}
+
+void ds41_decode_moe_experts_fragments(torch::Tensor ws, torch::Tensor out, const torch::Tensor& x,
+                                       const torch::Tensor& ids, const torch::Tensor& probabilities,
+                                       const torch::Tensor& gate, const torch::Tensor& up, const torch::Tensor& down,
+                                       int64_t gate_type, int64_t down_type, int64_t left, int64_t gate_up_variant_,
+                                       int64_t down_variant_, bool padded) {
+  if (padded) {
+    experts_impl<DownStorage::padded>(ws, out, x, ids, probabilities, gate, up, down,
+                                     gate_type, down_type, left, gate_up_variant_, down_variant_);
+  } else {
+    experts_impl<DownStorage::compact>(ws, out, x, ids, probabilities, gate, up, down,
+                                      gate_type, down_type, left, gate_up_variant_, down_variant_);
+  }
 }
 
 // Stage ops for the schedule sweep (tests/cuda/bench_ds41_decode_moe.py): same launches, one at a time.

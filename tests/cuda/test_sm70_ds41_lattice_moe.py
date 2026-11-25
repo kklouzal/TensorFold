@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 import torch
 
+from test_sm70_ds41_decode_moe import pack_down_fragments
 from test_sm70_onecat_ds41 import LOCAL, Carriers, bank, pytestmark  # noqa: F401
 
 SIZES = (65, 512, 2048, 8192)
@@ -161,6 +162,96 @@ def test_transcode_rejects_noncovering_destination_and_unaligned_group(ops):
     with pytest.raises(RuntimeError, match="invalid packet group width or offset"):
         lat.extension().transcode(w, s, wbytes, sbytes, source, None, ids, count, 80, 16, 32, 256, 1,
                                   torch.zeros_like(count))
+
+
+def transcode_down(lat, operation, source, left, kind, selected, poison):
+    _, wbytes, sbytes = lat.canonical(kind, 5120, 576)
+    experts = source.shape[0]
+    weight = torch.full((experts, wbytes), poison, dtype=torch.uint8, device=source.device)
+    stats = torch.full((experts, sbytes), poison, dtype=torch.uint8, device=source.device)
+    count = torch.tensor([len(selected)], dtype=torch.int32, device=source.device)
+    error = torch.zeros_like(count)
+    operation(weight, stats, wbytes, sbytes, source, None, selected, count, 80, kind, 5120, 576, left, error)
+    return (weight, stats), error
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_lattice_down_fragments_exact_banks_and_output(ops, kind):
+    lat, _, workspace = ops
+    extension = lat.extension()
+    carriers = Carriers(kind)
+    generator = torch.Generator().manual_seed(1500 + kind)
+    selected = torch.tensor([LOCAL - 1, 0], dtype=torch.int32, device="cuda")
+    for rank in range(4):
+        banks, _, left = carriers.rank(rank)
+        gate, up, down = banks
+        raw_banks, raw_error = transcode_down(lat, extension.transcode, down, left, kind, selected, 0xE7)
+        assert not raw_error.item()
+        alternatives = [pack_down_fragments(down, kind, left, padded) for padded in (False, True)]
+        for fragment in alternatives:
+            packed, error_word = transcode_down(
+                lat, extension.transcode_down_fragments, fragment, left, kind, selected, 0xA5,
+            )
+            assert not error_word.item()
+            for old, new in zip(raw_banks, packed, strict=True):
+                assert torch.equal(old[selected], new[selected]), (kind, left, fragment.shape[-1])
+                assert (new[1:-1] == 0xA5).all()
+        for m in (128, 1025):
+            x = torch.randn(m, 5120, generator=generator).half().cuda()
+            ids, p = routes(m, LOCAL, generator)
+            ids[0, 0], p[0, 0] = LOCAL - 1, 0.25
+            out = lat.experts(x, ids, p, *banks, kind, kind, left, workspace)
+            assert torch.isfinite(out).all()
+            for fragment in alternatives:
+                got = lat.experts(x, ids, p, gate, up, fragment, kind, kind, left, workspace, fragment_down=True)
+                assert torch.equal(got.view(torch.int16), out.view(torch.int16)), (kind, left, m, fragment.shape[-1])
+    workspace.check()
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_lattice_down_fragments_scale_overflow(ops, kind):
+    lat, _, _ = ops
+    extension = lat.extension()
+    width = {16: 66, 17: 74, 29: 56}[kind]
+    raw = torch.zeros((1, 5120, 3 * width), dtype=torch.uint8, device="cuda")
+    blocks = raw.reshape(1, 5120, 3, width)
+    # Set the shared FP16 scale to 65504. Its finite product with the
+    # largest grid coefficients overflows the existing exact-reader check.
+    if kind == 29:
+        for i in range(4):
+            blocks[..., 49 + 2 * i] = ((0x7BFF >> (4 * i)) & 15) << 4
+    else:
+        blocks[..., 0], blocks[..., 1] = 0xFF, 0x7B
+    selected = torch.zeros(1, dtype=torch.int32, device="cuda")
+    raw_bank, error_word = transcode_down(lat, extension.transcode, raw, 192, kind, selected, 0xE7)
+    assert error_word.item() == 1
+    for padded in (False, True):
+        source = pack_down_fragments(raw, kind, 192, padded)
+        fragment_bank, error_word = transcode_down(
+            lat, extension.transcode_down_fragments, source, 192, kind, selected, 0xA5,
+        )
+        assert error_word.item() == 1
+        for expected, got in zip(raw_bank, fragment_bank, strict=True):
+            assert torch.equal(expected, got)
+
+
+def test_lattice_down_fragments_reject_invalid_spans(ops):
+    lat, _, _ = ops
+    transcode = lat.extension().transcode_down_fragments
+    _, wbytes, sbytes = lat.canonical(16, 5120, 576)
+    source = torch.zeros((1, 5120, 150), dtype=torch.uint8, device="cuda")
+    selected = torch.zeros(1, dtype=torch.int32, device="cuda")
+    count = torch.ones_like(selected)
+    error = torch.zeros_like(selected)
+    weights = torch.empty(wbytes, dtype=torch.uint8, device="cuda")
+    stats = torch.empty(sbytes, dtype=torch.uint8, device="cuda")
+    with pytest.raises(RuntimeError, match="invalid row width"):
+        transcode(weights, stats, wbytes, sbytes, source[..., :-1].contiguous(), None,
+                  selected, count, 80, 16, 5120, 576, 0, error)
+    with pytest.raises(RuntimeError, match="expected .* ETP4 cut"):
+        transcode(weights, stats, wbytes, sbytes, source, None, selected, count, 80, 16, 5120, 576, 32, error)
+    with pytest.raises(RuntimeError, match="expected .* K576"):
+        transcode(weights, stats, wbytes, sbytes, source, None, selected, count, 80, 16, 5120, 544, 0, error)
 
 
 def rank_banks(layer_prefix=None):

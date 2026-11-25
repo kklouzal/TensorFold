@@ -51,7 +51,7 @@ def variant_table(em):
 
 
 def test_iq2_xxs_exact_final_bank_reads(ops):
-    _, workspace, reference = ops
+    em, workspace, reference = ops
     generator = torch.Generator().manual_seed(1301)
 
     def bank(rows, blocks):
@@ -72,6 +72,14 @@ def test_iq2_xxs_exact_final_bank_reads(ops):
     expected = pieces(reference, x, ids, probabilities, banks, 16, 192)
     assert torch.isfinite(expected).all()
     actual = workspace.experts(x, ids, probabilities, *banks, 16, 16, 192)
+    assert bits_equal(actual, expected)
+    gate, up, down = banks
+    compact = pack_down_fragments(down, 16, 192, False)
+    actual = workspace.experts(x, ids, probabilities, gate, up, compact, 16, 16, 192, fragment_down=True)
+    assert bits_equal(actual, expected)
+    padded = pack_down_fragments(down, 16, 192, True)
+    actual.fill_(float("nan"))
+    fragments(em, workspace, actual, x, ids, probabilities, (gate, up, padded), 16, 192, True)
     assert bits_equal(actual, expected)
 
 
@@ -329,3 +337,117 @@ def test_etp1_raw_expert_banks(ops, kind):
         with pytest.raises(RuntimeError, match="matching workspace and left"):
             ws.experts(x[:1], ids[:1], p[:1], banks[0][:1], banks[1][:1], short, kind, kind, 0)
         assert_wide_graph_replay(ws, banks, 0, generator)
+def pack_down_fragments(down, kind, left, padded):
+    """Independent test packer, outside the measured operator."""
+    blocks = down.reshape(*down.shape[:-1], 3, down.shape[-1] // 3)
+    low, high = [], []
+    for ordinal in range(left // 32, left // 32 + 18):
+        block, sub = divmod(ordinal, 8)
+        row = blocks[:, :, block]
+        if kind == 29:
+            low.append(row[:, :, 4 * sub:4 * sub + 4])
+            high.append(row[:, :, 32 + 2 * sub:34 + 2 * sub])
+        else:
+            low.append(row[:, :, 2 + 8 * sub:10 + 8 * sub])
+            if kind == 17:
+                high.append(row[:, :, 66 + sub:67 + sub])
+    if kind == 29:
+        scales = blocks[..., 48:56].flatten(-2)
+        fields = [scales, *low, *high]
+    else:
+        scales = blocks[..., :2].flatten(-2)
+        fields = [*low, scales, *high]
+    if padded:
+        count = -sum(field.shape[-1] for field in fields) % 16
+        fields.append(torch.full((*down.shape[:2], count), 0xA5, dtype=down.dtype, device=down.device))
+    return torch.cat(fields, dim=-1)
+
+
+def fragments(em, ws, out, x, ids, probabilities, banks, kind, left, padded):
+    m = x.shape[0]
+    em.extension().experts_fragments(
+        ws.buffer, out, x, ids, probabilities, *banks, kind, kind, left,
+        em.pick("g", kind, m), em.pick("d", kind, m), padded,
+    )
+
+@pytest.mark.parametrize("kind,rows", [(16, (1, 2, 32)), (17, (1, 6, 8, 16, 24)), (29, (1, 32))])
+def test_down_fragments_bit_exact(ops, kind, rows):
+    em, ws, dec = ops
+    carriers = Carriers(kind)
+    generator = torch.Generator().manual_seed(900 + kind)
+    for rank in range(4):
+        banks, _, left = carriers.rank(rank)
+        gate, up, down = banks
+        alternatives = [(padded, pack_down_fragments(down, kind, left, padded)) for padded in (False, True)]
+        for m in rows:
+            x = torch.randn(m, 5120, generator=generator).half().cuda()
+            ids, p = routing(m, generator, hot=m > 1)
+            # Always exercise the last row of the final bank.
+            ids[0, 0], p[0, 0] = LOCAL - 1, 0.25
+            expected = pieces(dec, x, ids, p, banks, kind, left)
+            assert bits_equal(ws.experts(x, ids, p, *banks, kind, kind, left), expected)
+            for padded, fragment in alternatives:
+                result = torch.full_like(x, float("nan"))
+                fragments(em, ws, result, x, ids, p, (gate, up, fragment), kind, left, padded)
+                assert bits_equal(result, expected), (kind, left, m, padded)
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_down_fragments_captured_replay(ops, kind):
+    em, ws, dec = ops
+    banks, _, left = Carriers(kind).rank(3)
+    gate, up, down = banks
+    generator = torch.Generator().manual_seed(1000 + kind)
+    m = 8
+    x = torch.randn(m, 5120, generator=generator).half().cuda()
+    ids, p = routing(m, generator)
+    for padded in (False, True):
+        fragment_banks = gate, up, pack_down_fragments(down, kind, left, padded)
+        result = torch.empty_like(x)
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            fragments(em, ws, result, x, ids, p, fragment_banks, kind, left, padded)
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            fragments(em, ws, result, x, ids, p, fragment_banks, kind, left, padded)
+        for hot, all_dropped in ((True, False), (False, True)):
+            new_ids, new_p = routing(m, generator, hot=hot)
+            x.copy_(torch.randn(m, 5120, generator=generator).half())
+            ids.copy_(new_ids)
+            p.copy_(new_p)
+            if all_dropped:
+                p.zero_()
+            graph.replay()
+            torch.cuda.synchronize()
+            assert bits_equal(result, pieces(dec, x, ids, p, banks, kind, left))
+
+
+def test_down_fragments_reject_bad_component_inputs(ops):
+    em, ws, _ = ops
+    (gate, up, down), _, left = Carriers(29).rank(0)
+    fragment = pack_down_fragments(down, 29, left, False)
+    x = torch.zeros(1, 5120, device="cuda", dtype=torch.float16)
+    ids, p = routing(1, torch.Generator().manual_seed(1300))
+    result = torch.empty_like(x)
+    with pytest.raises(RuntimeError, match="row width or alignment"):
+        fragments(em, ws, result, x, ids, p, (gate, up, fragment[..., :-2].contiguous()), 29, left, False)
+    with pytest.raises(RuntimeError, match="row width or alignment"):
+        fragments(em, ws, result, x, ids, p, (gate, up, fragment), 29, left, True)
+    unaligned = torch.empty(fragment.numel() + 1, dtype=torch.uint8, device="cuda")[1:].view_as(fragment)
+    with pytest.raises(RuntimeError, match="row width or alignment"):
+        fragments(em, ws, result, x, ids, p, (gate, up, unaligned), 29, left, False)
+    with pytest.raises(RuntimeError, match="left offset"):
+        fragments(em, ws, result, x, ids, p, (gate, up, fragment), 29, 32, False)
+    with pytest.raises(RuntimeError, match="scheduled ordinary variant"):
+        em.extension().experts_fragments(
+            ws.buffer, result, x, ids, p, gate, up, fragment, 29, 29, left, em.pick("g", 29, 1), 0, False,
+        )
+    for width in (1152, 2304):
+        wide = em.Workspace("cuda", intermediate=width)
+        gate_wide = torch.empty((1, width, gate.shape[2]), dtype=torch.uint8, device="cuda")
+        with pytest.raises(RuntimeError, match="fragments require ETP4"):
+            em.extension().experts_fragments(
+                wide.buffer, result, x, ids, p, gate_wide, gate_wide, fragment[:1], 29, 29, 0, 4, 4, False,
+            )
