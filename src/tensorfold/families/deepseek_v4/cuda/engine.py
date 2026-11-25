@@ -1,4 +1,4 @@
-"""DeepSeek-V4.1-Flash on eight V100s: TP8 attention/dense, ETP4 x EP2 routed experts.
+"""DeepSeek-V4.1-Flash on eight V100s with TP8 attention/dense and selectable expert tensor parallelism.
 
 Rank 0 drives; ranks 1-7 run ``follow``. Every model operation is announced to the followers through the
 same-host control pipes as one small frame before rank 0 issues its own identical kernels and collectives
@@ -64,7 +64,7 @@ class DS41Engine:
                  serve: bool = False, queue_timeout_s: float | None = None, graphs: bool = True,
                  keep_slots: int | None = None, prefix_host_bytes: int | None = None, vision: bool = False,
                  vision_urls: bool = False, vision_offload: bool = False, yarn_factor: float | None = None,
-                 kv_dtype: str = "bf16", **_options) -> None:
+                 kv_dtype: str = "bf16", expert_tensor_parallel_size: int | None = None, **_options) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -77,7 +77,9 @@ class DS41Engine:
         from .startup import Timeline
 
         if tp != W.WORLD or not 0 <= rank < tp:
-            raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8 (TP8 attention/dense, ETP4 x EP2 experts)")
+            raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8")
+        etp = W.checked_etp(expert_tensor_parallel_size)
+        self.expert_tensor_parallel_size = etp
         model_dir = Path(model_dir)
         if parallel is not None:
             if type(parallel) is not int or not 1 <= parallel <= MAX_STREAMS:
@@ -116,6 +118,12 @@ class DS41Engine:
         prebuild.wait(small_gather.__name__)
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
+            degree = torch.tensor([etp], dtype=torch.int64, device=device)
+            degrees = torch.empty(tp, dtype=torch.int64, device=device)
+            self.comm.all_gather(degree, degrees)
+            if degrees.tolist() != [etp] * tp:
+                raise ValueError("DeepSeek-V4.1 ranks must use the same expert tensor parallel size")
+            del degree, degrees
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
         from .prefix import HostSlab, default_keep_slots
@@ -159,7 +167,7 @@ class DS41Engine:
             print(f"[tensorfold] rank {rank}: DEVELOPMENT SMOKE: {len(layers)} of {g.layers} layers loaded", flush=True)
         prebuild.wait()
         with clock.phase("weights"):
-            self.w = W.load(shards, g, rank, device, layers=layers)
+            self.w = W.load(shards, g, rank, device, layers=layers, expert_tensor_parallel_size=etp)
             torch.cuda.synchronize()
         if mapping is not None:
             self.engram = engram.result()
@@ -216,11 +224,15 @@ class DS41Engine:
         # 4x) until before the graph capture.
         slab_started = time.perf_counter()
         slab = HostSlab(self.comm, rank, tp, prefix_host_bytes)
-        # The lattice prefill experts' persistent canonical-bank workspace (540 MiB) exists before the KV pool is
+        # The lattice prefill experts' persistent canonical-bank workspace exists before the KV pool is
         # sized, so it does not come out of RESERVE.
         from tensorfold.cuda.sm70 import ds41_lattice_moe
         with clock.phase("lattice-ws"):
-            lattice = ds41_lattice_moe.Workspace(device)
+            if etp == W.ETP:
+                lattice = ds41_lattice_moe.Workspace(device)
+            else:
+                lattice = ds41_lattice_moe.Workspace(device, tile=len(self.w.local_experts),
+                                                      intermediate=g.moe_inter // etp)
             torch.cuda.synchronize()
         free = torch.cuda.mem_get_info()[0]
         mine = torch.tensor([free], dtype=torch.int64, device=device)
@@ -239,7 +251,7 @@ class DS41Engine:
         capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(shape_keys(slots, self.context)) if capture else 0
         prompt_reserve = RESERVE
-        if rotorquant and not vision and capture and self.context <= 131_072 and max_tokens <= MAX_TOKENS:
+        if etp == W.ETP and rotorquant and not vision and capture and self.context <= 131_072 and max_tokens <= MAX_TOKENS:
             prompt_reserve = H64_TEXT_RESERVE
         pages = max(1, (int(every.min()) - prompt_reserve - graph_bytes - ring_bytes) // page_bytes)
         target_started = time.perf_counter()
@@ -298,6 +310,7 @@ class DS41Engine:
         self.decoder = self.scheduler = None
         self._closed = False
         if rank == 0:
+            print(f"[tensorfold] DeepSeek-V4.1 SM70: routed experts ETP{etp} x EP{tp // etp}", flush=True)
             if self.graphs is not None:
                 print(f"[tensorfold] DeepSeek-V4.1 SM70: decode graphs for batches {list(self.graphs.sizes)} "
                       f"(index classes {self.graphs.classes[self.graphs.sizes[-1]]}; {len(self.graphs.keys)} graphs) "

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import torch
 
 from .collectives import Collectives
-from .weights import EP, Geometry, Weights
+from .weights import ETP, Geometry, Weights
 
 DECODE_MAX = 8                 # patch 85: requests with more tokens take the single-request prefill indexer
 BLOCK = 64                     # KV page: tokens per page (the friend's production --block-size 64)
@@ -168,10 +168,12 @@ class Target:
         for layer in w.layers:
             if layer.owns_kv and layer.ratio == 2:
                 self.c2[layer.index] = mu_state.MuC2State(layer.comp_norm, slots=slots - 1, trap=True)
-        self.local = range(w.group * (g.experts // EP), (w.group + 1) * (g.experts // EP))
+        self.local = w.local_experts
         self.engram_rows = torch.empty(max_tokens, 24 * 256, dtype=torch.float16, device=device)
         from tensorfold.cuda.sm70 import ds41_decode_moe
-        self.decode_moe = ds41_decode_moe.Workspace(device)   # routed experts below the grouped-prefill threshold
+        # Routed experts below the grouped-prefill threshold.
+        self.decode_moe = (ds41_decode_moe.Workspace(device) if w.expert_tensor_parallel_size == ETP
+                           else ds41_decode_moe.Workspace(device, intermediate=g.moe_inter // w.expert_tensor_parallel_size))
         # Prefill routed experts (>= MIN_TOKENS rows): the friend's TurboMind lattice path (ds41_lattice_moe); its
         # canonical-bank workspace is the caller's (allocated before the KV pool is sized).
         self.lattice = lattice
@@ -391,7 +393,7 @@ class Target:
         logits = fp32_projection(x if shard is None else x_rows, ly.gate)
         mask = image if image is None or shard is None else shard.take(image)
         if mask is None and shard is None:
-            # the router epilogue and this rank's EP2 mapping in one launch (local id, weight 0 for the other group)
+            # The router epilogue also maps global IDs to this group's local experts.
             local, weights = route_local(logits, ly.gate_bias, g.top_k, g.routed_scale, self.local.start,
                                          len(self.local))
         else:
@@ -406,8 +408,7 @@ class Target:
                                                        g.top_k, g.routed_scale)
             ids = ids.to(torch.int32)
             if shard is not None:
-                # The row owner can belong to either EP group. Share global routes before applying the
-                # receiving rank's local expert mapping, which discards routes owned by the other group.
+                # Share global routes before applying the receiving rank's own expert mapping.
                 ids = self.c.gather_rows(ids, shard)
                 probabilities = self.c.gather_rows(probabilities, shard)
             first = self.local.start

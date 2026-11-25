@@ -1,18 +1,18 @@
-"""DeepSeek-V4.1-Flash GGUF weights for one rank of the SM70 TP4 x EP2 lane.
+"""DeepSeek-V4.1-Flash GGUF weights for one rank of the eight-GPU SM70 engine.
 
 TP8 attention/dense (the Flash Next / Gemma 4 lane layout): rank r owns slice r of every sharded projection (8
 query heads, one output group, 4 indexer heads, 288 shared-expert rows, 1/8 of the Engram value projection and
-the vocabulary); the routed experts are ETP4 x EP2: expert group g = r // 4 ([192 g, 192 g + 192)) at expert TP
-slice e = r % 4, the 1Cat-vLLM DS41 TP4 expert carriers unchanged. Routed and shared partials meet in one 8-rank sum.
+the vocabulary). Routed experts use two or four tensor-parallel lanes per group. Expert group g = r // ETP owns
+an equal, contiguous range of expert IDs, and lane r % ETP owns its contiguous intermediate slice.
+Routed and shared partials meet in one eight-rank sum.
 
 Names follow the ISTA-branch GGUF layout the 1Cat adapter (gguf_adapters/deepseek_v41.py at 1Cat-vLLM 4d57473d)
 was qualified on; the uncensored AtomicChat backbone uses it unchanged. The Engram table is the llama.cpp file
 (one ``per_layer_token_embd.weight``), split by the backbone's per-layer bucket sums (the friend's patch 221).
 
 Projections are decoded once to FP16 on the GPU (the upstream "original dense storage" restore that its prefill
-GEMMs use); routed experts keep their original IQ1_M/IQ2_XXS/IQ2_XS bytes for the 1Cat dp4a kernels, in the
-upstream TP4 carriers: gate/up rows [576 t, +576), down columns of the three 256-blocks covering [576 t, +576)
-starting at ``left`` = 576 e mod 256.
+GEMMs use). Routed experts keep their original IQ1_M/IQ2_XXS/IQ2_XS bytes.
+Each down row retains the complete 256-column blocks covering its assigned slice and its in-block offset.
 """
 
 from __future__ import annotations
@@ -26,14 +26,22 @@ import numpy as np
 from tensorfold.gguf_file import FORMATS, GGUFCheckpoint, PackedTensor, _shard
 
 TP = 8                                   # attention/dense ranks
-ETP = 4                                  # expert tensor-parallel ranks per expert group
-EP = 2                                   # expert groups
+ETP = 4                                  # default expert tensor-parallel ranks per expert group
+EXPERT_TP_SIZES = (2, ETP)
 WORLD = TP
 EXPERT_TYPES = (16, 17, 29)              # IQ2_XXS, IQ2_XS, IQ1_M
 DENSE_TYPES = (8, 13)                    # Q8_0, Q5_K
 IQ4_NL = 20
 ENGRAM_TABLE = "per_layer_token_embd.weight"
 ENGRAM_ROW_BYTES = 144                   # 256 IQ4_NL values
+
+
+def checked_etp(degree: int | None) -> int:
+    if degree is None:
+        return ETP
+    if type(degree) is not int or degree not in EXPERT_TP_SIZES:
+        raise ValueError("DeepSeek-V4.1 CUDA expert tensor parallelism requires degree 2 or 4")
+    return degree
 
 
 @dataclass(frozen=True)
@@ -208,10 +216,11 @@ class Loader:
 
     CHUNK_BYTES = 64 << 20
 
-    def __init__(self, shards: Shards, rank: int, device, staging):
+    def __init__(self, shards: Shards, rank: int, device, staging, *, expert_tensor_parallel_size: int | None = None):
         import torch
         self.s, self.rank, self.device = shards, rank, device
-        self.t, self.e, self.g = rank, rank % ETP, rank // ETP
+        self.etp = checked_etp(expert_tensor_parallel_size)
+        self.t, self.e, self.g = rank, rank % self.etp, rank // self.etp
         self.torch = torch
         self.staging = staging          # staging.Staging: pinned-buffer uploads of the large byte ranges
 
@@ -321,32 +330,36 @@ class Loader:
         return self.dense(name, cols=(self.t * n, n))
 
     # --- routed experts
-    def expert_bank(self, name, down: bool):
-        """Original bytes of this rank's experts: gate/up [192, 576, rb], down [192, 5120, 3 blocks]."""
+    def expert_bank(self, name, geometry: Geometry, *, down: bool):
+        """Original bytes of this rank's gate/up rows and the whole down blocks covering its input columns."""
         torch = self.torch
         t = self.s.tensors[name]
         kind = t.ggml_type
         if kind not in EXPERT_TYPES:
             raise ValueError(f"{name}: routed experts must be IQ2_XXS, IQ2_XS or IQ1_M, found {FORMATS[kind][0]}")
         _, block, size = FORMATS[kind]
+        rows = (geometry.hidden, geometry.moe_inter) if down else (geometry.moe_inter, geometry.hidden)
+        if t.shape != (geometry.experts, *rows):
+            raise ValueError(f"{name}: expert tensor shape {t.shape} does not match {(geometry.experts, *rows)}")
         experts, out_rows, k = t.shape
-        local = experts // EP
+        local = experts // (TP // self.etp)
         first = self.g * local
         row = k // block * size                     # bytes of one output row of one expert
         if down:
             inter = k
-            share = inter // ETP
+            share = inter // self.etp
             b0 = self.e * share // block
             left = self.e * share - b0 * block
-            if left + share > 3 * block or (b0 + 3) * block > inter:
-                raise ValueError("down carrier does not cover the rank's 576 columns")
-            # the group's experts are one contiguous byte range; the rank's three blocks per row are cut on the GPU
+            blocks = -(-(left + share) // block)
+            if (b0 + blocks) * block > inter:
+                raise ValueError("down carrier does not cover the rank's input columns")
+            # The group's experts are contiguous. Cut the rank's complete blocks per row on the GPU.
             whole = torch.empty((local, out_rows, row), dtype=torch.uint8, device=self.device)
             self.staging.copy(t.path, [(t.offset + first * out_rows * row, local * out_rows * row)], whole)
-            out = whole[:, :, b0 * size:(b0 + 3) * size].contiguous()
+            out = whole[:, :, b0 * size:(b0 + blocks) * size].contiguous()
             del whole
         else:
-            share = out_rows // ETP
+            share = out_rows // self.etp
             out = torch.empty((local, share, row), dtype=torch.uint8, device=self.device)
             self.staging.copy(t.path, [(t.offset + ((first + e) * out_rows + self.e * share) * row, share * row)
                                        for e in range(local)], out)
@@ -412,17 +425,26 @@ class Weights:
     engram_offsets: object
     engram_multipliers: object
     dense_scratch: object = None   # ds41_dense.Scratch shared by every dmv13 group of this rank
+    expert_tensor_parallel_size: int = ETP
 
     @property
     def group(self):
-        return self.rank // ETP
+        return self.rank // self.expert_tensor_parallel_size
+
+    @property
+    def local_experts(self) -> range:
+        count = self.geometry.experts // (TP // self.expert_tensor_parallel_size)
+        first = self.group * count
+        return range(first, first + count)
 
 
-def load(shards: Shards, geometry: Geometry, rank: int, device, layers: range | None = None) -> Weights:
+def load(shards: Shards, geometry: Geometry, rank: int, device, layers: range | None = None, *,
+         expert_tensor_parallel_size: int | None = None) -> Weights:
     from .staging import Staging
     staging = Staging()
     try:
-        return _load(Loader(shards, rank, device, staging), shards, geometry, rank, device, layers)
+        loader = Loader(shards, rank, device, staging, expert_tensor_parallel_size=expert_tensor_parallel_size)
+        return _load(loader, shards, geometry, rank, device, layers)
     finally:
         staging.close()
 
@@ -469,11 +491,11 @@ def _load(L, shards, geometry, rank, device, layers):
             ly.idx_proj = L.column(p + "indexer.proj.weight")
         ly.gate = L.router_gate(p + "ffn_gate_inp.weight")
         ly.gate_bias = L.floating(p + "exp_probs_b.bias", f32)
-        ly.exp_gate, ly.gate_up_type, _ = L.expert_bank(p + "ffn_gate_exps.weight", down=False)
-        ly.exp_up, up_type, _ = L.expert_bank(p + "ffn_up_exps.weight", down=False)
+        ly.exp_gate, ly.gate_up_type, _ = L.expert_bank(p + "ffn_gate_exps.weight", g, down=False)
+        ly.exp_up, up_type, _ = L.expert_bank(p + "ffn_up_exps.weight", g, down=False)
         if up_type != ly.gate_up_type:
             raise ValueError(f"{p}: gate/up expert formats differ")
-        ly.exp_down, ly.down_type, ly.down_left = L.expert_bank(p + "ffn_down_exps.weight", down=True)
+        ly.exp_down, ly.down_type, ly.down_left = L.expert_bank(p + "ffn_down_exps.weight", g, down=True)
         sh_gate, sh_up = L.column_planes(p + "ffn_gate_shexp.weight"), L.column_planes(p + "ffn_up_shexp.weight")
         ly.sh_gate, ly.sh_up, ly.sh_gu = group(sh_gate), group(sh_up), group(sh_gate, sh_up)
         ly.sh_down = group(L.row_planes(p + "ffn_down_shexp.weight"))
@@ -490,6 +512,7 @@ def _load(L, shards, geometry, rank, device, layers):
     embed, embed_type = _embedding_shard(shards, L.t * vocab, vocab, device)
     head = group(L.planes("output.weight", rows=(L.t * vocab, vocab)))
     return Weights(geometry=g, rank=rank, layers=out, embed=embed, embed_type=embed_type,
+                   expert_tensor_parallel_size=L.etp,
                    embed_first=L.t * vocab, head=head, dense_scratch=scratch,
                    norm=L.floating("output_norm.weight", f32),
                    engram_token_map=L.integers("engram_token_map.weight", torch.int32),

@@ -1,7 +1,8 @@
-# DeepSeek-V4.1-Flash on eight V100s (TP8/ETP4)
+# DeepSeek-V4.1-Flash on eight V100s (TP8)
 
-TensorFold's CUDA lane for DeepSeek-V4.1-Flash-1017 on eight V100 (SM70) GPUs, without a vLLM runtime: attention and
-dense layers TP8, routed experts ETP4 x EP2. It serves the OpenAI-compatible server of the other V100 lanes.
+TensorFold's CUDA lane for DeepSeek-V4.1-Flash-1017 on eight V100 (SM70) GPUs uses TP8 for attention,
+dense layers, and shared experts. Routed experts default to ETP4 × EP2. It serves the
+OpenAI-compatible server of the other V100 lanes.
 Status: development lane, qualified on one host only (SC117: 8x V100 32 GB, 180 W cap). Image
 `tensorfold-v100:py315-app-48c51356-pillow13` (`67b43e682057`).
 
@@ -23,6 +24,12 @@ python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backe
 
 This launch serves exact chat counting, the active renderer's capabilities, and telemetry through
 the standard [CUDA API](../api.md). Select the **TensorFold** provider in Harness.
+
+Add `--expert-tensor-parallel-size 2` to choose ETP2 × EP4 at startup.
+Use `--expert-tensor-parallel-size 4` or omit the option to choose the default.
+All eight ranks must use the same degree. Check the effective value in
+`model.expert_tensor_parallel_size` from `/v1/stats`.
+ETP2 is experimental until native quality, memory, and throughput qualification is complete.
 
 The container needs `--ipc host --ulimit memlock=-1:-1 --cap-add IPC_LOCK` for the host-mapped Engram table and the
 pinned prefix tier. With warm extension and page caches, the C24/C32 matrix server became ready in about 45 s.
@@ -49,7 +56,8 @@ registered Engram table.
 
 The 128K text profile uses `--kv-dtype rotorquant-iso64-norm4-h64 --context 131072` with the
 checkpoint's native YaRN factor. With CUDA graphs enabled and the standard prompt chunk size,
-H64 text with an admitted context of at most 128K reserves 2.5 GiB on each GPU for prompt work.
+ETP4 H64 text with an admitted context of at most 128K reserves 2.5 GiB on each GPU for prompt work.
+ETP2 uses a 3 GiB prompt reserve.
 The KV allocator budgets for decode graphs and uses the available memory on the tightest GPU
 to size the shared pool. `/v1/stats` reports the effective codec, YaRN factor, and KV budget.
 

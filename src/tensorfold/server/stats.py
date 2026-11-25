@@ -173,16 +173,19 @@ def _describe(app: Any) -> dict[str, Any]:
     depth = getattr(engine, "depth", None)
     yarn_factor = getattr(engine, "yarn_factor", None)
     positions = {"yarn_factor": yarn_factor} if yarn_factor is not None else {}
+    model_type = _model_type(getattr(app, "model_dir", None))
+    etp = getattr(engine, "expert_tensor_parallel_size", None)
+    partition = {"expert_tensor_parallel_size": etp} if model_type == "deepseek_v41" and etp is not None else {}
     limit = getattr(mac, "max_engine_calls", None)
     return {
         "server": {"version": __version__, "backend": "cuda" if cuda else ("mlx" if mac is not None else None),
                    "instance_id": INSTANCE_ID, "started_unix_s": round(STARTED_UNIX_S, 3),
                    "source_revision": os.environ.get(SOURCE_REVISION_ENV) or None},
-        "model": {"id": name or None, "aliases": ids[1:], "model_type": _model_type(getattr(app, "model_dir", None)),
+        "model": {"id": name or None, "aliases": ids[1:], "model_type": model_type,
                   "context_length": context, "default_max_tokens": default_max,
                   "kv_dtype": kv_dtype, "mtp_drafts": depth if isinstance(depth, int) else None,
                   "vision": getattr(app, "vision", None) is not None,
-                  "thinking_default": thinking if isinstance(thinking, bool) else None, **positions},
+                  "thinking_default": thinking if isinstance(thinking, bool) else None, **positions, **partition},
         "limits": {"lanes": lanes, "pending_requests": getattr(app, "max_pending_requests", None),
                    "engine_calls": limit, "http_connections": None,
                    "prefix_cache_entries": getattr(decoder, "keep", None) if decoder is not None else None},

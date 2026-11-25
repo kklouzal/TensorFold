@@ -75,6 +75,7 @@ using tensorfold::onecat_ds41::sign_mask;
 constexpr int kTopK = 6;
 constexpr int kMaxRoutes = 64 * kTopK;  // 384
 constexpr int kMaxExperts = 1024;
+constexpr int kEtp4Intermediate = 576, kEtp2Intermediate = 1152;
 
 template <int Type>
 constexpr int block_bytes() {
@@ -132,6 +133,20 @@ __device__ __forceinline__ void ld8(const uint8_t* p, uint32_t& w0, uint32_t& w1
 __device__ __forceinline__ uint32_t ld16(const uint8_t* p) {
   return __ldg(reinterpret_cast<const unsigned short*>(p));
 }
+__device__ __forceinline__ void ld8_bounded(const uint8_t* p, uint32_t& w0, uint32_t& w1) {
+  // The leading pair can include two bytes from the current block's
+  // header. Read exactly through p+7, even at the final IQ2_XXS row.
+  const uintptr_t a = reinterpret_cast<uintptr_t>(p);
+  const uint32_t* q = reinterpret_cast<const uint32_t*>(a & ~uintptr_t(3));
+  const uint32_t x0 = __ldg(q), x1 = __ldg(q + 1);
+  if (a & 2) {
+    w0 = __funnelshift_r(x0, x1, 16);
+    w1 = __funnelshift_r(x1, ld16(p + 6), 16);
+  } else {
+    w0 = x0;
+    w1 = x1;
+  }
+}
 __device__ __forceinline__ uint32_t apply_sign(uint32_t magnitude, uint32_t mask) {
   // == __vsub4(magnitude ^ mask, mask) for magnitude bytes in 1..127.
   return (magnitude ^ mask) + (mask & 0x01010101U);
@@ -140,7 +155,7 @@ __device__ __forceinline__ uint32_t apply_sign(uint32_t magnitude, uint32_t mask
 // ---- one 32-weight group -----------------------------------------------------
 // book / signs: this lane's copy (base + (lane & (copies - 1))); entry e at [e * copies].
 // F (IQ1_M): book is the 4096-entry folded table (entry = final words).
-template <int Type, int RG = 1, int SR = 1, int F = 0>
+template <int Type, int RG = 1, int SR = 1, int F = 0, bool Bounded = false>
 struct Group {
   uint32_t w[8];
   float d;
@@ -183,7 +198,10 @@ struct Group {
       m1 = 2 * int((s >> (shift + 3)) & 7) + 1;
     } else {
       uint32_t w0, w1;
-      ld8(b + 2 + 8 * sub, w0, w1);
+      if constexpr (Bounded)
+        ld8_bounded(b + 2 + 8 * sub, w0, w1);
+      else
+        ld8(b + 2 + 8 * sub, w0, w1);
       d = __half2float(__ushort_as_half(uint16_t(ld16(b))));
       if constexpr (Type == 16) {
 #pragma unroll
@@ -371,7 +389,7 @@ __device__ __forceinline__ const uint2* lane_view(const uint2* table) {
 // CTA = WARPS warps; a row uses L lanes (16 / L partials per lane); ROWS rows per
 // CTA block bx; one unit (<= C routes of one expert) u. EM2's arithmetic and
 // schedule; activations in the window layout with folded scales.
-template <int Type, int L, int WARPS, int C, int RG, int SR, int F>
+template <int Type, int L, int WARPS, int C, int RG, int SR, int F, int Width>
 __device__ __forceinline__ void gate_up_body(
     int u, int bx, const uint2* lbook, const uint2* lsigns, half* sg, half* su, int* s_route,
     Q8_1* __restrict__ down_in, half* __restrict__ projection, const int4* __restrict__ xq,
@@ -391,8 +409,8 @@ __device__ __forceinline__ void gate_up_body(
   __syncthreads();
   const int lane = threadIdx.x % 32, warp = threadIdx.x / 32, jl = lane % L;
   const int local = warp * RPW + lane / L, row = bx * ROWS + local;
-  const uint8_t* g = gate + (int64_t(expert) * 576 + row) * stride;
-  const uint8_t* v = up + (int64_t(expert) * 576 + row) * stride;
+  const uint8_t* g = gate + (int64_t(expert) * Width + row) * stride;
+  const uint8_t* v = up + (int64_t(expert) * Width + row) * stride;
   float ga[C][P], ua[C][P];
 #pragma unroll
   for (int j = 0; j < C; ++j)
@@ -403,7 +421,8 @@ __device__ __forceinline__ void gate_up_body(
 #pragma unroll
     for (int k = 0; k < P; ++k) {
       const int group = jl + L * k + 16 * i;
-      const Group<Type, RG, SR, F> dg(g, group, lbook, lsigns), du(v, group, lbook, lsigns);
+      const Group<Type, RG, SR, F, Width == kEtp2Intermediate> dg(g, group, lbook, lsigns),
+          du(v, group, lbook, lsigns);
 #pragma unroll
       for (int j = 0; j < C; ++j)
         if (j < n) {
@@ -436,17 +455,17 @@ __device__ __forceinline__ void gate_up_body(
       us += __shfl_down_sync(0xffffffffU, us, offset, L);
     }
     if (jl == 0) {
-      if (fused) {
+      if (Width == kEtp2Intermediate || fused) {
         sg[j * ROWS + local] = __float2half_rn(gs);
         su[j * ROWS + local] = __float2half_rn(us);
       } else {
         const int route = s_route[j];
-        projection[int64_t(route) * 1152 + row] = __float2half_rn(gs);
-        projection[int64_t(route) * 1152 + 576 + row] = __float2half_rn(us);
+        projection[int64_t(route) * (2 * Width) + row] = __float2half_rn(gs);
+        projection[int64_t(route) * (2 * Width) + Width + row] = __float2half_rn(us);
       }
     }
   }
-  if (!fused) return;
+  if (Width == kEtp4Intermediate && !fused) return;
   if constexpr (ROWS % 32 == 0) {
     __syncthreads();
     constexpr int BLOCKS = ROWS / 32;
@@ -455,12 +474,12 @@ __device__ __forceinline__ void gate_up_body(
       const int route = s_route[j];
       const float value = __half2float(__float2half_rn(v41_swiglu(
           __half2float(sg[j * ROWS + r]), __half2float(su[j * ROWS + r]), __ldg(probabilities + route))));
-      quantize_q8_1_warp(down_in + int64_t(route) * 18 + (bx * ROWS + b * 32) / 32, value);
+      quantize_q8_1_warp(down_in + int64_t(route) * (Width / 32) + (bx * ROWS + b * 32) / 32, value);
     }
   }
 }
 
-template <int Type, int L, int WARPS, int C, int RG, int SR, int F, int PERSIST>
+template <int Type, int L, int WARPS, int C, int RG, int SR, int F, int PERSIST, int Width = kEtp4Intermediate>
 __global__ __launch_bounds__(WARPS * 32) void gate_up_kernel(
     Q8_1* __restrict__ down_in, half* __restrict__ projection, const int4* __restrict__ xq,
     const float* __restrict__ xd, const float* __restrict__ probabilities,
@@ -469,7 +488,9 @@ __global__ __launch_bounds__(WARPS * 32) void gate_up_kernel(
     const uint8_t* __restrict__ up, int stride, const uint2* __restrict__ gbook,
     const uint2* __restrict__ gsigns, int fused) {
   static_assert(L == 16 || L == 8 || L == 4, "lanes per row");
-  constexpr int ROWS = WARPS * 32 / L, NB = 576 / ROWS;
+  constexpr int ROWS = WARPS * 32 / L, NB = Width / ROWS;
+  static_assert(Width % ROWS == 0, "exact gate/up tiles");
+  static_assert(Width != kEtp2Intermediate || ROWS % 32 == 0, "ETP2 only instantiates fused Q8 tiles");
   __shared__ __align__(16) uint2 book[table_entries<Type, RG, F>()];
   __shared__ __align__(16) uint2 signs[sign_entries<Type, SR>()];
   __shared__ half sg[C * ROWS], su[C * ROWS];
@@ -484,12 +505,12 @@ __global__ __launch_bounds__(WARPS * 32) void gate_up_kernel(
 #pragma unroll 1
     for (int item = blockIdx.x; item < items; item += gridDim.x) {
       __syncthreads();  // tables staged; the previous item's epilogue is done with sg/su/s_route
-      gate_up_body<Type, L, WARPS, C, RG, SR, F>(item / NB, item % NB, lbook, lsigns, sg, su,
+      gate_up_body<Type, L, WARPS, C, RG, SR, F, Width>(item / NB, item % NB, lbook, lsigns, sg, su,
                                                  s_route, down_in, projection, xq, xd,
                                                  probabilities, units, order, gate, up, stride, fused);
     }
   } else {
-    gate_up_body<Type, L, WARPS, C, RG, SR, F>(blockIdx.y, blockIdx.x, lbook, lsigns, sg, su,
+    gate_up_body<Type, L, WARPS, C, RG, SR, F, Width>(blockIdx.y, blockIdx.x, lbook, lsigns, sg, su,
                                                s_route, down_in, projection, xq, xd,
                                                probabilities, units, order, gate, up, stride, fused);
   }
@@ -497,14 +518,14 @@ __global__ __launch_bounds__(WARPS * 32) void gate_up_kernel(
 
 // ---- down -------------------------------------------------------------------
 // CTA = WARPS warps x 8 columns (4 lanes per column) x TILES column tiles (EM2).
-template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F>
+template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, int kGroups>
 __device__ __forceinline__ void down_body(int u, int bx, const uint2* lbook, const uint2* lsigns,
                                           half* __restrict__ partial, const Q8_1* __restrict__ input,
                                           const int32_t* __restrict__ units,
                                           const int32_t* __restrict__ order,
                                           const uint8_t* __restrict__ weights, int row_stride,
                                           int left_groups) {
-  constexpr int kGroups = 18, COLS = WARPS * 8;
+  constexpr int COLS = WARPS * 8;
   const int expert = __ldg(units + u), first = __ldg(units + kMaxRoutes + u);
   const int n = __ldg(units + 2 * kMaxRoutes + u);
   int route[C];
@@ -524,7 +545,8 @@ __device__ __forceinline__ void down_body(int u, int bx, const uint2* lbook, con
       const int group = start + q;
       // Lanes past the last group decode a valid group and contribute 0.f,
       // like raw_down_unroute's `group < groups ? dot : 0.f`.
-      const Group<Type, RG, SR, F> dg(row, min(group, kGroups - 1) + left_groups, lbook, lsigns);
+      const Group<Type, RG, SR, F, kGroups == kEtp2Intermediate / 32>
+          dg(row, min(group, kGroups - 1) + left_groups, lbook, lsigns);
 #pragma unroll
       for (int j = 0; j < C; ++j) {
         if (j >= n) break;  // uniform
@@ -596,7 +618,7 @@ __device__ __forceinline__ void down_staged_body(
   }
 }
 
-template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, int STAGED, int PERSIST>
+template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, int STAGED, int PERSIST, int Groups = 18>
 __global__ __launch_bounds__(WARPS * 32) void down_kernel(
     half* __restrict__ partial, const Q8_1* __restrict__ input,
     const int32_t* __restrict__ units, const int32_t* __restrict__ count,
@@ -604,6 +626,7 @@ __global__ __launch_bounds__(WARPS * 32) void down_kernel(
     int row_stride, int left_groups, const uint2* __restrict__ gbook,
     const uint2* __restrict__ gsigns) {
   constexpr int NB = 5120 / (WARPS * 8 * TILES);
+  static_assert(!STAGED || Groups == 18, "staged layouts own the eighteen-group buffers");
   __shared__ __align__(16) uint2 book[table_entries<Type, RG, F>()];
   __shared__ __align__(16) uint2 signs[sign_entries<Type, SR>()];
   __shared__ __align__(16) int4 xq[STAGED ? C : 1][18][2];
@@ -621,7 +644,7 @@ __global__ __launch_bounds__(WARPS * 32) void down_kernel(
                                                          s_route, partial, input, units, order,
                                                          weights, row_stride, left_groups);
     else
-      down_body<Type, WARPS, TILES, C, RG, SR, F>(u, bx, lbook, lsigns, partial, input, units,
+      down_body<Type, WARPS, TILES, C, RG, SR, F, Groups>(u, bx, lbook, lsigns, partial, input, units,
                                                   order, weights, row_stride, left_groups);
   };
   if constexpr (PERSIST) {
@@ -710,6 +733,7 @@ struct Variant {
   int shape, mode;
 };
 constexpr int kGateUpVariants = 28, kDownVariants = 36;
+constexpr int kEtp2GateUp = 4, kEtp2Down = 4;
 __host__ __device__ constexpr Variant gate_up_variant(int v) {
   constexpr int extra[4] = {4, 8, 9, 0};
   return v < 10 ? Variant{v, 0} : v < 20 ? Variant{v - 10, 1} : v < 24 ? Variant{extra[v - 20], 2}
@@ -777,7 +801,7 @@ inline int persistent_grid(K kernel, int threads, int max_items) {
   return grid < max_items ? grid : max_items;
 }
 
-template <int Type, int V>
+template <int Type, int V, int Width = kEtp4Intermediate>
 void launch_gate_up_v(cudaStream_t stream, int routes, Q8_1* down_in, half* projection,
                       const int4* xq, const float* xd, const float* prob, const int32_t* units,
                       const int32_t* count, const int32_t* order, const uint8_t* gate,
@@ -787,20 +811,20 @@ void launch_gate_up_v(cudaStream_t stream, int routes, Q8_1* down_in, half* proj
   constexpr auto s = gate_up_shape(var.shape);
   constexpr int rows = s.warps * 32 / s.lanes, mode = var.mode, persist = mode == 3 ? 1 : 0;
   auto kernel = gate_up_kernel<Type, s.lanes, s.warps, s.chunk, gu_rg<Type, mode>(), gu_sr<Type, mode>(),
-                               gu_f<Type, mode>(), persist>;
+                               gu_f<Type, mode>(), persist, Width>;
   if constexpr (persist) {
     static int grid = 0;  // per instantiation and process (one device per worker)
     if (!grid) grid = persistent_grid(kernel, s.warps * 32, 1 << 30);
-    const int items = routes * (576 / rows);
+    const int items = routes * (Width / rows);
     kernel<<<grid < items ? grid : items, s.warps * 32, 0, stream>>>(
         down_in, projection, xq, xd, prob, units, count, order, gate, up, stride, book, signs, fused);
   } else {
-    kernel<<<dim3(576 / rows, routes), s.warps * 32, 0, stream>>>(
+    kernel<<<dim3(Width / rows, routes), s.warps * 32, 0, stream>>>(
         down_in, projection, xq, xd, prob, units, count, order, gate, up, stride, book, signs, fused);
   }
 }
 
-template <int Type, int V>
+template <int Type, int V, int Groups = 18>
 void launch_down_v(cudaStream_t stream, int routes, half* partial, const Q8_1* input,
                    const int32_t* units, const int32_t* count, const int32_t* order,
                    const uint8_t* weights, int row_stride, int left_groups, const uint2* book,
@@ -812,7 +836,7 @@ void launch_down_v(cudaStream_t stream, int routes, half* partial, const Q8_1* i
   constexpr int sr = dn_sr<Type, s.warps, s.chunk, s.staged, mode>();
   constexpr int f = dn_f<Type, s.warps, s.chunk, s.staged, mode>();
   constexpr int blocks = 5120 / (s.warps * 8 * s.tiles);
-  auto kernel = down_kernel<Type, s.warps, s.tiles, s.chunk, rg, sr, f, s.staged, persist>;
+  auto kernel = down_kernel<Type, s.warps, s.tiles, s.chunk, rg, sr, f, s.staged, persist, Groups>;
   if constexpr (persist) {
     static int grid = 0;
     if (!grid) grid = persistent_grid(kernel, s.warps * 32, 1 << 30);
@@ -892,28 +916,41 @@ constexpr int64_t kUnits = kXd + align256(64 * 160 * 4);
 constexpr int64_t kCount = kUnits + align256(3 * kMaxRoutes * 4);
 constexpr int64_t kOrder = kCount + 256;
 constexpr int64_t kDownIn = kOrder + align256(kMaxRoutes * 4);
-constexpr int64_t kProjection = kDownIn + align256(int64_t(kMaxRoutes) * 18 * 36);
-constexpr int64_t kPartial = kProjection + align256(int64_t(kMaxRoutes) * 1152 * 2);
-constexpr int64_t kBook16 = kPartial + align256(int64_t(kMaxRoutes) * 5120 * 2);
-constexpr int64_t kBook17 = kBook16 + align256(book_entries<16>() * 8);
-constexpr int64_t kBook29 = kBook17 + align256(book_entries<17>() * 8);
-constexpr int64_t kSigns = kBook29 + align256(book_entries<29>() * 8);
-constexpr int64_t kWorkspace = kSigns + align256(128 * 8);
+struct WorkspaceLayout {
+  int intermediate;
+  int64_t projection, partial, book16, book17, book29, signs, bytes;
+  constexpr explicit WorkspaceLayout(int width)
+      : intermediate(width),
+        projection(kDownIn + align256(int64_t(kMaxRoutes) * (width / 32) * sizeof(Q8_1))),
+        // Only ETP4 has non-fused variants that materialize projections.
+        partial(projection + (width == kEtp4Intermediate ? align256(int64_t(kMaxRoutes) * 2 * width * 2) : 0)),
+        book16(partial + align256(int64_t(kMaxRoutes) * 5120 * 2)),
+        book17(book16 + align256(book_entries<16>() * 8)),
+        book29(book17 + align256(book_entries<17>() * 8)),
+        signs(book29 + align256(book_entries<29>() * 8)),
+        bytes(signs + align256(128 * 8)) {}
+};
+constexpr WorkspaceLayout kEtp4Layout(kEtp4Intermediate), kEtp2Layout(kEtp2Intermediate);
+static_assert(kEtp4Layout.bytes != kEtp2Layout.bytes, "workspace size identifies expert width");
 
 struct Views {
   uint8_t* base;
+  const WorkspaceLayout& layout;
   int4* xq() const { return reinterpret_cast<int4*>(base + kXq); }
   float* xd() const { return reinterpret_cast<float*>(base + kXd); }
   int32_t* units() const { return reinterpret_cast<int32_t*>(base + kUnits); }
   int32_t* count() const { return reinterpret_cast<int32_t*>(base + kCount); }
   int32_t* order() const { return reinterpret_cast<int32_t*>(base + kOrder); }
   Q8_1* down_in() const { return reinterpret_cast<Q8_1*>(base + kDownIn); }
-  half* projection() const { return reinterpret_cast<half*>(base + kProjection); }
-  half* partial() const { return reinterpret_cast<half*>(base + kPartial); }
-  const uint2* book(int type) const {
-    return reinterpret_cast<const uint2*>(base + (type == 16 ? kBook16 : type == 17 ? kBook17 : kBook29));
+  half* projection() const {
+    return layout.intermediate == kEtp2Intermediate ? nullptr : reinterpret_cast<half*>(base + layout.projection);
   }
-  const uint2* signs() const { return reinterpret_cast<const uint2*>(base + kSigns); }
+  half* partial() const { return reinterpret_cast<half*>(base + layout.partial); }
+  const uint2* book(int type) const {
+    return reinterpret_cast<const uint2*>(base + (type == 16 ? layout.book16 : type == 17 ? layout.book17 :
+                                                                                          layout.book29));
+  }
+  const uint2* signs() const { return reinterpret_cast<const uint2*>(base + layout.signs); }
 };
 
 void require(bool ok, const char* what) { TORCH_CHECK(ok, "ds41_decode_moe: ", what); }
@@ -923,10 +960,11 @@ bool aligned(const torch::Tensor& t, int bytes) {
 bool is_type(int64_t type) { return type == 16 || type == 17 || type == 29; }
 
 Views workspace_of(const torch::Tensor& ws, const torch::Tensor& like) {
+  const auto& layout = ws.numel() == kEtp4Layout.bytes ? kEtp4Layout : kEtp2Layout;
   require(ws.is_cuda() && ws.scalar_type() == torch::kUInt8 && ws.is_contiguous() && ws.dim() == 1 &&
-              ws.numel() == kWorkspace && aligned(ws, 256) && ws.device() == like.device(),
-          "workspace must be a 256-byte aligned uint8 [workspace_bytes()] tensor on the operands' device");
-  return Views{ws.data_ptr<uint8_t>()};
+              ws.numel() == layout.bytes && aligned(ws, 256) && ws.device() == like.device(),
+          "workspace must be an aligned uint8 tensor sized for its intermediate width on the operands' device");
+  return Views{ws.data_ptr<uint8_t>(), layout};
 }
 
 int rows_of(const torch::Tensor& probabilities) {
@@ -937,20 +975,25 @@ int rows_of(const torch::Tensor& probabilities) {
   return int(probabilities.size(0));
 }
 
-void check_experts(const torch::Tensor& gate, const torch::Tensor& up, const torch::Tensor& down,
-                   int64_t gate_type, int64_t down_type, int64_t left, const torch::Tensor& like) {
-  require(is_type(gate_type) && is_type(down_type), "types must be IQ2_XXS(16)/IQ2_XS(17)/IQ1_M(29)");
+void check_gate_banks(const torch::Tensor& gate, const torch::Tensor& up, int64_t type, int width,
+                      const torch::Tensor& like) {
+  require(is_type(type), "gate/up type must be IQ2_XXS(16)/IQ2_XS(17)/IQ1_M(29)");
   require(gate.device() == like.device() && gate.scalar_type() == torch::kUInt8 && gate.is_contiguous() &&
-              gate.dim() == 3 && gate.size(0) >= 1 && gate.size(0) <= kMaxExperts && gate.size(1) == 576 &&
-              gate.size(2) == 20 * block_bytes_of(gate_type) && gate.sizes() == up.sizes() &&
+              gate.dim() == 3 && gate.size(0) >= 1 && gate.size(0) <= kMaxExperts && gate.size(1) == width &&
+              gate.size(2) == 20 * block_bytes_of(type) && gate.sizes() == up.sizes() &&
               up.device() == like.device() && up.scalar_type() == torch::kUInt8 && up.is_contiguous() &&
               aligned(gate, 8) && aligned(up, 8),
-          "gate/up must be 8-byte aligned original rows uint8 [E <= 1024, 576, 20 * block]");
-  require(left >= 0 && left % 64 == 0 && left < 256, "down left offset must be 0/64/128/192");
+          "gate/up must be aligned original uint8 [E <= 1024, intermediate, 20 * block] matching workspace");
+}
+
+void check_down_bank(const torch::Tensor& down, int64_t type, int64_t left, int width, const torch::Tensor& like) {
+  require(is_type(type), "down type must be IQ2_XXS(16)/IQ2_XS(17)/IQ1_M(29)");
+  require(width == kEtp2Intermediate ? left == 0 || left == 128 : left >= 0 && left % 64 == 0 && left < 256,
+          "down left offset must be 0/128 for ETP2 or 0/64/128/192 for ETP4");
   require(down.device() == like.device() && down.scalar_type() == torch::kUInt8 && down.is_contiguous() &&
-              down.dim() == 3 && down.size(0) == gate.size(0) && down.size(1) == 5120 &&
-              down.size(2) == ((left + 576 + 255) / 256) * block_bytes_of(down_type) && aligned(down, 8),
-          "down must be 8-byte aligned original rows uint8 [E, 5120, 3 * block]");
+              down.dim() == 3 && down.size(0) >= 1 && down.size(0) <= kMaxExperts && down.size(1) == 5120 &&
+              down.size(2) == ((left + width + 255) / 256) * block_bytes_of(type) && aligned(down, 8),
+          "down must be aligned original uint8 [E, 5120, blocks * block_bytes] matching workspace and left");
 }
 
 void launch_prep(const Views& v, const torch::Tensor& x, const torch::Tensor& ids,
@@ -971,11 +1014,18 @@ void launch_prep(const Views& v, const torch::Tensor& x, const torch::Tensor& id
 void launch_gate_up_any(const Views& v, const torch::Tensor& probabilities, const torch::Tensor& gate,
                         const torch::Tensor& up, int type, int variant, cudaStream_t stream) {
   const int routes = rows_of(probabilities) * kTopK, fused = gate_up_rows(variant) % 32 == 0;
-#define DS41_GATE(T)                                                                                    \
-  launch_gate_up<T>(variant, stream, routes, v.down_in(), v.projection(), v.xq(), v.xd(),             \
-                    probabilities.data_ptr<float>(), v.units(), v.count(), v.order(),                  \
-                    gate.data_ptr<uint8_t>(), up.data_ptr<uint8_t>(), int(gate.size(2)), v.book(T),    \
-                    v.signs(), fused)
+  const bool etp2 = v.layout.intermediate == kEtp2Intermediate;
+#define DS41_GATE_ARGS(T)                                                                              \
+  stream, routes, v.down_in(), v.projection(), v.xq(), v.xd(), probabilities.data_ptr<float>(),         \
+      v.units(), v.count(), v.order(), gate.data_ptr<uint8_t>(), up.data_ptr<uint8_t>(),                 \
+      int(gate.size(2)), v.book(T), v.signs(), fused
+#define DS41_GATE(T)                                                                                   \
+  do {                                                                                                 \
+    if (etp2)                                                                                          \
+      launch_gate_up_v<T, kEtp2GateUp, kEtp2Intermediate>(DS41_GATE_ARGS(T));                            \
+    else                                                                                               \
+      launch_gate_up<T>(variant, DS41_GATE_ARGS(T));                                                    \
+  } while (false)
   if (type == 16)
     DS41_GATE(16);
   else if (type == 17)
@@ -983,6 +1033,7 @@ void launch_gate_up_any(const Views& v, const torch::Tensor& probabilities, cons
   else
     DS41_GATE(29);
 #undef DS41_GATE
+#undef DS41_GATE_ARGS
   if (!fused)
     swiglu_q8_kernel<<<dim3(1, routes), 576, 0, stream>>>(v.down_in(), v.projection(),
                                                           probabilities.data_ptr<float>());
@@ -991,9 +1042,17 @@ void launch_gate_up_any(const Views& v, const torch::Tensor& probabilities, cons
 void launch_down_any(const Views& v, const torch::Tensor& probabilities, const torch::Tensor& down, int type,
                      int left, int variant, cudaStream_t stream) {
   const int routes = rows_of(probabilities) * kTopK;
+  const bool etp2 = v.layout.intermediate == kEtp2Intermediate;
+#define DS41_DOWN_ARGS(T)                                                                              \
+  stream, routes, v.partial(), v.down_in(), v.units(), v.count(), v.order(), down.data_ptr<uint8_t>(),  \
+      int(down.size(2)), left / 32, v.book(T), v.signs()
 #define DS41_DOWN(T)                                                                                   \
-  launch_down<T>(variant, stream, routes, v.partial(), v.down_in(), v.units(), v.count(), v.order(),  \
-                 down.data_ptr<uint8_t>(), int(down.size(2)), left / 32, v.book(T), v.signs())
+  do {                                                                                                 \
+    if (etp2)                                                                                          \
+      launch_down_v<T, kEtp2Down, kEtp2Intermediate / 32>(DS41_DOWN_ARGS(T));                            \
+    else                                                                                               \
+      launch_down<T>(variant, DS41_DOWN_ARGS(T));                                                       \
+  } while (false)
   if (type == 16)
     DS41_DOWN(16);
   else if (type == 17)
@@ -1001,6 +1060,7 @@ void launch_down_any(const Views& v, const torch::Tensor& probabilities, const t
   else
     DS41_DOWN(29);
 #undef DS41_DOWN
+#undef DS41_DOWN_ARGS
 }
 
 void launch_combine(const Views& v, const torch::Tensor& out, const torch::Tensor& probabilities,
@@ -1013,15 +1073,21 @@ void launch_combine(const Views& v, const torch::Tensor& out, const torch::Tenso
                                                           probabilities.data_ptr<float>(), m);
 }
 
-void check_variants(int64_t gate_up_variant_, int64_t down_variant_) {
+void check_variants(int64_t gate_up_variant_, int64_t down_variant_, int width) {
   require(gate_up_variant_ >= 0 && gate_up_variant_ < kGateUpVariants, "gate/up variant");
   require(down_variant_ >= 0 && down_variant_ < kDownVariants, "down variant");
+  if (width == kEtp2Intermediate)
+    require(gate_up_variant_ == kEtp2GateUp && down_variant_ == kEtp2Down, "ETP2 requires gate/up and down variant 4");
 }
 }  // namespace tensorfold::ds41_decode_moe
 
 using namespace tensorfold::ds41_decode_moe;
 
-int64_t ds41_decode_moe_workspace_bytes() { return kWorkspace; }
+int64_t ds41_decode_moe_workspace_bytes(int64_t intermediate) {
+  require(intermediate == kEtp4Intermediate || intermediate == kEtp2Intermediate,
+          "intermediate width must be 576 (ETP4) or 1152 (ETP2)");
+  return intermediate == kEtp4Intermediate ? kEtp4Layout.bytes : kEtp2Layout.bytes;
+}
 
 void ds41_decode_moe_init(torch::Tensor ws) {
   const Views v = workspace_of(ws, ws);
@@ -1048,8 +1114,10 @@ void ds41_decode_moe_experts(torch::Tensor ws, torch::Tensor out, const torch::T
                              int64_t gate_type, int64_t down_type, int64_t left, int64_t gate_up_variant_,
                              int64_t down_variant_) {
   const Views v = workspace_of(ws, x);
-  check_experts(gate, up, down, gate_type, down_type, left, x);
-  check_variants(gate_up_variant_, down_variant_);
+  check_gate_banks(gate, up, gate_type, v.layout.intermediate, x);
+  check_down_bank(down, down_type, left, v.layout.intermediate, x);
+  require(gate.size(0) == down.size(0), "gate/up and down expert counts must match");
+  check_variants(gate_up_variant_, down_variant_, v.layout.intermediate);
   const c10::cuda::CUDAGuard guard(x.device());
   const auto stream = at::cuda::getCurrentCUDAStream();
   launch_prep(v, x, ids, probabilities, int(gate.size(0)), chunk_of(int(gate_up_variant_), int(down_variant_)),
@@ -1074,8 +1142,8 @@ void ds41_decode_moe_prep(torch::Tensor ws, const torch::Tensor& x, const torch:
 void ds41_decode_moe_gate_up(torch::Tensor ws, const torch::Tensor& probabilities, const torch::Tensor& gate,
                              const torch::Tensor& up, int64_t type, int64_t variant) {
   const Views v = workspace_of(ws, gate);
-  require(is_type(type) && gate.size(2) == 20 * block_bytes_of(type), "gate/up type");
-  check_variants(variant, 0);
+  check_gate_banks(gate, up, type, v.layout.intermediate, probabilities);
+  check_variants(variant, kEtp2Down, v.layout.intermediate);
   const c10::cuda::CUDAGuard guard(gate.device());
   launch_gate_up_any(v, probabilities, gate, up, int(type), int(variant), at::cuda::getCurrentCUDAStream());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -1084,9 +1152,8 @@ void ds41_decode_moe_gate_up(torch::Tensor ws, const torch::Tensor& probabilitie
 void ds41_decode_moe_down(torch::Tensor ws, const torch::Tensor& probabilities, const torch::Tensor& down,
                           int64_t type, int64_t left, int64_t variant) {
   const Views v = workspace_of(ws, down);
-  require(is_type(type) && left >= 0 && left % 64 == 0 && left < 256 &&
-              down.size(2) == ((left + 576 + 255) / 256) * block_bytes_of(type), "down type/left");
-  check_variants(0, variant);
+  check_down_bank(down, type, left, v.layout.intermediate, probabilities);
+  check_variants(kEtp2GateUp, variant, v.layout.intermediate);
   const c10::cuda::CUDAGuard guard(down.device());
   launch_down_any(v, probabilities, down, int(type), int(left), int(variant), at::cuda::getCurrentCUDAStream());
   C10_CUDA_KERNEL_LAUNCH_CHECK();

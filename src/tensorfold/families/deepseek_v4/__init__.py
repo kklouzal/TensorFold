@@ -10,7 +10,7 @@ MODEL_TYPES = ("deepseek_v4", "deepseek_v41")
 V41 = "deepseek_v41"
 TITLE = "DeepSeek-V4-Flash"
 LANES = True
-CUDA_TP8 = True              # DeepSeek-V4.1 GGUF: TP8 attention/dense + ETP4 x EP2 experts on eight V100s
+CUDA_TP8 = True              # DeepSeek-V4.1 GGUF on eight V100s with TP8 attention and dense layers
 ROTOR_KV_DTYPE = "rotorquant-iso64-norm4-h64"
 CUDA_KV_DTYPES = ("bf16", ROTOR_KV_DTYPE)
 ROPE_BACKENDS = ("cuda",)
@@ -143,7 +143,7 @@ def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
 
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0, master: str = "",
                 master_port: int = 29551, no_drafts: bool = False, context: int | None = None, **options: Any):
-    """DeepSeek-V4.1-Flash GGUF on eight V100s: TP8 attention/dense, ETP4 x EP2 routed experts."""
+    """DeepSeek-V4.1-Flash GGUF on eight V100s with selectable routed-expert tensor parallelism."""
     from tensorfold.families import read_config
 
     if read_config(model_dir).get("model_type") != V41:

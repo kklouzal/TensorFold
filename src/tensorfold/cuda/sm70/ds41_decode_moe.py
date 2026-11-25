@@ -2,9 +2,12 @@
 
 Port of the friend's 1Cat overlay patch 240 (EM3, extending patch 110 EM2); see ds41_decode_moe.cu for the
 provenance, the kernels and the TensorFold changes. Operands are ``onecat_ds41.v41_experts``'s (one EP/ETP
-rank's original GGUF expert bytes: gate/up uint8 [E, 576, 20*block], down [E, 5120, 3*block] with ``left`` in
-0/64/128/192; FP16 x [M, 5120]; int32 local ids and FP32 probabilities [M, 6]) and the output is the same
-FP16 [M, 5120] partial, bit for bit: every kept route runs the 6-row path's arithmetic (Q8_1 activations,
+rank's original GGUF expert bytes: FP16 x [M, 5120], int32 local ids and FP32 probabilities [M, 6],
+and packed gate/up [E, intermediate, 20*block]. ETP4 uses intermediate=576 and down [E, 5120, 3*block]
+with ``left`` in 0/64/128/192. The ETP4 result matches the six-row implementation bit for bit.
+ETP2 uses intermediate=1152 and down [E, 5120, 5*block] with ``left`` in 0/128 and accumulates all
+36 quantized down groups before its FP16 route rounding. Both widths return FP16 [M, 5120] and follow
+the same arithmetic stages (Q8_1 activations,
 FP32 integer-dot sums in a fixed order, FP16 gate/up, clamped SwiGLU x probability, FP16 + Q8_1 down input,
 FP16 per-route down rows, raw_down_unroute's FP32 route sum). Rows are independent (batch invariant: a row's
 output does not depend on M, on the other rows or on the schedule variant). Routes with probability 0 are
@@ -75,11 +78,14 @@ def pick(kind, weight_type, rows, schedule=None):
 class Workspace:
     """One device's fixed decode-MoE workspace and codebook tables (construct before graph capture)."""
 
-    def __init__(self, device):
+    def __init__(self, device, *, intermediate=ROWS):
+        if type(intermediate) is not int or intermediate not in (ROWS, 2 * ROWS):
+            raise ValueError("V4.1 decode intermediate must be 576 or 1152")
         if torch.cuda.is_current_stream_capturing():
             raise RuntimeError("create the DeepSeek-V4.1 decode MoE workspace before graph capture")
         ext = extension()
-        self.buffer = torch.empty(ext.workspace_bytes(), dtype=torch.uint8, device=device)
+        self.intermediate = intermediate
+        self.buffer = torch.empty(ext.workspace_bytes(intermediate), dtype=torch.uint8, device=device)
         ext.init(self.buffer)
 
     def experts(self, x, ids, probabilities, gate, up, down, gate_type, down_type, left, *, out=None,
@@ -94,7 +100,11 @@ class Workspace:
         for at in range(0, rows, MAX_ROWS):
             end = min(at + MAX_ROWS, rows)
             m = end - at
+            if self.intermediate == 2 * ROWS and schedule is None:
+                gate_variant = down_variant = 4  # fused gate/up and unstaged 36-group down
+            else:
+                gate_variant = pick("g", gate_type, m, schedule)
+                down_variant = pick("d", down_type, m, schedule)
             ext.experts(self.buffer, out[at:end], x[at:end], ids[at:end], probabilities[at:end], gate, up, down,
-                        int(gate_type), int(down_type), int(left), pick("g", gate_type, m, schedule),
-                        pick("d", down_type, m, schedule))
+                        int(gate_type), int(down_type), int(left), gate_variant, down_variant)
         return out

@@ -547,7 +547,7 @@ sections below; `tensorfold serve --help` remains authoritative.
 | `--spark-global-gqa`, `--spark-sampled-q` | Experimental Gemma 4 ModelOpt Sparkulator global GQA (requires explicit `--context` ≤ 131072) and sampled proposals (target sampling unchanged); default off, model gates pending. |
 | `--no-graphs` | Flash Next CUDA: execute whole forwards eagerly; required by the initial SM70 media profile. |
 | `--indexer-history gpu\|ram` | Flash Next GGUF/SM70: `gpu` (default) keeps full raw indexer history on the GPU; `ram` uses a bounded GPU ring with a NUMA-local RAM archive. See [eight V100s](#eight-v100s-sm70). |
-| `--expert-tensor-parallel-size 8\|4\|2` | Prepared Flash Next GGUF TP8 routed-expert degree (PP1 only); shared experts stay TP8; V100 qualification pending. |
+| `--expert-tensor-parallel-size 8\|4\|2` | TP8 routed-expert degree. Flash Next GGUF supports 8, 4, or 2 (PP1). DeepSeek-V4.1 GGUF defaults to 4 and has an experimental 2 option. Shared experts stay TP8. |
 | `--media-profile-manifest FILE` | With `--vision`, bounded SM70 TP8 media resources, processor and mmproj; requires `--no-graphs`. |
 | `--position-profile-manifest PATH` | Flash Next SM70 unique TP8 GPU histories: immutable target/MTP/draft positions; see [Context, RoPE and YaRN](#context-rope-and-yarn). |
 

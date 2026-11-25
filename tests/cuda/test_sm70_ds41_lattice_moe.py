@@ -235,3 +235,53 @@ def test_lattice_decode_crossover(ops):
         b = timed(lambda: decode_loop(dec, x, local, p, banks, gate_type, down_type, left), 5)
         print(f"{prefix} M{m} (MIN_TOKENS {lat.MIN_TOKENS}): lattice exact median {a[len(a) // 2]:.3f} ms | "
               f"decode loop median {b[len(b) // 2]:.3f} ms")
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_lattice_etp2_experts_against_fp32(ops, kind):
+    from test_sm70_onecat_ds41 import BYTES, reference, tensor_of
+
+    lat, _, _ = ops
+    tensors = [tensor_of(kind, part) for part in ("gate", "up", "down")]
+    width, block = 1152, 256
+    local = 96
+    selected = [0, 1, 2, 3, 4, 5, 94, 95]
+    selected_ids = torch.tensor(selected, dtype=torch.int32, device="cuda")
+    generator = torch.Generator().manual_seed(932 + kind)
+    workspace = lat.Workspace("cuda", tile=local, intermediate=width)
+    size = BYTES[kind]
+    for rank in (0, 1):
+        # Two EP groups and both intra-ETP column cuts. The second K window
+        # starts halfway into its first block and reaches the body of its fifth.
+        expert_start = (rank + 2) * local
+        first = rank * width
+        first_block, left = divmod(first, block)
+        assert left == (0, 128)[rank]
+        g, u, d = (bank(t)[expert_start:expert_start + local] for t in tensors)
+        raw = (g[:, first:first + width], u[:, first:first + width],
+               d[:, :, first_block * size:(first_block + 5) * size])
+        banks = [torch.from_numpy(np.ascontiguousarray(a)).cuda() for a in raw]
+        assert [a.shape[:2] for a in banks] == [(local, width), (local, width), (local, 5120)]
+        assert banks[-1].shape[-1] == 5 * size
+        decoded = []
+        for index, item in enumerate(raw):
+            active = np.ascontiguousarray(item[selected])
+            values = reference(active.reshape(-1, active.shape[-1]), kind).reshape(len(selected), active.shape[1], -1)
+            if index == 2:
+                values = values[:, :, left:left + width]
+            decoded.append(torch.from_numpy(values.astype(np.float16)).cuda())
+        for rows in (128, 769):
+            x = torch.randn(rows, 5120, generator=generator).half().cuda()
+            ids, probabilities = routes(rows, len(selected), generator, local_share=0.25)
+            local_ids = selected_ids[ids]
+            expected = oracle(x, ids, probabilities, decoded)
+            emulated = oracle(x, ids, probabilities, decoded, half_projections=True).half()
+            output = lat.experts(x, local_ids, probabilities, *banks, kind, kind, left, workspace)
+            repeated = lat.experts(x, local_ids, probabilities, *banks, kind, kind, left, workspace)
+            assert torch.equal(output.view(torch.int16), repeated.view(torch.int16))
+            assert torch.isfinite(output).all() and error(output, expected)[0] <= error(emulated, expected)[0]
+            dropped = torch.where(probabilities == 0, local - 1, local_ids).contiguous()
+            assert torch.equal(output.view(torch.int16), lat.experts(
+                x, dropped, probabilities, *banks, kind, kind, left, workspace).view(torch.int16))
+        del banks, decoded
+    workspace.check()

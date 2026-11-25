@@ -58,6 +58,58 @@ def test_prebuild_reraises_a_build_failure():
         prebuild.wait()
 
 
+@pytest.mark.parametrize("degree", [None, 2, 4])
+def test_deepseek_serving_selects_expert_degree(tmp_path, degree):
+    from tensorfold import cli, families
+    from tensorfold.families.deepseek_v4.cuda.weights import checked_etp
+
+    (tmp_path / "config.json").write_text('{"model_type":"deepseek_v41","gguf_file":"backbone.gguf"}')
+    (tmp_path / "backbone.gguf").touch()
+    command = ["serve", str(tmp_path), "--backend", "cuda", "--tp", "8", "--master", "127.0.0.1"]
+    if degree is not None:
+        command += ["--expert-tensor-parallel-size", str(degree)]
+    parser = cli.build_parser()
+    family = families.detect(tmp_path)
+    args = parser.parse_args(command)
+    cli._check_serve_options(args, family, "cuda", tmp_path)
+    assert checked_etp(args.expert_tensor_parallel_size) == (4 if degree is None else degree)
+    rejected = parser.parse_args([*command, "--expert-tensor-parallel-size", "8"])
+    with pytest.raises(ValueError, match="degree 2 or 4"):
+        cli._check_serve_options(rejected, family, "cuda", tmp_path)
+
+
+@pytest.mark.parametrize("degree,experts,width,offsets,blocks", [
+    (2, 96, 1152, (0, 128), 5),
+    (4, 192, 576, (0, 64, 128, 192), 3),
+])
+def test_deepseek_expert_carriers_match_rank_ownership(degree, experts, width, offsets, blocks):
+    from tensorfold.families.deepseek_v4.cuda.weights import Geometry, Loader
+
+    geometry = Geometry()
+    byte_width = 66
+    down = types.SimpleNamespace(ggml_type=16, shape=(384, 5120, 2304), path="down", offset=64)
+    gate = types.SimpleNamespace(ggml_type=16, shape=(384, 2304, 5120), path="gate", offset=128)
+    gguf = types.SimpleNamespace(tensors={"down": down, "gate": gate})
+    copied = []
+    staging = types.SimpleNamespace(copy=lambda path, spans, _out: copied.append((path, spans)))
+    for rank in range(8):
+        loader = Loader(gguf, rank, "meta", staging, expert_tensor_parallel_size=degree)
+        first = rank // degree * experts
+        start = rank % degree * width
+        tensor, quant, offset = loader.expert_bank("down", geometry, down=True)
+        assert (tuple(tensor.shape), quant, offset) == ((experts, 5120, blocks * byte_width), 16, offsets[rank % degree])
+        row_bytes = 9 * byte_width
+        assert copied[-1] == ("down", [(64 + first * 5120 * row_bytes, experts * 5120 * row_bytes)])
+        tensor, quant, offset = loader.expert_bank("gate", geometry, down=False)
+        assert (tuple(tensor.shape), quant, offset) == ((experts, width, 20 * byte_width), 16, 0)
+        row_bytes = 20 * byte_width
+        assert copied[-1] == ("gate", [(128 + ((first + i) * 2304 + start) * row_bytes, width * row_bytes)
+                                       for i in range(experts)])
+    down.shape = (400, 5120, 2304)
+    with pytest.raises(ValueError, match="expert tensor shape"):
+        loader.expert_bank("down", geometry, down=True)
+
+
 def test_deepseek_q4_and_yarn_flags_are_family_bound(tmp_path, monkeypatch):
     from tensorfold import cli, families
     from tensorfold.families import deepseek_v4

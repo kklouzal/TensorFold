@@ -6,14 +6,14 @@ per call the routes are sorted on the device; per tile of experts the routed exp
 IQ1_M rows are transcoded into a canonical lattice bank (``gguf_prefill_transcode_sm70``) and ONE TurboMind sm70
 HMMA grouped GEMM (lattice decode in the main loop, FP32 accumulation, FP16 out; tile variant + swizzle per patch
 340's rule) runs over every route of the tile; then the clamped SwiGLU (FP16 hidden) and the down projection over
-the rank's K window [left, left + 576) the same way; the token output is the FP32 sum of its routes in top-k order,
+the rank's K window [left, left + intermediate) the same way; the token output is the FP32 sum of its routes in top-k order,
 rounded to FP16.
 
 Operands are ``onecat_ds41.v41_experts``'s (one EP/ETP rank's original GGUF expert bytes, FP16 x [M, 5120], int32
 local ids in [0, E) and FP32 probabilities [M, 6]; probability-0 routes (other EP half) contribute nothing); the
 output is the same FP16 [M, 5120] partial. Ids are the caller's invariant (Target.moe), not validated here.
-TensorFold adaptation for EP2 x ETP4: probability-0 routes sort behind a sentinel expert so the GEMMs never see them
-(the friend's TP4 ranks hold all 384 experts). No host synchronization; operands and the workspace must outlive
+TensorFold uses EP2 x ETP4 or EP4 x ETP2. Probability-0 routes sort behind a sentinel expert and never enter the
+GEMMs. No host synchronization; operands and the workspace must outlive
 current-stream completion.
 
 Numerics (TensorFold's exact decode; the friend's patch 140 FP16 arithmetic was measured at about 2.6x the rel L2
@@ -33,6 +33,7 @@ from pathlib import Path
 import torch
 
 HIDDEN, ROWS, TOP = 5120, 576, 6
+ETP2_ROWS = 2 * ROWS
 LIMIT = 10.0
 # GGUF type -> (canonical group, stats bytes per group and column) (patch 140 LATTICE).
 LATTICE = {16: (32, 4), 17: (16, 4), 29: (16, 2)}
@@ -107,6 +108,12 @@ EXACT = {1152: {6: 0, 7: 1}, 5120: {3: 2, 6: 3, 7: 4}}
 
 
 def pick(decoder, n, k, routes):
+    # Use the corresponding ETP4 exact tile as the initial schedule for ETP2.
+    # Native GEMM still receives the full ETP2 dimensions and original K order.
+    if (n, k) == (2 * ETP2_ROWS, HIDDEN):
+        n = 2 * ROWS
+    elif (n, k) == (HIDDEN, ETP2_ROWS):
+        k = ROWS
     for max_routes, variant, swizzle in RULE[(decoder, n, k)]:
         if routes <= max_routes:
             return EXACT[n][variant], swizzle
@@ -118,10 +125,12 @@ class Workspace:
     construction so the KV pool can be sized after it), their TurboMind (pointer, ld) tables and the transcode
     error word. Owned by its Target; one forward at a time (current stream)."""
 
-    def __init__(self, device, tile=TILE):
-        self.tile = tile
-        gu = max(canonical(t, 2 * ROWS, HIDDEN)[1] + canonical(t, 2 * ROWS, HIDDEN)[2] for t in LATTICE)
-        dn = max(canonical(t, HIDDEN, ROWS)[1] + canonical(t, HIDDEN, ROWS)[2] for t in LATTICE)
+    def __init__(self, device, tile=TILE, *, intermediate=ROWS):
+        if type(intermediate) is not int or intermediate not in (ROWS, ETP2_ROWS):
+            raise ValueError("lattice prefill workspace requires 576 or 1152 intermediate columns")
+        self.tile, self.intermediate = tile, intermediate
+        gu = max(sum(canonical(t, 2 * intermediate, HIDDEN)[1:]) for t in LATTICE)
+        dn = max(sum(canonical(t, HIDDEN, intermediate)[1:]) for t in LATTICE)
         self.banks = {"gu": torch.empty(tile * gu, dtype=torch.uint8, device=device),
                       "dn": torch.empty(tile * dn, dtype=torch.uint8, device=device)}
         self.error = torch.zeros(1, dtype=torch.int32, device=device)
@@ -158,12 +167,14 @@ def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, w
     module docstring)."""
     if gate_type not in LATTICE or down_type not in LATTICE:
         raise ValueError("V4.1 lattice prefill experts require IQ2_XXS/IQ2_XS/IQ1_M carriers")
-    ext = extension()
     experts_n, inter = gate.shape[0], gate.shape[1]
     tokens = x.shape[0]
     routes = tokens * TOP
-    if inter != ROWS or x.shape[1] != HIDDEN or ids.shape != (tokens, TOP) or down.shape[:2] != (experts_n, HIDDEN):
-        raise ValueError("V4.1 lattice prefill: [E, 576, bytes] gate/up, [E, 5120, bytes] down, top-6 routes")
+    if (inter != workspace.intermediate or x.shape[1] != HIDDEN or ids.shape != (tokens, TOP)
+            or down.shape[:2] != (experts_n, HIDDEN)):
+        raise ValueError("V4.1 lattice prefill: [E, 576 or 1152, bytes] gate/up matching workspace, "
+                         "[E, 5120, bytes] down, top-6 routes")
+    ext = extension()
     device = x.device
     flat = torch.where(probabilities.reshape(-1) != 0, ids.reshape(-1), experts_n).to(torch.int32)
     ordered, order = torch.sort(flat, stable=True)
