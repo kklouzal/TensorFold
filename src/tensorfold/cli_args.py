@@ -360,7 +360,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--no-expert-balance", action="store_true",
                       help="disable live DeepSeek-V4.1 expert balancing and its persistent history")
     cuda.add_argument("--expert-balance-sample-every", type=int, metavar="N",
-                      help="sample one in N expert-routing forwards on average (default 64 with --expert-balance-state)")
+                      help="sample one in N expert-routing forwards on average (default 64)")
     cuda.add_argument("--expert-balance-half-life", type=int, metavar="ROUTES",
                       help="observed routes per phase and layer per load half-life (default 262144)")
     cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,

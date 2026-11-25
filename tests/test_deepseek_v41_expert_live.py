@@ -113,3 +113,34 @@ def test_expert_balance_opt_out_ignores_model_sidecar(tmp_path, monkeypatch):
     assert options[0]["expert_balance_state"] is None and options[0]["expert_balance_live"] is False
     with pytest.raises(ValueError, match="disabled expert balancing"):
         DS41Engine(tmp_path, rank=0, tp=8, serve=True, no_expert_balance=True, expert_balance_state=path)
+
+
+def test_expert_shutdown_flushes_both_snapshots_without_proposing(monkeypatch):
+    import torch
+    from tensorfold.families.deepseek_v4.cuda.expert_observer import ExpertObserver
+
+    actions = []
+    observations, device = iter(([1], [2])), object()
+    observer = object.__new__(ExpertObserver)
+    observer.write = None
+    observer.copy_pending = True
+
+    def request_snapshot():
+        actions.append("copy")
+        return True
+
+    observer.usage = SimpleNamespace(poll_snapshot=lambda: SimpleNamespace(tolist=lambda: next(observations)),
+                                     request_snapshot=request_snapshot, counts=SimpleNamespace(device=device))
+
+    def record(rows):
+        actions.append(rows)
+        return True
+
+    observer.history = SimpleNamespace(record=record, flush=lambda: actions.append("flush"))
+    def stream(bound_device):
+        assert bound_device is device
+        return SimpleNamespace(synchronize=lambda: actions.append("fence"))
+
+    monkeypatch.setattr(torch.cuda, "current_stream", stream)
+    observer._finish_pending()
+    assert actions == [[1], "copy", "fence", [2], "flush"]

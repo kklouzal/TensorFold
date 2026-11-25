@@ -103,7 +103,7 @@ class ExpertObserver:
             snapshot = self.usage.poll_snapshot()
             if snapshot is None:
                 raise RuntimeError("final expert usage snapshot did not finish behind the device fence")
-            self._record(snapshot)
+            self.history.record(snapshot.tolist())
         if not self.usage.request_snapshot():
             raise RuntimeError("final expert usage snapshot buffer is already owned")
         torch.cuda.current_stream(self.usage.counts.device).synchronize()
