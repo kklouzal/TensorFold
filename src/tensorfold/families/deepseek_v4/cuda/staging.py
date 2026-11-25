@@ -19,6 +19,8 @@ BUFFERS = 4               # staging buffers = reader threads
 
 
 class Staging:
+    """One loader's staging ring. A failed copy ends the load and the caller closes the ring."""
+
     def __init__(self, chunk: int = CHUNK, buffers: int = BUFFERS):
         self.chunk = chunk
         self.buffers = [torch.empty(chunk, dtype=torch.uint8, pin_memory=True) for _ in range(buffers)]

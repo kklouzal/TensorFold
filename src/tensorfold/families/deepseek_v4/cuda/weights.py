@@ -460,12 +460,12 @@ class Weights:
 
 
 def load(shards: Shards, geometry: Geometry, rank: int, device, layers: range | None = None, *,
-         expert_tensor_parallel_size: int | None = None) -> Weights:
+         expert_tensor_parallel_size: int | None = None, compact_expert_down: bool = False) -> Weights:
     from .staging import Staging
     staging = Staging()
     try:
         loader = Loader(shards, rank, device, staging, expert_tensor_parallel_size=expert_tensor_parallel_size,
-                        compact_expert_down=True)
+                        compact_expert_down=compact_expert_down)
         return _load(loader, shards, geometry, rank, device, layers)
     finally:
         staging.close()

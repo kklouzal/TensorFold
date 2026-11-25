@@ -165,9 +165,12 @@ class DS41Engine:
             mapping.shutdown(wait=False)
         if layers is not None:
             print(f"[tensorfold] rank {rank}: DEVELOPMENT SMOKE: {len(layers)} of {g.layers} layers loaded", flush=True)
+        capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
+        h64_text = rotorquant and not vision and capture and self.context <= 131_072 and max_tokens <= MAX_TOKENS
         prebuild.wait()
         with clock.phase("weights"):
-            self.w = W.load(shards, g, rank, device, layers=layers, expert_tensor_parallel_size=etp)
+            self.w = W.load(shards, g, rank, device, layers=layers, expert_tensor_parallel_size=etp,
+                            compact_expert_down=h64_text and layers is None)
             torch.cuda.synchronize()
         if mapping is not None:
             self.engram = engram.result()
@@ -248,10 +251,9 @@ class DS41Engine:
         # ~30 MiB per captured graph outside the torch pool (graph/NCCL resources) + ~40 MiB pool (ds41-graphs g2:
         # 606 MiB for 18 buckets on one capture stream).
         from .graphs import shape_keys
-        capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(shape_keys(slots, self.context)) if capture else 0
         prompt_reserve = RESERVE
-        if etp == W.ETP and rotorquant and not vision and capture and self.context <= 131_072 and max_tokens <= MAX_TOKENS:
+        if etp == W.ETP and h64_text:
             prompt_reserve = H64_TEXT_RESERVE
         pages = max(1, (int(every.min()) - prompt_reserve - graph_bytes - ring_bytes) // page_bytes)
         target_started = time.perf_counter()

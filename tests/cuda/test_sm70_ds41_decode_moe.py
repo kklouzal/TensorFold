@@ -337,6 +337,8 @@ def test_etp1_raw_expert_banks(ops, kind):
         with pytest.raises(RuntimeError, match="matching workspace and left"):
             ws.experts(x[:1], ids[:1], p[:1], banks[0][:1], banks[1][:1], short, kind, kind, 0)
         assert_wide_graph_replay(ws, banks, 0, generator)
+
+
 def pack_down_fragments(down, kind, left, padded):
     """Independent test packer, outside the measured operator."""
     blocks = down.reshape(*down.shape[:-1], 3, down.shape[-1] // 3)
@@ -363,12 +365,40 @@ def pack_down_fragments(down, kind, left, padded):
     return torch.cat(fields, dim=-1)
 
 
+@pytest.mark.parametrize("kind,size", [(16, 66), (17, 74), (29, 56)])
+def test_host_down_fragment_export_matches_independent_packer(ops, kind, size):
+    em, _, _ = ops
+    ext = em.extension()
+    generator = torch.Generator().manual_seed(1433 + kind)
+    raw = torch.randint(256, (2, 5, 9, size), dtype=torch.uint8, generator=generator)
+    stride = ext.compact_down_row_bytes(kind)
+    owner = torch.full((raw.numel() + 10 * stride + 2,), 0xA5, dtype=torch.uint8)
+    source = owner[1:1 + raw.numel()]
+    destination = owner[1 + raw.numel():-1]
+    source.copy_(raw.flatten())
+    for cut in range(4):
+        first_block, left = divmod(18 * cut, 8)
+        window = raw[:, :, first_block:first_block + 3].contiguous().flatten(-2)
+        expected = pack_down_fragments(window, kind, left * 32, False)
+        ext.pack_down_fragments(source, destination, kind, 18 * cut)
+        assert torch.equal(destination.view_as(expected), expected)
+        assert torch.equal(source, raw.flatten())
+        assert owner[0].item() == owner[-1].item() == 0xA5
+    with pytest.raises(RuntimeError, match="complete source rows"):
+        ext.pack_down_fragments(source[:-1], destination, kind, 0)
+    with pytest.raises(RuntimeError, match="legal rank cut"):
+        ext.pack_down_fragments(source, destination, kind, 1)
+    with pytest.raises(RuntimeError, match="disjoint"):
+        ext.pack_down_fragments(source, source[:destination.numel()], kind, 0)
+
+
 def fragments(em, ws, out, x, ids, probabilities, banks, kind, left, padded):
     m = x.shape[0]
     em.extension().experts_fragments(
         ws.buffer, out, x, ids, probabilities, *banks, kind, kind, left,
         em.pick("g", kind, m), em.pick("d", kind, m), padded,
     )
+
 
 @pytest.mark.parametrize("kind,rows", [(16, (1, 2, 32)), (17, (1, 6, 8, 16, 24)), (29, (1, 32))])
 def test_down_fragments_bit_exact(ops, kind, rows):
