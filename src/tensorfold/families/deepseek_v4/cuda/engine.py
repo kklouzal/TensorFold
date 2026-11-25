@@ -69,6 +69,31 @@ class DS41Engine:
                  expert_placement: Path | None = None, expert_balance_state: Path | None = None,
                  expert_balance_sample_every: int = 64, expert_balance_half_life: int = 262_144,
                  **_options) -> None:
+        options = dict(rank=rank, tp=tp, master=master, master_port=master_port, context=context, slots=slots,
+                       max_tokens=max_tokens, parallel=parallel, serve=serve, queue_timeout_s=queue_timeout_s,
+                       graphs=graphs, keep_slots=keep_slots, prefix_host_bytes=prefix_host_bytes, vision=vision,
+                       vision_urls=vision_urls, vision_offload=vision_offload, yarn_factor=yarn_factor,
+                       kv_dtype=kv_dtype, expert_tensor_parallel_size=expert_tensor_parallel_size,
+                       expert_placement=expert_placement, expert_balance_state=expert_balance_state,
+                       expert_balance_sample_every=expert_balance_sample_every,
+                       expert_balance_half_life=expert_balance_half_life)
+        if expert_placement is None and expert_balance_state is None:
+            self._initialize(model_dir, startup=None, **options)
+            return
+
+        from tensorfold.cleanup import rollback
+        from .startup import ExpertStartup
+
+        startup = ExpertStartup()
+        try:
+            self._initialize(model_dir, startup=startup, **options)
+        except BaseException as primary:
+            rollback(startup, primary, lambda: startup.abort(self, primary))
+
+    def _initialize(self, model_dir, *, rank, tp, master, master_port, context, slots, max_tokens, parallel,
+                    serve, queue_timeout_s, graphs, keep_slots, prefix_host_bytes, vision, vision_urls,
+                    vision_offload, yarn_factor, kv_dtype, expert_tensor_parallel_size, expert_placement,
+                    expert_balance_state, expert_balance_sample_every, expert_balance_half_life, startup):
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -152,6 +177,7 @@ class DS41Engine:
             resolve(entry), resolve(engram_file))
         placement_options = {}
         if bind_files:
+            startup.shards = shards
             from .expert_placement import agree_placement, placement_identity
 
             checkpoint = placement_identity(shards.placement_files(), raw)
@@ -180,21 +206,19 @@ class DS41Engine:
                 from .expert_balance_state import ExpertBalanceState
                 from .expert_observer import ExpertObserver
 
-                history = None
                 try:
                     history = ExpertBalanceState(Path(expert_balance_state), checkpoint=checkpoint, etp=etp,
                                                  layers=g.layers, experts=g.experts, half_life_routes=expert_balance_half_life,
                                                  current=placement_options.get("expert_placement"))
+                    startup.history = history
                     self.expert_observer = ExpertObserver(device, history, sample_every=expert_balance_sample_every,
                                                           minimum_routes=expert_balance_half_life)
+                    startup.observer = self.expert_observer
                 except (OSError, ValueError, RuntimeError) as exc:
-                    from tensorfold.cleanup import finish, rollback
+                    from tensorfold.cleanup import rollback
 
                     error = str(exc).encode(errors="replace")[:1024]
-                    operations = [lambda: self.comm.store.set(key, b"!" + error)]
-                    if history is not None:
-                        operations.append(history.close)
-                    rollback(self, exc, lambda: finish(operations))
+                    rollback(self, exc, lambda: self.comm.store.set(key, b"!" + error))
                 self.comm.store.set(key, b"ok")
             elif (status := self.comm.store.get(key)) != b"ok":
                 error = status[1:].decode(errors="replace")
@@ -210,16 +234,22 @@ class DS41Engine:
             # 20-28 s beside a 7-16 s registration).
             from concurrent.futures import ThreadPoolExecutor
             rows = W.engram_split(shards, g)
+            engram_path, engram_offset = shards.engram.path, shards.engram.offset
 
-            def map_engram():
+            def map_engram(open_fd=None):
                 with clock.phase("engram") as note:
-                    options = {"open_fd": shards.duplicate_file} if bind_files else {}
-                    e = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store, **options)
+                    options = {} if open_fd is None else {"open_fd": open_fd}
+                    e = HostEngram(engram_path, engram_offset, rows, rank, self.comm.store, **options)
+                    if startup is not None:
+                        startup.engram = e
                     note[0] = f"fill {e.fill_seconds:.1f} wait {e.wait_seconds:.1f} register {e.register_seconds:.1f}"
                 return e
-            mapping = ThreadPoolExecutor(1, thread_name_prefix="ds41-engram")
-            engram = mapping.submit(map_engram)
-            mapping.shutdown(wait=False)
+            if startup is None:
+                mapping = ThreadPoolExecutor(1, thread_name_prefix="ds41-engram")
+                engram = mapping.submit(map_engram)
+                mapping.shutdown(wait=False)
+            else:
+                engram = startup.map_engram(shards.duplicate_file(engram_path), map_engram)
         if layers is not None:
             print(f"[tensorfold] rank {rank}: DEVELOPMENT SMOKE: {len(layers)} of {g.layers} layers loaded", flush=True)
         capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
@@ -229,12 +259,16 @@ class DS41Engine:
             self.w = W.load(shards, g, rank, device, layers=layers, expert_tensor_parallel_size=etp,
                             compact_expert_down=h64_text and layers is None, **placement_options)
             torch.cuda.synchronize()
-        if mapping is not None:
+        if mapping is not None or (startup is not None and startup.mapper is not None):
             self.engram = engram.result()
+            if startup is not None:
+                startup.retire_mapper()
             print(f"[tensorfold] rank {rank}: Engram table mapped and registered in {self.engram.seconds:.0f} s", flush=True)
         if bind_files:
             shards.verify_placement_files()
         shards.close()
+        if startup is not None:
+            startup.shards = None
         # Image input (--vision): the vision router bias and a TP8 part of the mmproj tower on every rank (each rank
         # reads only its part). Every rank encodes in step (``_tower``), so each ends with the same span and a prompt
         # chunk's image rows need no broadcast. Loaded before the KV pool is sized, so the pool pays for it; the pool
@@ -372,8 +406,6 @@ class DS41Engine:
         self.page_bytes = page_bytes
         self.decoder = self.scheduler = None
         self._closed = False
-        if self.expert_observer is not None:
-            self.expert_observer.active = True
         if rank == 0:
             print(f"[tensorfold] DeepSeek-V4.1 SM70: routed experts ETP{etp} x EP{tp // etp}", flush=True)
             if self.graphs is not None:
@@ -398,11 +430,14 @@ class DS41Engine:
             try:
                 self.scheduler.start()
             except BaseException as primary:
-                try:
-                    self.scheduler.close()
-                except BaseException as cleanup:
-                    raise primary from cleanup
+                if startup is None:
+                    try:
+                        self.scheduler.close()
+                    except BaseException as cleanup:
+                        raise primary from cleanup
                 raise
+            if self.expert_observer is not None:
+                self.expert_observer.active = True
 
     def _warm(self):
         """Startup, every rank, no control frames: build the native extensions and compile the forward's Triton

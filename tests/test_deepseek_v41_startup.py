@@ -1,6 +1,7 @@
 """DeepSeek-V4.1 SM70 startup helpers on CPU: the phase timeline and the parallel extension prebuild (every module's
 ``extension()`` runs once, concurrently; a build failure re-raises at ``wait``)."""
 
+import os
 import sys
 import threading
 import time
@@ -112,6 +113,96 @@ def test_deepseek_expert_carriers_match_rank_ownership(degree, experts, width, o
     down.shape = (400, 5120, 2304)
     with pytest.raises(ValueError, match="expert tensor shape"):
         loader.expert_bank("down", geometry, down=True)
+
+
+@pytest.mark.parametrize("degree", (1, 2, 4))
+def test_deepseek_permutation_keeps_gate_up_and_down_experts_in_the_same_slots(monkeypatch, degree):
+    from tensorfold.cuda.sm70 import ds41_decode_moe
+    from tensorfold.families.deepseek_v4.cuda.weights import Geometry, Loader
+
+    geometry = Geometry()
+    hidden, intermediate, experts = geometry.hidden, geometry.moe_inter, geometry.experts
+    kind, block_bytes, packed_bytes = 29, 56, 132
+    gate_row, down_row = hidden // 256 * block_bytes, intermediate // 256 * block_bytes
+    tensor = lambda name, shape, offset: types.SimpleNamespace(ggml_type=kind, shape=shape, path=name, offset=offset)
+    gguf = types.SimpleNamespace(tensors={
+        "gate": tensor("gate", (experts, intermediate, hidden), 64),
+        "up": tensor("up", (experts, intermediate, hidden), 96),
+        "down": tensor("down", (experts, hidden, intermediate), 128),
+    })
+    packed_groups = []
+    ext = types.SimpleNamespace(compact_down_row_bytes=lambda codec: packed_bytes,
+                                pack_down_fragments=lambda _src, _dst, codec, group: packed_groups.append((codec, group)))
+    monkeypatch.setattr(ds41_decode_moe, "extension", lambda: ext)
+    reads = []
+
+    def copy(path, spans, _out):
+        reads.append((path, spans))
+
+    def copy_packed(path, offset, source_row_bytes, out, pack):
+        assert source_row_bytes == down_row and out.shape[1:] == (hidden, packed_bytes)
+        reads.append((path, [(offset, out.shape[0] * hidden * source_row_bytes)]))
+        pack(None, None)
+
+    staging = types.SimpleNamespace(copy=copy, copy_packed_rows=copy_packed)
+    permutation = tuple((5 * i + 53) % experts for i in range(experts))
+    width = intermediate // degree
+    group_size = experts // (8 // degree)
+    for rank in range(8):
+        loader = Loader(gguf, rank, "meta", staging, expert_tensor_parallel_size=degree, compact_expert_down=degree == 4)
+        first = rank // degree * group_size
+        cut = rank % degree * width
+        order = permutation[first:first + group_size]
+        for name, base in (("gate", 64), ("up", 96)):
+            read, _, _ = loader.expert_bank(name, geometry, down=False, expert_ids=order)
+            assert tuple(read.shape) == (group_size, width, gate_row)
+            assert reads.pop() == (name, [(base + (expert * intermediate + cut) * gate_row, width * gate_row)
+                                          for expert in order])
+        result, _, left = loader.expert_bank("down", geometry, down=True, expert_ids=order)
+        blocks = (cut % 256 + width + 255) // 256
+        assert left == cut % 256
+        assert tuple(result.shape) == (group_size, hidden, packed_bytes if degree == 4 else blocks * block_bytes)
+        spans = [(128 + expert * hidden * down_row, hidden * down_row) for expert in order]
+        expected = [("down", [span]) for span in spans] if degree == 4 else [("down", spans)]
+        assert reads == expected
+        if degree == 4:
+            assert packed_groups == [(kind, cut // 32)] * group_size
+            packed_groups.clear()
+        reads.clear()
+
+
+def test_bound_deepseek_loader_reads_the_checkpoint_incarnation_it_parsed(tmp_path):
+    from gguf_fixture import write
+    from tensorfold.families.deepseek_v4.cuda.weights import ENGRAM_TABLE, IQ4_NL, Shards
+
+    original, replacement = (tmp_path / name for name in ("original.gguf", "replacement.gguf"))
+    write(original, [("w", (1,), 0, [1, 2, 3, 4])], {})
+    write(replacement, [("w", (1,), 0, [5, 6, 7, 8])], {})
+    engram = tmp_path / "engram.gguf"
+    write(engram, [(ENGRAM_TABLE, (1, 256), IQ4_NL, [0] * 144)], {})
+    entry = tmp_path / "model.gguf"
+    entry.symlink_to(original)
+
+    shards = Shards(entry, engram, bind_files=True)
+    try:
+        before = shards.placement_files()
+        assert [path for path, *_ in before] == [str(original), str(engram)]
+        entry.unlink()
+        entry.symlink_to(replacement)
+        assert shards.placement_files() == before
+        tensor, data = shards.raw("w")
+        assert bytes(data) == bytes((1, 2, 3, 4))
+        fd = shards.duplicate_file(tensor.path)
+        try:
+            assert os.pread(fd, 4, tensor.offset) == bytes((1, 2, 3, 4))
+        finally:
+            os.close(fd)
+        with original.open("ab") as stream:
+            stream.write(b"changed")
+        with pytest.raises(ValueError, match="checkpoint changed during startup"):
+            shards.verify_placement_files()
+    finally:
+        shards.close()
 
 
 @pytest.mark.parametrize("kind,block_bytes,packed_bytes", [(16, 66, 150), (17, 74, 168), (29, 56, 132)])
@@ -285,6 +376,7 @@ def test_engram_unmaps_after_device_retirement(monkeypatch, rank):
 
     e = object.__new__(DS41Engine)
     e._closed, e.rank, e.graphs = False, rank, object()
+    e.expert_observer = None
     actions = []
 
     def unmap():

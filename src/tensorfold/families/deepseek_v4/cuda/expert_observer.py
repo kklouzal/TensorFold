@@ -59,6 +59,12 @@ class ExpertObserver:
             if plan is not None:
                 self.history.publish_recommendation(plan)
 
+    def abort_startup(self) -> None:
+        """Release CPU owners before serving, when no snapshot writes can have started."""
+        if self.active or self.write is not None or self.copy_pending:
+            raise RuntimeError("cannot abort an active expert observer as startup")
+        finish((self.worker.shutdown, self.history.close))
+
     def finish(self) -> None:
         """Called after admission closes and the engine fences its last model work."""
         self.active = False
