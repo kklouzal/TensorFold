@@ -10,7 +10,6 @@ import tempfile
 from threading import Lock
 
 from .expert_balance import plan_expert_placement, rolling_expert_load
-from .expert_placement import encode_placement
 from .expert_transfer import ExpertTransferPlan, plan_expert_transfers
 
 
@@ -82,7 +81,7 @@ def _claim_history(path):
 
 
 class ExpertBalanceState:
-    """Own observed loads and, in live mode, the durable placement epoch.
+    """Own observed loads and the durable live placement epoch.
 
     The recorder accepts a detached CPU snapshot of nonnegative route counts.
     It returns whether a flush is due, based on observed routes since the last
@@ -90,12 +89,11 @@ class ExpertBalanceState:
     Recommendations require a caller-selected minimum of fresh observations in
     both phases. The scheduler commits a new live epoch only after all ranks
     have finished changing their expert banks and route tables.
-    A persisted recommendation is the last emitted proposal, so it can remain
-    after later observations yield no proposal. The stable companion lock is
-    held until close, after the recorder and any final flush have finished.
+    The stable companion lock is held until close, after the recorder and any
+    final flush have finished.
     """
 
-    def __init__(self, path, *, checkpoint, etp, layers, experts, half_life_routes, current=None, live=False):
+    def __init__(self, path, *, checkpoint, etp, layers, experts, half_life_routes, current=None):
         if not isinstance(checkpoint, str) or not checkpoint:
             raise ValueError("expert balance history requires a checkpoint identity")
         if type(etp) is not int or etp not in (1, 2, 4):
@@ -105,10 +103,7 @@ class ExpertBalanceState:
             raise ValueError("expert balance history requires balanced layer geometry")
         if not _positive(half_life_routes):
             raise ValueError("half_life_routes must be finite and positive")
-        if type(live) is not bool:
-            raise ValueError("live expert balance mode must be boolean")
         self.path = Path(path).expanduser().absolute()
-        self.recommendation_path = self.path.with_name(self.path.name + ".placement.json")
         self._metadata = dict(checkpoint=checkpoint, etp=etp, layers=layers, experts=experts,
                               half_life_routes=half_life_routes)
         self._shape = (_PHASES, layers, experts)
@@ -116,10 +111,8 @@ class ExpertBalanceState:
         explicit = current is not None
         self._current = _placement(current, layers, experts) if explicit else identity
         self._initial_placement = not explicit
-        self._epoch = 0 if live else None
+        self._epoch = 0
         self._placement_poisoned = False
-        self._empty_exposures = ((0,) * layers,) * _PHASES
-        self._pending_recommendation = None
         self._lock = Lock()
         self._history_fd = _claim_history(self.path)
         try:
@@ -127,11 +120,9 @@ class ExpertBalanceState:
             saved_epoch = None
             if saved is None:
                 self._loads = (((0.0,) * experts,) * layers,) * _PHASES
-                self._exposures = self._empty_exposures
-                self._saved_exposures = None
+                self._exposures = ((0,) * layers,) * _PHASES
             else:
                 self._loads, self._exposures, saved_epoch, saved_placement = saved
-                self._saved_exposures = self._exposures
                 if saved_epoch is not None:
                     if explicit and self._current != saved_placement:
                         raise ValueError(f"startup expert placement conflicts with the committed epoch: {self.path}")
@@ -139,19 +130,16 @@ class ExpertBalanceState:
                     self._epoch = saved_epoch
                     self._initial_placement = not explicit and saved_epoch == 0 and saved_placement == identity
             self._initial_exposures = self._exposures
-            if live and saved_epoch is None:
+            if saved_epoch is None:
                 self._save(epoch=self._epoch, placement=self._current)
+            else:
+                self._saved_exposures = self._exposures
         except BaseException as error:
             try:
                 self.close()
             except OSError as cleanup:
                 raise error from cleanup
             raise
-
-    @property
-    def current(self):
-        with self._lock:
-            return self._current
 
     def placement_snapshot(self):
         """Return the immutable active epoch and map together."""
@@ -170,13 +158,11 @@ class ExpertBalanceState:
         with self._lock:
             if self._history_fd is not None:
                 fd, self._history_fd = self._history_fd, None
-                self._pending_recommendation = None
                 os.close(fd)
 
     def _encode(self, loads, exposures, *, epoch, placement):
-        data = {"version": 1 if epoch is None else 2, **self._metadata, "loads": loads, "exposures": exposures}
-        if epoch is not None:
-            data.update(epoch=epoch, placement=placement)
+        data = {"version": 2, **self._metadata, "loads": loads, "exposures": exposures,
+                "epoch": epoch, "placement": placement}
         return json.dumps(data, separators=(",", ":"), allow_nan=False).encode()
 
     def _save(self, *, epoch, placement):
@@ -187,10 +173,9 @@ class ExpertBalanceState:
         phases, layers, experts = self._shape
         # Finite binary64 proportions need at most 24 characters in JSON;
         # each saved exposure needs at most 20. Also budget the array delimiters.
-        limit = len(self._encode((), (), epoch=_MAX_EPOCH if self._epoch is not None else None, placement=()))
+        limit = len(self._encode((), (), epoch=_MAX_EPOCH, placement=()))
         limit += phases * (4 + layers * (26 * experts + 24))
-        if self._epoch is not None:
-            limit += layers * (3 + experts * (len(str(experts - 1)) + 1))
+        limit += layers * (3 + experts * (len(str(experts - 1)) + 1))
 
         def open_file(name, flags):
             return os.open(name, flags | os.O_NONBLOCK | os.O_NOFOLLOW)
@@ -216,8 +201,6 @@ class ExpertBalanceState:
         fields = self._metadata.keys() | {"version", "loads", "exposures"}
         if version == 2:
             fields |= {"epoch", "placement"}
-            if self._epoch is None:
-                raise ValueError(f"committed expert placement requires live expert balance: {self.path}")
         if (payload.keys() != fields
                 or any(type(payload[key]) is not type(expected) or payload[key] != expected
                        for key, expected in self._metadata.items())):
@@ -258,10 +241,8 @@ class ExpertBalanceState:
                 self._loads = tuple(rolling_expert_load(previous, phase, half_life_routes=half_life)
                                     for previous, phase in zip(self._loads, counts, strict=True))
                 self._exposures = totals
-                self._pending_recommendation = None
-            saved = self._saved_exposures if self._saved_exposures is not None else self._empty_exposures
             return any(new - old >= self._metadata["half_life_routes"]
-                       for phase, before in zip(self._exposures, saved, strict=True)
+                       for phase, before in zip(self._exposures, self._saved_exposures, strict=True)
                        for new, old in zip(phase, before, strict=True))
 
     def flush(self):
@@ -271,24 +252,13 @@ class ExpertBalanceState:
             if self._saved_exposures != self._exposures:
                 self._save(epoch=self._epoch, placement=self._current)
 
-    def recommendation(self, *, minimum_routes=None):
-        """Encode an improving proposal after sufficient fresh routes in both phases."""
-        return self._recommend(minimum_routes, live=False)
-
     def live_recommendation(self, *, minimum_routes):
-        """Return the current epoch and its proposed in-place transfer plan."""
-        return self._recommend(minimum_routes, live=True)
-
-    def _recommend(self, minimum_routes, *, live):
-        if minimum_routes is not None and not _positive(minimum_routes):
+        """Plan a transfer after sufficient fresh routes in both phases."""
+        if not _positive(minimum_routes):
             raise ValueError("minimum_routes must be finite and positive")
         with self._lock:
             self._require_open()
-            if live:
-                self._require_live()
-            else:
-                self._pending_recommendation = None
-            if minimum_routes is None or any(
+            if any(
                 total - first < minimum_routes
                 for phase, start in zip(self._exposures, self._initial_exposures, strict=True)
                 for total, first in zip(phase, start, strict=True)
@@ -300,25 +270,15 @@ class ExpertBalanceState:
         proposed = plan_expert_placement(loads, etp=etp, current=current)
         if proposed == active:
             return None
-        if live:
-            result = (epoch, plan_expert_transfers(active, proposed, etp=etp))
-        else:
-            result = encode_placement(proposed, checkpoint=self._metadata["checkpoint"], etp=etp)
+        plan = plan_expert_transfers(active, proposed, etp=etp)
         with self._lock:
             self._require_open()
             if loads is not self._loads or epoch != self._epoch:
                 return None
-            if not live:
-                self._pending_recommendation = result
-            return result
-
-    def _require_live(self):
-        if self._epoch is None:
-            raise RuntimeError("expert balance history was opened without live placement")
+            return epoch, plan
 
     def _validate_live_placement(self, plan, expected_epoch):
         self._require_open()
-        self._require_live()
         _, layers, experts = self._shape
         etp = self._metadata["etp"]
         if type(plan) is not ExpertTransferPlan or plan.etp != etp or plan.group_slots != experts // (8 // etp):
@@ -352,19 +312,9 @@ class ExpertBalanceState:
                 self._current = plan.proposed
                 self._initial_placement = False
                 self._initial_exposures = self._exposures
-                self._pending_recommendation = None
             except BaseException:
                 # A failed directory fsync can leave either version on disk.
                 # Further local writes could overwrite an already published epoch.
                 self._placement_poisoned = True
                 raise
             return next_epoch
-
-    def publish_recommendation(self, data):
-        """Publish only a proposal issued for the current observation snapshot."""
-        with self._lock:
-            self._require_open()
-            if type(data) is not bytes or data != self._pending_recommendation:
-                raise ValueError("expert placement recommendation is stale or was not issued by this state")
-            _atomic_replace(self.recommendation_path, data)
-            self._pending_recommendation = None

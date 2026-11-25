@@ -225,7 +225,7 @@ class DS41Engine:
                 try:
                     history = ExpertBalanceState(Path(expert_balance_state), checkpoint=checkpoint, etp=etp,
                                                  layers=g.layers, experts=g.experts, half_life_routes=expert_balance_half_life,
-                                                 current=placement_options.get("expert_placement"), live=True)
+                                                 current=placement_options.get("expert_placement"))
                     startup.history = history
                     self.expert_observer = ExpertObserver(device, history, sample_every=expert_balance_sample_every,
                                                           minimum_routes=expert_balance_half_life)
