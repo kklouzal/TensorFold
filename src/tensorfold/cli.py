@@ -459,6 +459,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     for name in ("expert_placement", "expert_balance_state", "expert_balance_sample_every", "expert_balance_half_life"):
         if (value := getattr(args, name, None)) is not None:
             options[name] = value
+    if getattr(args, "no_expert_balance", False):
+        options["no_expert_balance"] = True
     if getattr(args, "kv_full_windows", None) is not None:
         options["kv_full_windows"] = args.kv_full_windows
     if getattr(args, "kv_short_window", None) is not None:

@@ -133,6 +133,7 @@ def test_actual_fifo_scheduler_cold_prefill_and_first_window_entry(tmp_path, mon
     scheduler._retiring, scheduler.held = [], None
     scheduler._stopping = scheduler._media_held_wait = False
     scheduler._serving_profile_available = True
+    scheduler._worker_maintenance = None
     scheduler._execution_boundary = freeze
     scheduler._yield = lambda: None
     scheduler._admit = lambda first: []

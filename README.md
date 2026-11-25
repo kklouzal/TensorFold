@@ -1666,6 +1666,11 @@ The expert-balancing development branch accepts an explicit per-layer placement
 for ETP1, ETP2, and ETP4 before startup graph capture. Native quality and
 performance qualification is pending. [Expert placement recipe](docs/recipes/deepseek-v41-v100.md#routed-expert-placement)
 
+Live expert balancing is the DeepSeek TP8 serving default in this
+development branch. It applies eligible placements at an in-service
+maintenance boundary. `--no-expert-balance` disables it. End-to-end
+native validation is pending. [Live placement settings](docs/recipes/deepseek-v41-v100.md#routed-expert-placement)
+
 New CUDA lane for DeepSeek-V4.1-Flash-1017 GGUF (GSQ-RCO IQ2_XXS backbone; the IQ4_NL Engram table stays in host RAM),
 TP8 attention/dense and ETP4 x EP2 routed experts, up to 32 streams. It uses startup decode graphs, the friend's EM3
 decode experts and TurboMind lattice prefill experts (with an exact weight decode), fused sparse prefill attention,

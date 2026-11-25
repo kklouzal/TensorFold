@@ -21,6 +21,7 @@ class ExpertObserver:
         self.worker = ThreadPoolExecutor(1, thread_name_prefix="ds41-expert-history")
         self.write = None
         self.active = False
+        self.publish_live = None
         self.copy_pending = False
         self.next_poll = monotonic() + 60
 
@@ -55,9 +56,34 @@ class ExpertObserver:
     def _record(self, snapshot, *, closing=False) -> None:
         if self.history.record(snapshot.tolist()) or closing:
             self.history.flush()
-            plan = self.history.recommendation(minimum_routes=self.minimum_routes)
-            if plan is not None:
-                self.history.publish_recommendation(plan)
+            if not closing:
+                proposal = self.history.live_recommendation(minimum_routes=self.minimum_routes)
+                if proposal is not None:
+                    self.publish_live(proposal)
+
+    def pause_for_placement(self) -> None:
+        """Finish old-epoch observations after the scheduler has fenced serving work."""
+        self.active = False
+        if self.write is not None:
+            self.write.result()
+            self.write = None
+        if self.copy_pending:
+            snapshot = self.usage.poll_snapshot()
+            if snapshot is None:
+                raise RuntimeError("expert usage snapshot was not ready at the placement fence")
+            self.history.record(snapshot.tolist())
+            self.copy_pending = False
+        if not self.usage.request_snapshot():
+            raise RuntimeError("expert usage snapshot already owns the placement boundary buffer")
+        torch.cuda.current_stream(self.usage.counts.device).synchronize()
+        snapshot = self.usage.poll_snapshot()
+        if snapshot is None:
+            raise RuntimeError("expert usage could not finish the placement boundary snapshot")
+        self.history.record(snapshot.tolist())
+
+    def resume_after_placement(self) -> None:
+        self.next_poll = monotonic() + 60
+        self.active = True
 
     def abort_startup(self) -> None:
         """Release CPU owners before serving, when no snapshot writes can have started."""

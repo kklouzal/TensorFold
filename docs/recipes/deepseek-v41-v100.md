@@ -77,20 +77,37 @@ the plan once and every rank verifies the same plan before loading weights or
 capturing graphs. Configured placement starts with a fresh worker process and
 fresh KV state. Native qualification is pending for this development option.
 
-`--expert-balance-state FILE` samples executed routed experts in prefill and
-decode separately. The history decays with the number of observed routes. The
+Live expert balancing samples executed routed experts in prefill and decode
+separately. The history decays with the number of observed routes. The
 development defaults sample one in 64 forwards on average and use 262,144
 observed routes per phase and layer as the half-life. Use the corresponding
 `--expert-balance-sample-every` and `--expert-balance-half-life` options for
 controlled qualification. Startup warm-up and graph padding are excluded.
-When both phases have enough fresh observations, an eligible proposal is
-written to `FILE.placement.json`. The active placement remains fixed for that
-process. A separately qualified proposal can be selected at the next startup
-with `--expert-placement`.
+When both phases have enough fresh observations, the scheduler can apply
+eligible proposals in the running server. It stores the committed placement and rolling history in
+`expert-balance-etpN.json` in the model directory, where `N` is the expert
+tensor-parallel degree. A restart loads that placement before the workers
+load the expert weights or capture graphs. For a read-only model mount, use
+`--expert-balance-state FILE` with a writable directory for the sidecar.
+In a container, mount that directory on a persistent volume so atomic file
+replacement and restart recovery use the same storage.
+Use `--expert-placement` to seed a new state file. For later restarts, omit
+that startup option to load the committed sidecar placement. If supplied,
+the explicit plan must agree with the saved placement.
+Use `--no-expert-balance` to disable balancing. This also disables history
+collection and loading of a saved placement.
+
+The scheduler holds new admissions while
+active requests finish. The workers retire the previous placement's cached
+prefixes, move the packed expert banks, and rebuild the enabled decode graph
+catalogue. Admission resumes after all eight ranks confirm the placement and
+the new epoch is saved in the state file. A failed post-mutation transaction
+retires the cohort. End-to-end native and performance validation is pending.
 
 ## What runs
 
-- Decode: startup CUDA graphs for batches 1-16, 24 and 32. Capture happens at startup, never lazily. Each batch has
+- Decode: CUDA graphs for batches 1-16, 24 and 32, captured at startup and recaptured at a live placement
+  boundary. Each batch has
   index-score classes 8192 / 32768 / `--context`, sized by the batch's live maximum length. Decode also uses small
   all-gathers and an LL row all-reduce for small sums, a compact device greedy argmax with batched round sampling
   (one host wait per round), and expert-major routed experts (the friend's EM3 kernels, bit-exact with the per-6-row

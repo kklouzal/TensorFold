@@ -42,6 +42,8 @@ F_AHEAD = 1 << 25          # run-ahead round: token ids from the previous replay
 EXPERT_SAMPLE_SHIFT = 26   # OP_STEP: 0 off, 1 prefill, 2 decode, visible only to the rank-zero observer
 # The TP8 vision tower's operations (``OP_TOWER``, kind in a; every rank runs its shard, ``DS41Engine._tower``)
 OP_TOWER = 32
+OP_EXPERT_PLACEMENT = 33
+_EXPERT_EPOCH = struct.Struct("<q")
 T_BEGIN, T_RUN, T_SPAN, T_STAGE, T_FREE = range(5)
 SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
@@ -68,7 +70,20 @@ class DS41Engine:
                  kv_dtype: str = "bf16", expert_tensor_parallel_size: int | None = None,
                  expert_placement: Path | None = None, expert_balance_state: Path | None = None,
                  expert_balance_sample_every: int = 64, expert_balance_half_life: int = 262_144,
+                 no_expert_balance: bool = False,
                  **_options) -> None:
+        expert_balance_live = serve and not no_expert_balance
+        if no_expert_balance and (expert_placement is not None or expert_balance_state is not None):
+            raise ValueError("disabled expert balancing cannot accept a placement or history file")
+        if not expert_balance_live and expert_balance_state is not None:
+            raise ValueError("expert balance history requires live serving")
+        if expert_balance_live and expert_balance_state is None:
+            from .weights import checked_etp
+
+            degree = checked_etp(expert_tensor_parallel_size)
+            model_path = Path(model_dir).resolve(strict=True)
+            name = f"expert-balance-etp{degree}.json"
+            expert_balance_state = model_path / name if model_path.is_dir() else model_path.with_name(f"{model_path.name}.{name}")
         options = dict(rank=rank, tp=tp, master=master, master_port=master_port, context=context, slots=slots,
                        max_tokens=max_tokens, parallel=parallel, serve=serve, queue_timeout_s=queue_timeout_s,
                        graphs=graphs, keep_slots=keep_slots, prefix_host_bytes=prefix_host_bytes, vision=vision,
@@ -76,7 +91,7 @@ class DS41Engine:
                        kv_dtype=kv_dtype, expert_tensor_parallel_size=expert_tensor_parallel_size,
                        expert_placement=expert_placement, expert_balance_state=expert_balance_state,
                        expert_balance_sample_every=expert_balance_sample_every,
-                       expert_balance_half_life=expert_balance_half_life)
+                       expert_balance_half_life=expert_balance_half_life, expert_balance_live=expert_balance_live)
         if expert_placement is None and expert_balance_state is None:
             self._initialize(model_dir, startup=None, **options)
             return
@@ -93,7 +108,7 @@ class DS41Engine:
     def _initialize(self, model_dir, *, rank, tp, master, master_port, context, slots, max_tokens, parallel,
                     serve, queue_timeout_s, graphs, keep_slots, prefix_host_bytes, vision, vision_urls,
                     vision_offload, yarn_factor, kv_dtype, expert_tensor_parallel_size, expert_placement,
-                    expert_balance_state, expert_balance_sample_every, expert_balance_half_life, startup):
+                    expert_balance_state, expert_balance_sample_every, expert_balance_half_life, expert_balance_live, startup):
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -151,7 +166,7 @@ class DS41Engine:
         prebuild.wait(small_gather.__name__)
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
-            settings = [etp, int(expert_placement is not None), int(expert_balance_state is not None)]
+            settings = [etp, int(expert_placement is not None), int(expert_balance_live)]
             local = torch.tensor(settings, dtype=torch.int64, device=device)
             agreed = torch.empty(tp * len(settings), dtype=torch.int64, device=device)
             self.comm.all_gather(local, agreed)
@@ -200,6 +215,7 @@ class DS41Engine:
         if smoke > 0 and expert_balance_state is not None:
             raise ValueError("DeepSeek expert balancing requires all model layers")
         self.expert_observer = None
+        self.expert_live = None
         if expert_balance_state is not None:
             key = "deepseek-v41/expert-history-startup-v1"
             if rank == 0:
@@ -209,7 +225,7 @@ class DS41Engine:
                 try:
                     history = ExpertBalanceState(Path(expert_balance_state), checkpoint=checkpoint, etp=etp,
                                                  layers=g.layers, experts=g.experts, half_life_routes=expert_balance_half_life,
-                                                 current=placement_options.get("expert_placement"))
+                                                 current=placement_options.get("expert_placement"), live=True)
                     startup.history = history
                     self.expert_observer = ExpertObserver(device, history, sample_every=expert_balance_sample_every,
                                                           minimum_routes=expert_balance_half_life)
@@ -219,10 +235,32 @@ class DS41Engine:
 
                     error = str(exc).encode(errors="replace")[:1024]
                     rollback(self, exc, lambda: self.comm.store.set(key, b"!" + error))
-                self.comm.store.set(key, b"ok")
-            elif (status := self.comm.store.get(key)) != b"ok":
-                error = status[1:].decode(errors="replace")
-                raise RuntimeError(f"DeepSeek expert history initialization failed on rank zero: {error}")
+                from .expert_placement import encode_placement
+
+                active_epoch, active_placement = history.placement_snapshot()
+                status = b"+" + _EXPERT_EPOCH.pack(active_epoch) + encode_placement(
+                    active_placement, checkpoint=checkpoint, etp=etp)
+                self.comm.store.set(key, status)
+            else:
+                status = self.comm.store.get(key)
+                if status.startswith(b"!"):
+                    error = status[1:].decode(errors="replace")
+                    raise RuntimeError(f"DeepSeek expert history initialization failed on rank zero: {error}")
+                from .expert_placement import decode_placement
+
+                if not status.startswith(b"+") or len(status) <= 1 + _EXPERT_EPOCH.size:
+                    raise RuntimeError("DeepSeek ranks received an incomplete live expert history")
+                active_epoch, = _EXPERT_EPOCH.unpack_from(status, 1)
+                if active_epoch < 0:
+                    raise RuntimeError("DeepSeek expert history contains an invalid active epoch")
+                active_placement = decode_placement(status[1 + _EXPERT_EPOCH.size:], checkpoint=checkpoint,
+                                                    layers=g.layers, experts=g.experts, etp=etp,
+                                                    source="DeepSeek live expert history on rank 0")
+            identity = tuple(range(g.experts))
+            if all(row == identity for row in active_placement):
+                placement_options.pop("expert_placement", None)
+            else:
+                placement_options["expert_placement"] = active_placement
         layers = range(min(smoke, g.layers)) if smoke > 0 else None
         self.engram = None
         mapping = None
@@ -396,6 +434,14 @@ class DS41Engine:
         elif rank == 0:
             print("[tensorfold] DeepSeek-V4.1 SM70: eager decode (" +
                   ("graphs disabled)" if not graphs else "TENSORFOLD_DS41_ENGRAM_TRACE set)"), flush=True)
+        if expert_balance_live:
+            from .expert_live import LiveExpertPlacement
+
+            self.expert_live = LiveExpertPlacement(self, epoch=active_epoch, placement=active_placement,
+                                                   operation=OP_EXPERT_PLACEMENT)
+            self._expert_graph_keys = tuple(self.graphs.keys) if self.graphs is not None else None
+            self._expert_graph_bytes = graph_bytes
+            self._expert_prompt_reserve = prompt_reserve
         with clock.phase("pipes"):
             self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
         if rank == 0 and sorted(self.pipes.piped()) != list(range(1, tp)):
@@ -426,7 +472,16 @@ class DS41Engine:
             self.points = message_points(load_tokenizer(model_dir).token_to_id)
             self.decoder = Decoder(self)
             # Requests beyond --parallel wait in the scheduler's queue; --queue-timeout-s bounds that wait (503 after).
-            self.scheduler = Scheduler(self.decoder, max_streams=slots, queue_timeout_s=queue_timeout_s)
+            options = {}
+            if self.expert_live is not None:
+                from threading import Lock
+
+                self._expert_proposal_lock = Lock()
+                self._expert_proposal = None
+                self._expert_refused = None
+                options["worker_maintenance"] = self._expert_maintenance
+                self.expert_observer.publish_live = self._publish_expert_proposal
+            self.scheduler = Scheduler(self.decoder, max_streams=slots, queue_timeout_s=queue_timeout_s, **options)
             try:
                 self.scheduler.start()
             except BaseException as primary:
@@ -721,6 +776,11 @@ class DS41Engine:
             return self._layers(a)
         if op == OP_TOWER:
             return self._tower(a, b, c, d, ids)
+        if op == OP_EXPERT_PLACEMENT and self.expert_live is not None:
+            receipt = self.expert_live.handle(a, b, c, d, ids)
+            if self.rank != 0:
+                self.pipes.acknowledge(receipt)
+            return receipt
         if op in PREFIX_OPS:
             out = self.prefix.run(op, a, b, c, d, ids)
             if op == OP_GROW:                   # the slot gained pages: the graphs' device page table follows
@@ -756,7 +816,7 @@ class DS41Engine:
                     self._run(op, a, b, c, d, list(payload))
                     pending = watch
         except BaseException as primary:
-            if watch:
+            if watch or getattr(self, "expert_live", None) is not None:
                 from tensorfold.cuda.cohort import notify_failure
                 from tensorfold.cleanup import raise_failures
 
@@ -767,6 +827,69 @@ class DS41Engine:
             raise
 
     # ---------------------------------------------------------------------------------------- leader
+    def _publish_expert_proposal(self, proposal):
+        def publish():
+            with self._expert_proposal_lock:
+                epoch, plan = proposal
+                if self._expert_refused != (epoch, plan.proposed):
+                    self._expert_proposal = proposal
+
+        if not self._closed:
+            try:
+                self.scheduler.request_runtime(publish)
+            except RuntimeError:
+                if not self._closed:
+                    raise
+
+    def _expert_maintenance(self, closing, occupied):
+        from .expert_rebalance_wire import PeerRefusal
+
+        with self._expert_proposal_lock:
+            if closing:
+                self._expert_proposal = None
+                return False
+            if self._expert_proposal is None:
+                return False
+            if occupied:
+                return True     # Existing requests can progress; new admissions wait at the worker boundary.
+            proposal, self._expert_proposal = self._expert_proposal, None
+        epoch, plan = proposal
+        if self.expert_live.epoch != epoch or self.expert_live.placement != plan.current:
+            return False        # A previous successful application superseded this queued proposal.
+
+        try:
+            self.decoder.drain_placement_work()
+            self.expert_observer.pause_for_placement()
+            try:
+                applied = self.expert_live.apply(plan, expected_epoch=epoch, history=self.expert_observer.history)
+            except PeerRefusal as refusal:
+                with self._expert_proposal_lock:
+                    self._expert_refused = (epoch, plan.proposed)
+                print(f"[tensorfold] {refusal}", flush=True)
+            else:
+                if applied:
+                    print(f"[tensorfold] DeepSeek live expert placement epoch {self.expert_live.epoch} committed", flush=True)
+            self.expert_observer.resume_after_placement()
+        except BaseException as error:
+            self.decoder.broken = error
+            raise
+        return False
+
+    def recapture_expert_graphs(self):
+        """Rebuild the same optional decode catalogue while scheduler admission is held."""
+        if self.graphs is not None:
+            raise RuntimeError("expert placement still owns the previous graph catalogue")
+        if self._expert_graph_keys is None:
+            return
+        import torch
+        from .graphs import DecodeGraphs
+
+        self.graphs = DecodeGraphs(self, self.streams)
+        spare = torch.cuda.mem_get_info()[0] + torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
+        if (tuple(self.graphs.keys) != self._expert_graph_keys or self.graphs.bytes > self._expert_graph_bytes
+                or spare < self._expert_prompt_reserve):
+            raise RuntimeError("rebuilt expert graphs do not meet the original catalogue and memory budget")
+
     def step(self, entries, ids, logits_rows, stop=0):
         payload = [v for e in entries for v in e] + list(ids) + list(logits_rows)
         observer = self.expert_observer
@@ -1021,6 +1144,27 @@ class Decoder(PrefixOwner):
 
     def live(self) -> int:
         return len(self.streams) + len(self.filling)
+
+    def drain_placement_work(self) -> None:
+        """Fence the last DeepSeek graph and retire its metadata at a maintenance boundary."""
+        import torch
+
+        self._check()
+        engine = self.e
+        if (self.live() or self.ahead is not None or self.split is not None or engine.part is not None
+                or self.timing is not None or engine.layer_marks is not None
+                or engine.image_features is not None or engine.tower_states or engine.tower_spans
+                or self.finishing not in (None, (None, None, None))):
+            raise RuntimeError("expert placement requires drained prompt, decode, and image work")
+        # An EOS/cancellation can retire the last logical stream after its successor was already submitted.
+        # The scheduler cannot rely on another decoding round to observe that successor's completion.
+        if self.inflight is not None and self._collect():
+            raise RuntimeError("expert placement found a live decision at the drained decode boundary")
+        torch.cuda.current_stream(engine.target.device).synchronize()
+        self.finishing = None
+        self._absorb()
+        if self.timed:
+            raise RuntimeError("expert placement found unread prompt events after the device fence")
 
     def usage(self) -> dict:
         """/stats' KV-memory and prefix-cache readings."""

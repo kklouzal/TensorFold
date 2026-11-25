@@ -356,7 +356,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--expert-placement", type=Path, metavar="PLAN",
                       help="load a checkpoint-bound DeepSeek-V4.1 routed expert placement before CUDA graph capture")
     cuda.add_argument("--expert-balance-state", type=Path, metavar="FILE",
-                      help="save sampled DeepSeek-V4.1 expert load history and write eligible startup placement proposals")
+                      help="override the DeepSeek-V4.1 placement and rolling history JSON sidecar")
+    cuda.add_argument("--no-expert-balance", action="store_true",
+                      help="disable live DeepSeek-V4.1 expert balancing and its persistent history")
     cuda.add_argument("--expert-balance-sample-every", type=int, metavar="N",
                       help="sample one in N expert-routing forwards on average (default 64 with --expert-balance-state)")
     cuda.add_argument("--expert-balance-half-life", type=int, metavar="ROUTES",
