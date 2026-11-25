@@ -588,6 +588,10 @@ def _load(L, shards, geometry, rank, device, layers, expert_placement=None):
     f32 = torch.float32
     scratch = dense.Scratch(device)
     group = lambda *members: dense.Group(members, scratch)   # noqa: E731
+    if expert_placement is not None:
+        from .expert_transfer import local_expert_layout
+
+        group_slots = g.experts // (TP // L.etp)
     out = []
     for i in (layers if layers is not None else range(g.layers)):
         p = f"blk.{i}."
@@ -625,14 +629,10 @@ def _load(L, shards, geometry, rank, device, layers, expert_placement=None):
         ly.gate_bias = L.floating(p + "exp_probs_b.bias", f32)
         placement = {}
         if expert_placement is not None:
-            count = g.experts // (TP // L.etp)
-            start = L.g * count
-            expert_ids = expert_placement[i][start:start + count]
-            placement["expert_ids"] = expert_ids
-            local = [-1] * g.experts
-            for slot, expert in enumerate(expert_ids):
-                local[expert] = slot
-            ly.expert_to_local = torch.tensor(local, dtype=torch.int32, device=device)
+            layout = local_expert_layout(expert_placement[i], owner=L.g, group_slots=group_slots)
+            if layout is not None:
+                placement["expert_ids"], local = layout
+                ly.expert_to_local = torch.tensor(local, dtype=torch.int32, device=device)
         ly.exp_gate, ly.gate_up_type, _ = L.expert_bank(p + "ffn_gate_exps.weight", g, down=False, **placement)
         ly.exp_up, up_type, _ = L.expert_bank(p + "ffn_up_exps.weight", g, down=False, **placement)
         if up_type != ly.gate_up_type:

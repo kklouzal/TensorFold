@@ -4,7 +4,7 @@ import pytest
 
 from tensorfold.families.deepseek_v4.cuda.expert_live import LiveExpertPlacement
 from tensorfold.families.deepseek_v4.cuda.expert_rebalance_wire import PeerRefusal, Phase, Refusal
-from tensorfold.families.deepseek_v4.cuda.expert_transfer import plan_expert_transfers
+from tensorfold.families.deepseek_v4.cuda.expert_transfer import local_expert_layout, plan_expert_transfers
 
 
 def setup_transfer(etp):
@@ -32,6 +32,22 @@ def setup_transfer(etp):
             return 5
 
     return live, plan, History(), actions
+
+
+@pytest.mark.parametrize("etp", (1, 2, 4))
+def test_unchanged_local_slots_keep_the_arithmetic_route(etp):
+    _, plan, _, _ = setup_transfer(etp)
+    for owner in range(8 // etp):
+        assert local_expert_layout(plan.current[0], owner=owner, group_slots=plan.group_slots) is None
+        layout = local_expert_layout(plan.proposed[0], owner=owner, group_slots=plan.group_slots)
+        if owner >= 2:
+            assert layout is None
+        else:
+            selected, inverse = layout
+            offset = owner * plan.group_slots
+            assert selected == plan.proposed[0][offset:offset + plan.group_slots]
+            assert all(inverse[logical] == slot for slot, logical in enumerate(selected))
+            assert inverse.count(-1) == 384 - plan.group_slots
 
 
 @pytest.mark.parametrize("etp", (1, 2, 4))

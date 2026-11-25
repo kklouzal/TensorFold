@@ -6,6 +6,19 @@ from dataclasses import dataclass
 Placement = tuple[tuple[int, ...], ...]
 
 
+def local_expert_layout(row: tuple[int, ...], *, owner: int, group_slots: int):
+    """Return the local slot order and inverse map for an already validated placement row."""
+    start = owner * group_slots
+    stop = start + group_slots
+    selected = row[start:stop]
+    if selected == tuple(range(start, stop)):
+        return None
+    inverse = [-1] * len(row)
+    for slot, logical in enumerate(selected):
+        inverse[logical] = slot
+    return selected, inverse
+
+
 @dataclass(frozen=True, slots=True)
 class ExpertSwap:
     layer: int
