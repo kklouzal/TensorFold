@@ -189,6 +189,47 @@ class PrefixOwner(_gemma.PrefixOwner):
         self._counted = None
         self.host_tier = HostTier(self, engine.host_per_rank) if engine.host_per_rank else None
 
+    def retire_placement_prefixes(self) -> None:
+        """Retire the old placement's retained state on the drained scheduler owner.
+
+        Admission, running model work and the issuing stream must already be
+        fenced by the caller. Complete normal snapshot/slot releases before
+        asking every rank to retire its host reachability tables.
+        """
+        if self.streams or self.filling:
+            raise RuntimeError("DeepSeek placement retirement requires an idle prefix owner")
+        all_slots = {id(slot) for slot in self.slots}
+        free_slots = {id(slot) for slot in self.free}
+        kept_slots = {id(entry[1]) for entry in self.kept}
+        if (len(all_slots) != len(self.slots) or len(free_slots) != len(self.free)
+                or free_slots & kept_slots or free_slots | kept_slots != all_slots):
+            raise RuntimeError("DeepSeek placement retirement found inconsistent prefix slot ownership")
+        for _, slot, point, _ in self.kept:
+            end = point.get("prompt_end")
+            if (not slot.capacity or point["sid"] not in self.snap_ids
+                    or (end is not None and end["state"]["sid"] not in self.snap_ids)):
+                raise RuntimeError("DeepSeek placement retirement found an unowned retained prefix")
+        expected = sum(self._bytes(slot) for slot in self.slots) + len(self.snap_ids) * self.snap_bytes
+        if self.held != expected:
+            raise RuntimeError("DeepSeek placement retirement found inconsistent retained bytes")
+        # Regular eviction may leave attached pages in the free slot list.
+        # Drop every reachable point and release every attached slot.
+        self.kept.clear()
+        self._sweep()
+        for slot in self.slots:
+            if slot.capacity:
+                self._release(slot)
+            else:
+                slot.host_rows = None
+        self.free[:] = reversed(self.slots)
+        self.used.clear()
+        self._counted = None
+        self._extent = 0
+        if self.host_tier is not None:
+            self.host_tier.retire_placement_prefixes()
+        if self.held or self.snap_ids or self.turn_of:
+            raise RuntimeError("DeepSeek placement retirement did not release the GPU prefix ledger")
+
     def _cap(self, rows: int) -> int:
         return min(self.e.context, -(-rows // BLOCK) * BLOCK)
 
@@ -296,6 +337,16 @@ def state_at(snap) -> int:
 
 class HostTier(_gemma_host.HostTier):
     """Gemma 4 SM70's host tier; a row extent [first, end) holds every source's rows first // r .. end // r."""
+
+    def retire_placement_prefixes(self) -> None:
+        """Release every entry and its extent chain on the drained host-tier owner."""
+        for entry in tuple(self.entries):
+            self._drop(entry)
+        if self.extents or any(self.taken):
+            raise RuntimeError("DeepSeek placement retirement found an outstanding host extent")
+        self._plan = None
+        # The caller clears every rank's host namespace before new work.
+        self._gone.clear()
 
     def _rows_bytes(self, first: int, rows: int) -> int:
         return extent_bytes(self.owner.e.layout, first, rows)
@@ -415,6 +466,13 @@ class SlotState:
             cache[self._index(want[:k])] = cache[self._index(have[:k])]
 
     # ---- KV rows by position (host extents)
+    def retire_placement_prefixes(self) -> None:
+        """Clear host reachability after ordered GPU retirement and a device fence."""
+        if self.snaps or self.pool.owned or len(self.pool.free) != self.pool.pages:
+            raise RuntimeError("DeepSeek placement retirement requires released rank-local KV borrowers")
+        self.host_layout.clear()
+        self.host_extents.clear()
+
     def _segments(self, first: int, end: int):
         """(region view [pages, rows per page, row bytes], first row, end row) of every source's latent and index
         rows of positions [first, end), in a fixed order."""

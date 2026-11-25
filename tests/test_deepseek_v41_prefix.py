@@ -166,6 +166,102 @@ def _owner(rows=64):
     return o
 
 
+@pytest.mark.parametrize("failure,message", [
+    ("stream", "idle prefix owner"), ("filling", "idle prefix owner"),
+    ("duplicate", "inconsistent prefix slot ownership"), ("bytes", "inconsistent retained bytes"),
+    ("snapshot", "unowned retained prefix"),
+])
+def test_placement_retirement_refuses_invalid_prefix_ownership(failure, message):
+    owner = _owner()
+    if failure == "stream":
+        owner.streams[1] = SimpleNamespace(st=owner.free[-1])
+    elif failure == "filling":
+        owner.filling.append(SimpleNamespace(st=owner.free[-1]))
+    elif failure == "duplicate":
+        owner.free.append(owner.free[-1])
+    elif failure == "bytes":
+        owner.held = 1
+    else:
+        slot = owner.free.pop()
+        slot.capacity = 64
+        owner.kept.append(([1, 2], slot, {"sid": 37}, None))
+    before = (list(owner.free), list(owner.kept), owner.held)
+    with pytest.raises(RuntimeError, match=message):
+        owner.retire_placement_prefixes()
+    assert (owner.free, owner.kept, owner.held) == before and owner.e.ops == []
+
+
+def test_placement_retirement_releases_gpu_and_host_prefix_owners():
+    from tensorfold.families.deepseek_v4.cuda import prefix
+    from tensorfold.families.gemma4.sm70.ops import OP_ATTACH, OP_DETACH
+    from tensorfold.families.qwen4_exp.cuda.prefix_host import BLOCK_BYTES
+
+    target = _target(pages=96, rotorquant=True)
+    slab = torch.zeros(4 * BLOCK_BYTES, dtype=torch.uint8)
+    rank = prefix.SlotState(target, slab)
+
+    class Engine(_Engine):
+        def __init__(self):
+            super().__init__()
+            self.layout = target.pool.layout
+            self.host_per_rank, self.host_slab = slab.numel(), slab
+            self.snap_bytes, self.budget = rank.snap_bytes, target.pool.pages * self.layout.page_bytes
+            self.page_bytes = self.layout.page_bytes
+
+        def announce(self, op, a=0, b=0, c=0, d=0, ids=()):
+            super().announce(op, a, b, c, d, ids)
+            if op == OP_ATTACH:
+                target.pool.attach(a, b)
+            elif op == OP_DETACH:
+                target.pool.detach(a)
+            else:
+                return rank.run(op, a, b, c, d, ids)
+
+    owner = _owner()
+    owner.e = Engine()
+    owner._init_prefix(owner.e, None)
+    kept = owner.free.pop()
+    attached_free = owner.free[-1]
+    assert owner._grow(kept, 256) and owner._grow(attached_free, 64)
+    for page in target.pool.owned[kept.index]:
+        target.pool.cache[page].fill_(17)
+    _fill(target, kept.index, 3)
+    first = owner._snapshot(kept, 128)
+    owner.kept.append((list(range(128)), kept, {"sid": first, "pos": 128}, None))
+    tier = owner.host_tier
+    tier.spill(owner.kept, None)
+    later = owner._snapshot(kept, 256)
+    owner.kept.append((list(range(256)), kept, {"sid": later, "pos": 256}, None))
+    tier.spill(owner.kept, None)
+    assert len(tier.entries) == 2 and tier.extents == 2 and any(tier.taken)
+    assert rank.host_layout and rank.host_extents and kept.host_rows is not None
+    assert owner.held > 0 and rank.snaps and target.pool.owned
+    counters = dict(tier.counters)
+    ids = (owner.next_snap, tier.next_id)
+    before_slab = slab.clone()
+    before_pool = target.pool.cache.clone()
+    with pytest.raises(RuntimeError, match="rank-local KV borrowers"):
+        rank.retire_placement_prefixes()
+    assert rank.host_layout and rank.host_extents
+
+    offset = len(owner.e.ops)
+    owner.retire_placement_prefixes()
+    assert owner.e.ops[offset:] == [
+        (prefix.OP_DROP, first, 0, 0), (prefix.OP_DROP, later, 0, 0),
+        (OP_DETACH, kept.index, 0, 0), (OP_DETACH, attached_free.index, 0, 0),
+    ]
+    assert owner.free == list(reversed(owner.slots)) and not owner.kept and not owner.turn_of and owner.held == 0
+    assert all(slot.capacity == 0 and slot.host_rows is None for slot in owner.slots)
+    assert not tier.entries and not tier._gone and tier.extents == 0 and not any(tier.taken)
+    assert owner.host_tier is tier and tier.counters == counters and (owner.next_snap, tier.next_id) == ids
+    assert not rank.snaps and not target.pool.owned and len(target.pool.free) == target.pool.pages
+    assert rank.host_layout and rank.host_extents
+    rank.retire_placement_prefixes()
+    assert not rank.host_layout and not rank.host_extents
+    assert rank.slab is slab and torch.equal(slab, before_slab)
+    assert torch.equal(target.pool.cache, before_pool)
+
+
 class _Head:
     """A last-row logits stand-in whose device/host copies are itself."""
 
