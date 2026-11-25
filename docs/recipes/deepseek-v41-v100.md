@@ -66,11 +66,12 @@ to size the shared pool. `/v1/stats` reports the effective codec, YaRN factor, a
 
 ### Experimental decode graph memory allowance
 
-This research branch reserves 1,536 MiB per GPU for the existing 48
-startup captures in the full compact ETP4 text profile. It uses 32 lanes,
-128K admission, 8,192-row prompt chunks, native YaRN 16, default kept
-slots and a 2 GiB host prefix slab per rank. The prompt reserve for
-this profile stays at 2.5 GiB per GPU. Native pressure, scoring and
+This research branch reserves 1,536 MiB per GPU for the exact ordered
+48-key startup catalogue in the full compact ETP4 text profile. It uses
+32 lanes, 128K admission, 8,192-row prompt chunks, native YaRN 16 and
+default kept slots. Request the 16 GiB host prefix tier explicitly so
+all ranks agree on 2 GiB each and any pin refusal aborts startup. The
+prompt reserve stays at 2.5 GiB per GPU. Native pressure, scoring and
 serving qualification of this branch are pending.
 
 ```sh
@@ -83,12 +84,13 @@ python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backe
 the capture catalogue. Pool sizing deducts the allowance before capture
 and uses the same allowance to check actual graph memory after capture.
 Other captured profiles use `GRAPH_BYTES` plus `GRAPH_EACH_BYTES` for
-each capture, including when the catalogue count changes.
+each capture. The generic allowance also applies when the keys change or
+move to a different order, including changes that keep 48 captures.
 
 To expand or replace captures, measure all ranks on the exact new
 catalogue. Record peak capture memory, memory left after capture, and
 worst-rank free memory during overlapping prefill and decode and during
-full scoring. Requalify `H64_128K_GRAPH_COUNT` and `H64_128K_GRAPH_BYTES`
+full scoring. Requalify `H64_128K_GRAPH_KEYS` and `H64_128K_GRAPH_BYTES`
 in `src/tensorfold/families/deepseek_v4/cuda/engine.py` even when a
 shape change keeps the same count. Keep the prompt reserve separate
 and verify the admitted KV pool, scoring, perplexity and normal serving

@@ -1662,10 +1662,10 @@ All scoped candidate, source, build, native, packaging and fresh API gates are c
 
 #### DeepSeek-V4.1-Flash on eight V100s (2026-11-21)
 
-The compact ETP4 research branch tests a 1,536 MiB allowance for the existing
-48 captures in the 32-lane native-YaRN 128K H64 text profile. The 2.5 GiB prompt
-reserve stays separate. Native pressure, quality and serving verification of
-this branch are pending. [Graph expansion and qualification steps](docs/recipes/deepseek-v41-v100.md#experimental-decode-graph-memory-allowance).
+The compact ETP4 research branch tests a 1,536 MiB allowance for the exact
+ordered 48-capture catalogue in the 32-lane native-YaRN 128K H64 text profile
+with an explicit 16 GiB host prefix tier. The 2.5 GiB prompt reserve stays
+separate. Native pressure, quality and serving verification are pending. [Graph expansion and qualification steps](docs/recipes/deepseek-v41-v100.md#experimental-decode-graph-memory-allowance).
 
 New CUDA lane for DeepSeek-V4.1-Flash-1017 GGUF (GSQ-RCO IQ2_XXS backbone; the IQ4_NL Engram table stays in host RAM),
 TP8 attention/dense and ETP4 x EP2 routed experts, up to 32 streams. It uses startup decode graphs, the friend's EM3
