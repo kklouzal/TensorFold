@@ -238,7 +238,9 @@ class DS41Engine:
         from .graphs import shape_keys
         capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(shape_keys(slots, self.context)) if capture else 0
-        prompt_reserve = H64_TEXT_RESERVE if rotorquant and not vision else RESERVE
+        prompt_reserve = RESERVE
+        if rotorquant and not vision and capture and self.context <= 131_072 and max_tokens <= MAX_TOKENS:
+            prompt_reserve = H64_TEXT_RESERVE
         pages = max(1, (int(every.min()) - prompt_reserve - graph_bytes - ring_bytes) // page_bytes)
         target_started = time.perf_counter()
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
