@@ -49,6 +49,11 @@ RESERVE = 3 << 30          # bytes left free per rank for prompt transients, aft
 H64_TEXT_RESERVE = 5 << 29
 GRAPH_EACH_BYTES = 40 << 20 # decode graph memory per captured bucket (sizing bound; measured ~30 MiB)
 GRAPH_BYTES = 128 << 20     # + the graphs' shared torch pool (measured ~40 MiB)
+# Experimental allowance for the existing compact ETP4 128K H64 catalogue.
+# Requalify both values when changing graph shapes, even at the same count.
+# See the decode graph memory section in docs/recipes/deepseek-v41-v100.md.
+H64_128K_GRAPH_COUNT = 48
+H64_128K_GRAPH_BYTES = 1536 << 20
 TRACE = bool(os.environ.get("TENSORFOLD_DS41_SCHED_TRACE"))   # diagnostic: the Decoder's group plans and costs
 
 
@@ -251,10 +256,16 @@ class DS41Engine:
         # ~30 MiB per captured graph outside the torch pool (graph/NCCL resources) + ~40 MiB pool (ds41-graphs g2:
         # 606 MiB for 18 buckets on one capture stream).
         from .graphs import shape_keys
-        graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(shape_keys(slots, self.context)) if capture else 0
+        graph_count = len(shape_keys(slots, self.context)) if capture else 0
+        graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * graph_count if capture else 0
         prompt_reserve = RESERVE
         if etp == W.ETP and h64_text:
             prompt_reserve = H64_TEXT_RESERVE
+            if (graph_count == H64_128K_GRAPH_COUNT and self.context == 131_072
+                    and slots == MAX_STREAMS and keep_slots == default_keep_slots(slots)
+                    and max_tokens == MAX_TOKENS and yarn_factor is None and self.yarn_factor == 16.0
+                    and layers is None and self.w.compact_expert_down and slab.per_rank == 2 << 30):
+                graph_bytes = H64_128K_GRAPH_BYTES
         pages = max(1, (int(every.min()) - prompt_reserve - graph_bytes - ring_bytes) // page_bytes)
         target_started = time.perf_counter()
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
