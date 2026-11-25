@@ -18,7 +18,7 @@ Status: development lane, qualified on one host only (SC117: 8x V100 32 GB, 180 
 
 ```sh
 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backend cuda \
-  --name deepseek-v4.1-flash --parallel 32 --context 65536 --prefix-host-bytes 17179869184 \
+  --name deepseek-v4.1-flash --parallel 32 --context 131072 --prefix-host-bytes 17179869184 \
   --kv-dtype rotorquant-iso64-norm4-h64 --port 8000
 ```
 
@@ -40,7 +40,7 @@ registered Engram table.
 | Flag | DeepSeek-V4.1 SM70 |
 | --- | --- |
 | `--parallel N` | 1-32 concurrent streams. Requests beyond N wait in the queue. |
-| `--context N` | Admitted context per stream. The default is the model's maximum. The tested H64 profile configures 65,536 tokens per stream. |
+| `--context N` | Admitted context per stream. The default is the model's maximum. The H64 launch above admits 131,072 tokens per stream. |
 | `--prefix-host-bytes B` | Pinned host tier for evicted prefix points, shared across ranks (Gemma 4 SM70 sizing; `0` disables). |
 | `--kv-dtype rotorquant-iso64-norm4-h64` | RotorQuant Q4 for both sliding-window and compressed attention latents. DeepSeek stores one 272-byte row for shared K and V. The learned index rows retain their separate format. |
 | `--yarn-factor F` | Overrides the checkpoint's static YaRN factor on compressed layers. Window-only layers retain plain RoPE. |
@@ -49,27 +49,45 @@ registered Engram table.
 | `--vision` | Image input (needs `mmproj_file` and `vision_bias_file` in `config.json`; see "Image input"). |
 
 The RotorQuant Q4 launch uses native YaRN 16 from the checkpoint. The checkpoint advertises
-1,048,576 positions, and the launch admits 65,536 tokens per request. `/v1/stats` reports
+1,048,576 positions, and the launch admits 131,072 tokens per request. `/v1/stats` reports
 the effective `model.kv_dtype` and `model.yarn_factor`.
 
 ## What runs
 
 ### Experimental DSpark decode
 
-To test DSpark through the standard launch, add `--draft-method dspark --drafter /models/ds41-dspark-1017
---mtp-drafts 3`. The native bundle contains `ft/model.safetensors.index.json`, the referenced FT shards,
-and `official/config.json`. `--mtp-drafts 5` selects the other prepared depth.
-This option uses the checkpoint's existing YaRN settings and keeps the configured admission width. It takes the
+The launch above uses ordinary decoding. For experimental DSpark on the same H64 profile,
+add these flags to the end of the launch command.
+
+```sh
+--draft-method dspark --drafter /models/ds41-dspark-1017 --mtp-drafts 3
+```
+
+The native bundle contains `ft/model.safetensors.index.json`, the referenced FT shards, and
+`official/config.json`. Use `--mtp-drafts 5` for five proposals. This option requires CUDA graphs and the
+full model. It uses the checkpoint's existing YaRN settings and keeps the configured admission width. It takes the
 verify graph only for one live greedy text request whose normal prefill computed all real rows in the final draft
-window. Concurrent decode, score requests, sampling, constrained requests, and requests without that complete
-window use ordinary decoding. Existing draft counters report evaluated proposals and matching target decisions,
+window. Concurrent decode, another request in prefill, score requests, sampling, constrained requests, and requests
+without that complete window use ordinary decoding. A stream that takes an ordinary decode step stays on that
+path for the rest of its admission. Draft counters report evaluated proposals and matching target decisions,
 including a matched final proposal at EOS or the output cap. Every rank acknowledges its completed verification
-commit before the server publishes the round. The experimental serving path still requires native, exact-quality
-and performance qualification before it can be selected as a serving profile.
+commit before the server publishes the round.
+
+On SC117, source `22075abb` ran four fresh servers with drafting off, depth 5 on, depth 5 on, then off.
+The 128K/32-stream H64 launch used eight V100s at 180 W and image `67b43e682057`. The greedy C1 4K run
+delivered 56.28% more output tokens/s with D5. The measured p99 visible frame gap rose 132.51%. The
+enabled arms recorded zero speculative rounds at C8, C16, and C32. Allocated KV capacity was
+8,435,648 tokens with drafting off and 6,634,816 with D5 enabled. Generated token IDs can differ
+between ordinary and speculative decoding.
+
+The held single-request D5 teacher-forced decode comparison met the configured 0.005-nat equivalence margin
+in all seven score groups. The earlier D3 held diagnostic also met that margin in all seven groups.
+The full native draft-head check exceeded its 0.02 relative L2 bound on one held
+case. DSpark remains an experimental opt-in for single-request greedy text generation on this profile.
 
 The 2026-11-24 SC117 experiment ran `4fbc07d9` and `46f68770` as four fresh depth-3 servers in
 reference, candidate, candidate, reference order. It used the eight-V100 image `67b43e682057`,
-the 180 W limit, and the 32-session H64 launch above. Each of the four held greedy prompts had
+the 180 W limit, and a 65,536-token, 32-session H64 launch. Each of the four held greedy prompts had
 zero cached tokens and a 120-token output cap. The table reports median server decode rates.
 
 | Prompt tokens | Reference tok/s | Candidate tok/s |

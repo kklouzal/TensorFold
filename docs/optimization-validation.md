@@ -36,8 +36,12 @@ equivalence criterion. The corpus, continuation cap, row counts, and prompt-band
 
 The SC117 depth-3 comparison of `4fbc07d9` and `46f68770` used two fresh sessions per build
 and four held, uncached C1 prompts. The candidate improved server decode on both pairs, preserved
-output and draft counters, and retained 6,634,816 KV tokens. Full head and ordinary-versus-draft
-qualification remain open. [DSpark measurements](recipes/deepseek-v41-v100.md#experimental-dspark-decode)
+output and draft counters, and raised KV capacity from 6,548,480 to 6,634,816 tokens.
+
+Source `22075abb` also served depth 3 and depth 5 through the standard interface on the 128K H64 profile.
+Held single-request teacher-forced decode met the 0.005-nat equivalence margin. A separate native head
+case measured 0.0212 relative L2 against the 0.02 bound. The D5 throughput gain is scoped to the tested
+C1 workload. [DSpark measurements](recipes/deepseek-v41-v100.md#experimental-dspark-decode)
 
 ## Gemma 4 five-row SM70 decode
 

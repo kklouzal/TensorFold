@@ -326,7 +326,7 @@ def test_h64_decode_ring_write_matches_post_attention_across_wrap_and_scratch(co
     token_req = torch.arange(count, dtype=torch.int32, device=device)
     qsl = torch.arange(count + 1, dtype=torch.int32, device=device)
     step = SimpleNamespace(positions=positions, req_slot=slots, valid=torch.ones_like(valid), qsl=qsl,
-                           token_req=token_req, single_token_slots=True)
+                           token_req=token_req, single_token_slots=True, spec=None)
     history = torch.randn((scratch + 1) * pk.RING, 512, dtype=torch.float16, device=device, generator=generator)
     initial = _split_pack(history, torch.ones(len(history), dtype=torch.bool, device=device)).view(scratch + 1, pk.RING, 272)
     early, late = initial.clone(), initial.clone()

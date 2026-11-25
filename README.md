@@ -379,7 +379,7 @@ The table describes supported integration paths. It is not a promise that every 
 | Gemma 4 E4B | `DavidAU/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking` | CUDA BF16 candidate; [recipe](docs/recipes/gemma-4-e4b.md) | Native Google assistant and EAGLE3 candidates; comparison pending, neither is DFlash |
 | Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4; ModelOpt NVFP4 ([recipe](docs/recipes/gemma-4-26b-modelopt.md)) | MLX; initial CUDA trial; AEON-7 NVFP4 on eight V100s with `--tp 8` ([recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)) | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; BF16 companion or prepared FP8 in the qualified GB10 CT profile, one stream |
 | DeepSeek-V4-Flash | `mlx-community/DeepSeek-V4-Flash-4bit` | MLX on a 256 GB Mac | `Vontra/DeepSeek-V4-Flash-DSpark-MLX` or `Vontra/DeepSeek-V4-Flash-MTP-MLX` |
-| DeepSeek-V4.1-Flash-1017 GGUF | GSQ-RCO IQ2_XXS backbone + IQ4_NL Engram (host RAM) | CUDA SM70 on eight V100s, TP8/ETP4 x EP2, up to 32 streams, image input with `--vision` ([recipe](docs/recipes/deepseek-v41-v100.md)) | Ordinary decoding by default. Experimental opt-in DSpark serving, pending end-to-end qualification. |
+| DeepSeek-V4.1-Flash-1017 GGUF | GSQ-RCO IQ2_XXS backbone + IQ4_NL Engram (host RAM) | CUDA SM70 on eight V100s, TP8/ETP4 x EP2, up to 32 streams, image input with `--vision` ([recipe](docs/recipes/deepseek-v41-v100.md)) | Ordinary decoding by default. Experimental opt-in DSpark for one active greedy text request on the H64 profile. |
 | Qwen3.8-27B NVFP4 | `nvidia/Qwen3.8-27B-NVFP4`; `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` ([recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)) | CUDA, one GPU | DFlash2 and context copies |
 | Qwen3.8-27B EXL3, experimental | `turboderp/Qwen3.8-27B-exl3`, branches `3.00bpw` / `4.00bpw` | CUDA | DFlash2 and context copies |
 | Flash Next EXL3, experimental | `turboderp/Qwen3.8-Flash-Next-exl3`, branch `3.05bpw_h5_ng5` | CUDA | Included MTP and context copies |
@@ -1675,10 +1675,10 @@ after correcting sequence-parallel expert routing. On the larger 268-document co
 0.00190 nats/token against the historical `p1` build, with the increase concentrated in prompts of 1,024 tokens
 or more. Overall early-decode NLL met the equivalence criterion. The [recipe](docs/recipes/deepseek-v41-v100.md)
 gives the intervals and measurement scope. The default uses ordinary decode.
-DSpark is experimental and requires explicit opt-in. On SC117 at depth 3, `46f68770` improved server
-decode by **1.69–2.91%** across four held C1 prompts compared with `4fbc07d9` and recovered
-**86,336 KV tokens**. The paired runs matched output tokens and draft counters exactly.
-Full head and ordinary-versus-draft qualification remain open. [DSpark measurements](docs/recipes/deepseek-v41-v100.md#experimental-dspark-decode)
+On SC117 with H64 and 128K admission, experimental opt-in DSpark at depth 5 delivered **56.28%** more
+output tokens per second in the C1 4K test on `22075abb`. Concurrent decoding uses the ordinary path.
+Held single-request decode met the NLL equivalence margin. One held case exceeded the full draft-head
+error bound. See the [DSpark launch and measurements](docs/recipes/deepseek-v41-v100.md#experimental-dspark-decode).
 
 The normal CUDA server exposes exact chat token counts, renderer capabilities and request
 statistics to [Harness and other API clients](docs/recipes/deepseek-v41-v100.md#launch).
