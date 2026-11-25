@@ -383,6 +383,7 @@ def _timeline_decoder(monkeypatch, unit_ms, round_ms=20.0, units=8, warm_rows=25
     monkeypatch.setattr(RS, "greedy_tokens", lambda packet, n: [(7, None)] * n)
     d = object.__new__(E.Decoder)
     d.e = Engine()
+    d.decode_math = 0                           # Stock Decoder.__init__ mode.
     d.GAP_MS, d.streams, d.filling, d._broken, d.eos = 175.0, {}, [], None, ()
     d.inflight = d.ahead = d.split = d.finishing = d.timing = None
     d.timed = []
