@@ -3,15 +3,17 @@
 Contract checked: every output row equals the 6-row path's (onecat_ds41.v41_experts in pieces of 6) bit for
 bit, for every gate/up and down variant, every TP slice (left 0/64/128/192), M 1..130 (pieces of 64), with
 non-local routes passed as id 0 / probability 0 (Target.moe's form) and hot-expert routing; rows are batch
-invariant; a captured CUDA graph replays new routing exactly. The FP32 oracle error (test_sm70_onecat_ds41's
-reference) is reported, equal to the 6-row path's by construction.
+invariant; a captured CUDA graph replays new routing exactly. The wider ETP2 and ETP1 banks have their own
+full-width FP32 oracle and an exact IQ2_XXS down reduction oracle at selected columns.
 """
 
 import numpy as np
 import pytest
 import torch
 
-from test_sm70_onecat_ds41 import BYTES, LOCAL, Carriers, bits_equal, fp32_reference, grid, pytestmark, tables  # noqa: F401
+from test_sm70_onecat_ds41 import (  # noqa: F401
+    BYTES, LOCAL, Carriers, bank, bits_equal, fp32_reference, grid, pytestmark, reference, tables, tensor_of,
+)
 
 
 @pytest.fixture(scope="module")
@@ -31,12 +33,12 @@ def pieces(dec, x, ids, p, banks, kind, left):
     return out
 
 
-def routing(m, generator, *, hot=False, local_share=0.5):
+def routing(m, generator, *, hot=False, local_share=0.5, experts=LOCAL):
     if hot:  # a few experts take most routes (concurrent / speculative rows)
         ids = torch.randint(0, 3, (m, 6), generator=generator)
-        ids[:, 3:] = torch.randint(0, LOCAL, (m, 3), generator=generator)
+        ids[:, 3:] = torch.randint(0, experts, (m, 3), generator=generator)
     else:
-        ids = torch.rand(m, LOCAL, generator=generator).argsort(-1)[:, :6]
+        ids = torch.rand(m, experts, generator=generator).argsort(-1)[:, :6]
     p = torch.softmax(torch.randn(m, 6, generator=generator), -1).float()
     mine = torch.rand(m, 6, generator=generator) < local_share
     return torch.where(mine, ids, 0).to(torch.int32).cuda(), torch.where(mine, p, 0).cuda()
@@ -141,14 +143,14 @@ def etp2_banks(carriers, rank):
     return banks, reference, left
 
 
-def etp2_iq2_xxs_reference(dec, x, ids, probabilities, banks, left, columns):
-    """Independent scalar 36-group reduction at selected output columns."""
+def wide_iq2_xxs_reference(dec, x, ids, probabilities, banks, left, columns):
+    """Independent scalar full-width reduction at selected output columns."""
     q8 = dec.quantize_q8_1(x)
     gate, up, down = banks
     # The fixed six-row projection and quantizer operate on independent
     # groups. No ETP4 down multiply or intermediate output rounding is used.
     activations = []
-    for start in (0, 576):
+    for start in range(0, gate.shape[1], 576):
         projection = dec.v41_gate_up(q8, ids, gate[:, start:start + 576].contiguous(),
                                      up[:, start:start + 576].contiguous(), 16)
         activations.append(dec.v41_swiglu_q8(projection, probabilities))
@@ -166,7 +168,7 @@ def etp2_iq2_xxs_reference(dec, x, ids, probabilities, banks, left, columns):
                 if probability == 0:
                     continue
                 dot = np.float32(0)
-                row = down[expert, ci].reshape(5, 66)
+                row = down[expert, ci].reshape(-1, 66)
                 for group, block in enumerate(activation[token, route]):
                     physical_block, lane = divmod(group + left // 32, 8)
                     raw = row[physical_block]
@@ -215,7 +217,7 @@ def test_etp2_raw_expert_slices_and_127_rows(ops, kind):
         assert (result[-1:].float() - raw).norm() / raw.norm() < 0.1
         if kind == 16:
             columns = (0, 31, 5119)
-            exact = etp2_iq2_xxs_reference(dec, x[-1:], ids[-1:], p[-1:], banks, left, columns)
+            exact = wide_iq2_xxs_reference(dec, x[-1:], ids[-1:], p[-1:], banks, left, columns)
             assert bits_equal(result[-1:, list(columns)], exact)
         with pytest.raises(RuntimeError, match="0/128"):
             ws.experts(x[:1], ids[:1], p[:1], *banks, kind, kind, 64)
@@ -230,9 +232,13 @@ def test_etp2_q8_group_workspace_replays_changed_routes(ops):
     assert em.extension().workspace_bytes() == default.buffer.numel()
     assert default.buffer.numel() - ws.buffer.numel() == 635904
     banks, _, left = etp2_banks(Carriers(16), 1)
-    generator = torch.Generator().manual_seed(112)
+    assert_wide_graph_replay(ws, banks, left, torch.Generator().manual_seed(112))
+
+
+def assert_wide_graph_replay(ws, banks, left, generator):
+    expert_count = banks[0].shape[0]
     x = torch.randn(7, 5120, generator=generator).half().cuda()
-    ids, p = routing(7, generator)
+    ids, p = routing(7, generator, experts=expert_count)
     out = torch.empty_like(x)
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
@@ -243,7 +249,9 @@ def test_etp2_q8_group_workspace_replays_changed_routes(ops):
     with torch.cuda.graph(graph):
         ws.experts(x, ids, p, *banks, 16, 16, left, out=out)
     for hot in (True, False):
-        next_ids, next_p = routing(7, generator, hot=hot)
+        next_ids, next_p = routing(7, generator, hot=hot, experts=expert_count)
+        next_ids[0, 0] = expert_count - 1
+        next_p[0, 0] = 0.25
         x.copy_(torch.randn(7, 5120, generator=generator).half())
         ids.copy_(next_ids)
         p.copy_(next_p)
@@ -252,3 +260,47 @@ def test_etp2_q8_group_workspace_replays_changed_routes(ops):
         graph.replay()
         eager = ws.experts(x, ids, p, *banks, 16, 16, left)
         assert bits_equal(out, eager) and not out[-1].view(torch.int16).any()
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_etp1_raw_expert_banks(ops, kind):
+    em, default, dec = ops
+    ws = em.Workspace("cuda", intermediate=2304)
+    assert default.buffer.numel() - ws.buffer.numel() == 138240
+    raw = [bank(tensor_of(kind, part))[-48:] for part in ("gate", "up", "down")]
+    size = BYTES[kind]
+    assert [a.shape for a in raw] == [(48, 2304, 20 * size), (48, 2304, 20 * size), (48, 5120, 9 * size)]
+    banks = [torch.from_numpy(np.array(a, copy=True, order="C")).cuda() for a in raw]
+
+    generator = torch.Generator().manual_seed(2304 + kind)
+    x = torch.randn(127, 5120, generator=generator).half().cuda()
+    ids, p = routing(127, generator, hot=True, local_share=0.125, experts=48)
+    ids[-2].fill_(-1)
+    p[-2].fill_(-0.0)
+    active = (0, 20, 47)
+    ids[-1].copy_(torch.tensor([*active, 0, 0, 0], dtype=torch.int32))
+    p[-1].copy_(torch.tensor([0.25, 0.25, 0.25, 0, 0, 0], dtype=torch.float32))
+    result = ws.experts(x, ids, p, *banks, kind, kind, 0)
+    assert torch.isfinite(result).all() and not result[-2].view(torch.int16).any()
+    for r in (0, 63, 64, 126):
+        row = slice(r, r + 1)
+        assert bits_equal(result[row], ws.experts(x[row], ids[row], p[row], *banks, kind, kind, 0))
+
+    weights = []
+    for a in raw:
+        chosen = a[list(active)]
+        dequantized = reference(chosen.reshape(-1, a.shape[-1]), kind).astype(np.float16)
+        weights.append(torch.from_numpy(dequantized).cuda().view(3, a.shape[1], -1))
+    mapped = torch.tensor([[0, 1, 2, 0, 0, 0]], dtype=torch.int32, device="cuda")
+    full = fp32_reference(x[-1:], mapped, p[-1:], weights)
+    assert (result[-1:].float() - full).norm() / full.norm() < 0.1
+    with pytest.raises(RuntimeError, match="must be 0 for ETP1"):
+        ws.experts(x[:1], ids[:1], p[:1], *banks, kind, kind, 128)
+    if kind == 16:
+        columns = (0, 31, 5119)
+        exact = wide_iq2_xxs_reference(dec, x[-1:], ids[-1:], p[-1:], banks, 0, columns)
+        assert bits_equal(result[-1:, list(columns)], exact)
+        short = banks[2][:1, :, :-size].contiguous()
+        with pytest.raises(RuntimeError, match="matching workspace and left"):
+            ws.experts(x[:1], ids[:1], p[:1], banks[0][:1], banks[1][:1], short, kind, kind, 0)
+        assert_wide_graph_replay(ws, banks, 0, generator)

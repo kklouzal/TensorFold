@@ -350,9 +350,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                       help="auto: MLX on macOS, CUDA elsewhere")
     cuda.add_argument("--tp", type=int, choices=(1, 2, 4, 8), default=1,
                       help="tensor-parallel GPUs (one visible GPU per rank process); run the same model/settings on each")
-    cuda.add_argument("--expert-tensor-parallel-size", type=int, choices=(2, 4, 8), default=None,
+    cuda.add_argument("--expert-tensor-parallel-size", type=int, choices=(1, 2, 4, 8), default=None,
                       help="routed-expert tensor parallel degree on TP8 CUDA: Flash Next GGUF (2, 4, 8; PP1), "
-                           "DeepSeek-V4.1 GGUF (2 or 4; default 4). Shared experts stay TP8. Gemma 4 TP8 uses 4.")
+                           "DeepSeek-V4.1 GGUF (1, 2 or 4; default 4). Shared experts stay TP8. Gemma 4 TP8 uses 4.")
     cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,
                       help="Flash Next expert-only NCCL ranks; rank zero owns backbone/state, separate from --tp")
     cuda.add_argument("--expert-shards", default=None, metavar="COUNTS",

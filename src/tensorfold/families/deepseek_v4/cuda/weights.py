@@ -2,7 +2,7 @@
 
 TP8 attention/dense (the Flash Next / Gemma 4 lane layout): rank r owns slice r of every sharded projection (8
 query heads, one output group, 4 indexer heads, 288 shared-expert rows, 1/8 of the Engram value projection and
-the vocabulary). Routed experts use two or four tensor-parallel lanes per group. Expert group g = r // ETP owns
+the vocabulary). Routed experts use one, two or four tensor-parallel lanes per group. Expert group g = r // ETP owns
 an equal, contiguous range of expert IDs, and lane r % ETP owns its contiguous intermediate slice.
 Routed and shared partials meet in one eight-rank sum.
 
@@ -27,7 +27,7 @@ from tensorfold.gguf_file import FORMATS, GGUFCheckpoint, PackedTensor, _shard
 
 TP = 8                                   # attention/dense ranks
 ETP = 4                                  # default expert tensor-parallel ranks per expert group
-EXPERT_TP_SIZES = (2, ETP)
+EXPERT_TP_SIZES = (1, 2, ETP)
 WORLD = TP
 EXPERT_TYPES = (16, 17, 29)              # IQ2_XXS, IQ2_XS, IQ1_M
 DENSE_TYPES = (8, 13)                    # Q8_0, Q5_K
@@ -40,7 +40,7 @@ def checked_etp(degree: int | None) -> int:
     if degree is None:
         return ETP
     if type(degree) is not int or degree not in EXPERT_TP_SIZES:
-        raise ValueError("DeepSeek-V4.1 CUDA expert tensor parallelism requires degree 2 or 4")
+        raise ValueError("DeepSeek-V4.1 CUDA expert tensor parallelism requires degree 1, 2 or 4")
     return degree
 
 
@@ -361,8 +361,12 @@ class Loader:
         else:
             share = out_rows // self.etp
             out = torch.empty((local, share, row), dtype=torch.uint8, device=self.device)
-            self.staging.copy(t.path, [(t.offset + ((first + e) * out_rows + self.e * share) * row, share * row)
-                                       for e in range(local)], out)
+            if share == out_rows:
+                spans = [(t.offset + first * out_rows * row, local * out_rows * row)]
+            else:
+                spans = [(t.offset + ((first + e) * out_rows + self.e * share) * row, share * row)
+                         for e in range(local)]
+            self.staging.copy(t.path, spans, out)
             left = 0
         return out, kind, left
 

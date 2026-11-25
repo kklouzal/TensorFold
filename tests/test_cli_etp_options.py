@@ -16,12 +16,12 @@ def parsed(model, degree=None):
     return cli.build_parser().parse_args(argv)
 
 
-@pytest.mark.parametrize("degree", [None, 2, 4, 8])
+@pytest.mark.parametrize("degree", [None, 1, 2, 4, 8])
 def test_parser_preserves_default_and_accepts_only_prepared_degrees(degree):
     assert parsed("checkpoint", degree).expert_tensor_parallel_size == degree
 
 
-@pytest.mark.parametrize("degree", [0, 1, 3, 16])
+@pytest.mark.parametrize("degree", [0, 3, 16])
 def test_parser_rejects_excluded_degrees(degree):
     with pytest.raises(SystemExit):
         parsed("checkpoint", degree)

@@ -237,32 +237,32 @@ def test_lattice_decode_crossover(ops):
               f"decode loop median {b[len(b) // 2]:.3f} ms")
 
 
-@pytest.mark.parametrize("kind", [16, 17, 29])
-def test_lattice_etp2_experts_against_fp32(ops, kind):
+def _check_partitioned_lattice(ops, kind, etp):
     from test_sm70_onecat_ds41 import BYTES, reference, tensor_of
 
     lat, _, _ = ops
     tensors = [tensor_of(kind, part) for part in ("gate", "up", "down")]
-    width, block = 1152, 256
-    local = 96
-    selected = [0, 1, 2, 3, 4, 5, 94, 95]
+    width, block = 2304 // etp, 256
+    groups = 8 // etp
+    local = 384 // groups
+    selected = [0, 1, 2, 3, 4, 5, local - 2, local - 1]
     selected_ids = torch.tensor(selected, dtype=torch.int32, device="cuda")
     generator = torch.Generator().manual_seed(932 + kind)
     workspace = lat.Workspace("cuda", tile=local, intermediate=width)
     size = BYTES[kind]
-    for rank in (0, 1):
-        # Two EP groups and both intra-ETP column cuts. The second K window
-        # starts halfway into its first block and reaches the body of its fifth.
-        expert_start = (rank + 2) * local
-        first = rank * width
+    for shard in range(etp):
+        # Exercise the tail EP groups and every intra-ETP input window.
+        expert_start = (groups - etp + shard) * local
+        first = shard * width
         first_block, left = divmod(first, block)
-        assert left == (0, 128)[rank]
+        blocks = -(-(left + width) // block)
+        assert left == (0, 128)[shard] and blocks == (9 if etp == 1 else 5)
         g, u, d = (bank(t)[expert_start:expert_start + local] for t in tensors)
         raw = (g[:, first:first + width], u[:, first:first + width],
-               d[:, :, first_block * size:(first_block + 5) * size])
+               d[:, :, first_block * size:(first_block + blocks) * size])
         banks = [torch.from_numpy(np.ascontiguousarray(a)).cuda() for a in raw]
         assert [a.shape[:2] for a in banks] == [(local, width), (local, width), (local, 5120)]
-        assert banks[-1].shape[-1] == 5 * size
+        assert banks[-1].shape[-1] == blocks * size
         decoded = []
         for index, item in enumerate(raw):
             active = np.ascontiguousarray(item[selected])
@@ -270,7 +270,8 @@ def test_lattice_etp2_experts_against_fp32(ops, kind):
             if index == 2:
                 values = values[:, :, left:left + width]
             decoded.append(torch.from_numpy(values.astype(np.float16)).cuda())
-        for rows in (128, 769):
+        rows_cases = (128, 769, 2048) if etp == 1 else (128, 769)
+        for rows in rows_cases:
             x = torch.randn(rows, 5120, generator=generator).half().cuda()
             ids, probabilities = routes(rows, len(selected), generator, local_share=0.25)
             local_ids = selected_ids[ids]
@@ -283,5 +284,19 @@ def test_lattice_etp2_experts_against_fp32(ops, kind):
             dropped = torch.where(probabilities == 0, local - 1, local_ids).contiguous()
             assert torch.equal(output.view(torch.int16), lat.experts(
                 x, dropped, probabilities, *banks, kind, kind, left, workspace).view(torch.int16))
+        if etp == 1:
+            none = lat.experts(x[:128], local_ids[:128], torch.zeros_like(probabilities[:128]),
+                               *banks, kind, kind, left, workspace)
+            assert not none.view(torch.int16).any()
         del banks, decoded
     workspace.check()
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_lattice_etp2_experts_against_fp32(ops, kind):
+    _check_partitioned_lattice(ops, kind, 2)
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_lattice_etp1_experts_against_fp32(ops, kind):
+    _check_partitioned_lattice(ops, kind, 1)

@@ -5,8 +5,9 @@ provenance, the kernels and the TensorFold changes. Operands are ``onecat_ds41.v
 rank's original GGUF expert bytes: FP16 x [M, 5120], int32 local ids and FP32 probabilities [M, 6],
 and packed gate/up [E, intermediate, 20*block]. ETP4 uses intermediate=576 and down [E, 5120, 3*block]
 with ``left`` in 0/64/128/192. The ETP4 result matches the six-row implementation bit for bit.
-ETP2 uses intermediate=1152 and down [E, 5120, 5*block] with ``left`` in 0/128 and accumulates all
-36 quantized down groups before its FP16 route rounding. Both widths return FP16 [M, 5120] and follow
+ETP2 uses intermediate=1152 and down [E, 5120, 5*block] with ``left`` in 0/128. ETP1 uses
+intermediate=2304 and down [E, 5120, 9*block] with ``left`` 0. Each rank accumulates all its
+quantized down groups before FP16 route rounding. All widths return FP16 [M, 5120] and follow
 the same arithmetic stages (Q8_1 activations,
 FP32 integer-dot sums in a fixed order, FP16 gate/up, clamped SwiGLU x probability, FP16 + Q8_1 down input,
 FP16 per-route down rows, raw_down_unroute's FP32 route sum). Rows are independent (batch invariant: a row's
@@ -79,8 +80,8 @@ class Workspace:
     """One device's fixed decode-MoE workspace and codebook tables (construct before graph capture)."""
 
     def __init__(self, device, *, intermediate=ROWS):
-        if type(intermediate) is not int or intermediate not in (ROWS, 2 * ROWS):
-            raise ValueError("V4.1 decode intermediate must be 576 or 1152")
+        if type(intermediate) is not int or intermediate not in (ROWS, 2 * ROWS, 4 * ROWS):
+            raise ValueError("V4.1 decode intermediate must be 576, 1152, or 2304")
         if torch.cuda.is_current_stream_capturing():
             raise RuntimeError("create the DeepSeek-V4.1 decode MoE workspace before graph capture")
         ext = extension()
@@ -100,8 +101,8 @@ class Workspace:
         for at in range(0, rows, MAX_ROWS):
             end = min(at + MAX_ROWS, rows)
             m = end - at
-            if self.intermediate == 2 * ROWS and schedule is None:
-                gate_variant = down_variant = 4  # fused gate/up and unstaged 36-group down
+            if self.intermediate != ROWS and schedule is None:
+                gate_variant = down_variant = 4  # fused gate/up and unstaged full-width down
             else:
                 gate_variant = pick("g", gate_type, m, schedule)
                 down_variant = pick("d", down_type, m, schedule)

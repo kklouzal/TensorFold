@@ -58,7 +58,7 @@ def test_prebuild_reraises_a_build_failure():
         prebuild.wait()
 
 
-@pytest.mark.parametrize("degree", [None, 2, 4])
+@pytest.mark.parametrize("degree", [None, 1, 2, 4])
 def test_deepseek_serving_selects_expert_degree(tmp_path, degree):
     from tensorfold import cli, families
     from tensorfold.families.deepseek_v4.cuda.weights import checked_etp
@@ -74,11 +74,12 @@ def test_deepseek_serving_selects_expert_degree(tmp_path, degree):
     cli._check_serve_options(args, family, "cuda", tmp_path)
     assert checked_etp(args.expert_tensor_parallel_size) == (4 if degree is None else degree)
     rejected = parser.parse_args([*command, "--expert-tensor-parallel-size", "8"])
-    with pytest.raises(ValueError, match="degree 2 or 4"):
+    with pytest.raises(ValueError, match="degree 1, 2 or 4"):
         cli._check_serve_options(rejected, family, "cuda", tmp_path)
 
 
 @pytest.mark.parametrize("degree,experts,width,offsets,blocks", [
+    (1, 48, 2304, (0,), 9),
     (2, 96, 1152, (0, 128), 5),
     (4, 192, 576, (0, 64, 128, 192), 3),
 ])
@@ -103,8 +104,11 @@ def test_deepseek_expert_carriers_match_rank_ownership(degree, experts, width, o
         tensor, quant, offset = loader.expert_bank("gate", geometry, down=False)
         assert (tuple(tensor.shape), quant, offset) == ((experts, width, 20 * byte_width), 16, 0)
         row_bytes = 20 * byte_width
-        assert copied[-1] == ("gate", [(128 + ((first + i) * 2304 + start) * row_bytes, width * row_bytes)
-                                       for i in range(experts)])
+        if degree == 1:
+            assert copied[-1] == ("gate", [(128 + first * 2304 * row_bytes, experts * 2304 * row_bytes)])
+        else:
+            assert copied[-1] == ("gate", [(128 + ((first + i) * 2304 + start) * row_bytes, width * row_bytes)
+                                           for i in range(experts)])
     down.shape = (400, 5120, 2304)
     with pytest.raises(ValueError, match="expert tensor shape"):
         loader.expert_bank("down", geometry, down=True)

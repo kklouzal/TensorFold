@@ -12,8 +12,8 @@ rounded to FP16.
 Operands are ``onecat_ds41.v41_experts``'s (one EP/ETP rank's original GGUF expert bytes, FP16 x [M, 5120], int32
 local ids in [0, E) and FP32 probabilities [M, 6]; probability-0 routes (other EP half) contribute nothing); the
 output is the same FP16 [M, 5120] partial. Ids are the caller's invariant (Target.moe), not validated here.
-TensorFold uses EP2 x ETP4 or EP4 x ETP2. Probability-0 routes sort behind a sentinel expert and never enter the
-GEMMs. No host synchronization; operands and the workspace must outlive
+TensorFold uses EP2 x ETP4, EP4 x ETP2 or EP8 x ETP1. Probability-0 routes sort behind a sentinel expert and
+never enter the GEMMs. No host synchronization; operands and the workspace must outlive
 current-stream completion.
 
 Numerics (TensorFold's exact decode; the friend's patch 140 FP16 arithmetic was measured at about 2.6x the rel L2
@@ -33,7 +33,7 @@ from pathlib import Path
 import torch
 
 HIDDEN, ROWS, TOP = 5120, 576, 6
-ETP2_ROWS = 2 * ROWS
+ETP2_ROWS, ETP1_ROWS = 2 * ROWS, 4 * ROWS
 LIMIT = 10.0
 # GGUF type -> (canonical group, stats bytes per group and column) (patch 140 LATTICE).
 LATTICE = {16: (32, 4), 17: (16, 4), 29: (16, 2)}
@@ -108,11 +108,11 @@ EXACT = {1152: {6: 0, 7: 1}, 5120: {3: 2, 6: 3, 7: 4}}
 
 
 def pick(decoder, n, k, routes):
-    # Use the corresponding ETP4 exact tile as the initial schedule for ETP2.
-    # Native GEMM still receives the full ETP2 dimensions and original K order.
-    if (n, k) == (2 * ETP2_ROWS, HIDDEN):
+    # Use the corresponding ETP4 exact tile as the initial schedule for wider shards.
+    # Native GEMM receives the actual dimensions and retains its original K order.
+    if k == HIDDEN and n in (2 * ETP2_ROWS, 2 * ETP1_ROWS):
         n = 2 * ROWS
-    elif (n, k) == (HIDDEN, ETP2_ROWS):
+    elif n == HIDDEN and k in (ETP2_ROWS, ETP1_ROWS):
         k = ROWS
     for max_routes, variant, swizzle in RULE[(decoder, n, k)]:
         if routes <= max_routes:
@@ -126,8 +126,8 @@ class Workspace:
     error word. Owned by its Target; one forward at a time (current stream)."""
 
     def __init__(self, device, tile=TILE, *, intermediate=ROWS):
-        if type(intermediate) is not int or intermediate not in (ROWS, ETP2_ROWS):
-            raise ValueError("lattice prefill workspace requires 576 or 1152 intermediate columns")
+        if type(intermediate) is not int or intermediate not in (ROWS, ETP2_ROWS, ETP1_ROWS):
+            raise ValueError("lattice prefill workspace requires 576, 1152 or 2304 intermediate columns")
         self.tile, self.intermediate = tile, intermediate
         gu = max(sum(canonical(t, 2 * intermediate, HIDDEN)[1:]) for t in LATTICE)
         dn = max(sum(canonical(t, HIDDEN, intermediate)[1:]) for t in LATTICE)
@@ -172,7 +172,7 @@ def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, w
     routes = tokens * TOP
     if (inter != workspace.intermediate or x.shape[1] != HIDDEN or ids.shape != (tokens, TOP)
             or down.shape[:2] != (experts_n, HIDDEN)):
-        raise ValueError("V4.1 lattice prefill: [E, 576 or 1152, bytes] gate/up matching workspace, "
+        raise ValueError("V4.1 lattice prefill: [E, intermediate, bytes] gate/up matching workspace, "
                          "[E, 5120, bytes] down, top-6 routes")
     ext = extension()
     device = x.device

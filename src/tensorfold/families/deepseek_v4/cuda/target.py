@@ -8,7 +8,7 @@ GPU, per-slot window rings, row-wise decode indexer, single-request prefill inde
 below the grouped-prefill threshold, the friend's expert-major decode experts (``ds41_decode_moe``, patch 240 EM3).
 
 TensorFold changes, recorded: TP8 attention/dense (8 query heads, 1 output group, 4 indexer heads per rank)
-and routed experts in ETP4 x EP2 or ETP2 x EP4. A layer's routed and shared partials form one 8-rank sum.
+and routed experts in ETP4 x EP2, ETP2 x EP4 or ETP1 x EP8. A layer's routed and shared partials form one 8-rank sum.
 Every cross-rank sum is accumulated in FP32
 and rounded once (upstream sums FP16 partials of 4 ranks); the decode indexer's per-rank head sums stay FP32.
 Q8_0 / Q5_K dense projections stay quantized as 1Cat dmv13 planes (``tensorfold.cuda.sm70.ds41_dense``: dmv13 /

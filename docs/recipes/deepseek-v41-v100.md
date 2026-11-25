@@ -25,11 +25,13 @@ python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backe
 This launch serves exact chat counting, the active renderer's capabilities, and telemetry through
 the standard [CUDA API](../api.md). Select the **TensorFold** provider in Harness.
 
-Add `--expert-tensor-parallel-size 2` to choose ETP2 × EP4 at startup.
+Add `--expert-tensor-parallel-size 1` to choose ETP1 × EP8 at startup.
+Each GPU then holds 48 whole routed experts. Use `--expert-tensor-parallel-size 2`
+to choose ETP2 × EP4, with 96 routed experts per GPU sharded across each pair.
 Use `--expert-tensor-parallel-size 4` or omit the option to choose the default.
 All eight ranks must use the same degree. Check the effective value in
 `model.expert_tensor_parallel_size` from `/v1/stats`.
-ETP2 is experimental until native quality, memory, and throughput qualification is complete.
+ETP1 and ETP2 are experimental while native quality, memory, and throughput qualification is in progress.
 
 The container needs `--ipc host --ulimit memlock=-1:-1 --cap-add IPC_LOCK` for the host-mapped Engram table and the
 pinned prefix tier. With warm extension and page caches, the C24/C32 matrix server became ready in about 45 s.
@@ -57,7 +59,7 @@ registered Engram table.
 The 128K text profile uses `--kv-dtype rotorquant-iso64-norm4-h64 --context 131072` with the
 checkpoint's native YaRN factor. With CUDA graphs enabled and the standard prompt chunk size,
 ETP4 H64 text with an admitted context of at most 128K reserves 2.5 GiB on each GPU for prompt work.
-ETP2 uses a 3 GiB prompt reserve.
+ETP1 and ETP2 use a 3 GiB prompt reserve.
 The KV allocator budgets for decode graphs and uses the available memory on the tightest GPU
 to size the shared pool. `/v1/stats` reports the effective codec, YaRN factor, and KV budget.
 
