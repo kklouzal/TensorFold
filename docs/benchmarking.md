@@ -1551,6 +1551,14 @@ every request's raw arrivals, usage and server statistics, the tool, plan and
 corpus hashes, the served source digest (`--source-dir`), `/v1/models`, `/stats`,
 `nvidia-smi` identity and CPU governor.
 
+Use `summary RESULTS --gaps --json SUMMARY` to analyze streaming gaps from a
+completed run. For each measured repeat it records nearest-rank p99 and maximum
+SSE text-piece gaps, both across the whole cohort and after every request has
+emitted its first text piece. The second interval can help isolate delays while
+requests are still waiting for their first response. An empty interval carries
+zero observations and null times. These diagnostics do not change the timed
+client or the throughput verdict.
+
 ### Scoring rule (predeclared)
 
 `compare REFERENCE CANDIDATE [--calibration FILES ...]` scores

@@ -788,6 +788,45 @@ def grid(rows: list[dict], cell, metrics) -> None:
                                               for length in sorted(lengths)) + " |")
 
 
+def text_piece_gap_diagnostics(cell: dict) -> dict | None:
+    """Reduce raw delivery gaps without adding work to the timed client."""
+    requests = cell.get("requests")
+    if type(requests) is not list or not requests or len(requests) != cell.get("c"):
+        return None
+    deliveries = []
+    for request in requests:
+        if type(request) is not dict:
+            return None
+        sent, arrivals = request.get("sent"), request.get("arrivals_s")
+        if (not finite_measurement(sent) or type(arrivals) is not list or not arrivals
+                or any(not finite_measurement(value) or value < 0 for value in arrivals)
+                or any(a > b for a, b in pairwise(arrivals))):
+            return None
+        deliveries.append((sent, arrivals))
+    origin = min(sent for sent, _ in deliveries)
+    relative = [(sent - origin, arrivals) for sent, arrivals in deliveries]
+    if any(not math.isfinite(sent + arrivals[-1]) for sent, arrivals in relative):
+        return None
+    last_first = max(sent + arrivals[0] for sent, arrivals in relative)
+    all_gaps, after = [], []
+    for sent, arrivals in relative:
+        for a, b in pairwise(arrivals):
+            gap_ms = (b - a) * 1000
+            if not math.isfinite(gap_ms):
+                return None
+            all_gaps.append(gap_ms)
+            if sent + a >= last_first:
+                after.append(gap_ms)
+
+    def summarize(gaps):
+        if not gaps:
+            return {"n": 0, "p99_ms": None, "max_ms": None}
+        gaps.sort()
+        return {"n": len(gaps), "p99_ms": gaps[math.ceil(0.99 * len(gaps)) - 1], "max_ms": gaps[-1]}
+
+    return {"all": summarize(all_gaps), "after_all_first_pieces": summarize(after)}
+
+
 def summary(args) -> int:
     arm = load_arm(args.arm)
     rows = []
@@ -801,9 +840,15 @@ def summary(args) -> int:
             values = [rep_values(s, metric) for s in sessions]
             if all(len(v) == len(s) for v, s in zip(values, sessions)):
                 row[metric] = describe(values)
+        if args.gaps:
+            row["text_piece_gaps"] = [
+                {"session": session, "repeat": repeat, "gaps": text_piece_gap_diagnostics(record)}
+                for session, cells in arm["sessions"].items() if key in cells
+                for repeat, record in sorted(cells[key].items())
+            ]
         rows.append(row)
     if args.json:
-        write_json(args.json, {"schema": SCHEMA + ".summary", "arm": arm["files"], "rows": rows})
+        write_json(args.json, json_safe({"schema": SCHEMA + ".summary", "arm": arm["files"], "rows": rows}))
     by_key = {row["cell"]: row for row in rows}
 
     def cell(key, metric):
@@ -1053,6 +1098,7 @@ def main() -> int:
     p = sub.add_parser("summary", help="per-cell table of one arm")
     p.add_argument("arm", help="result file(s), comma-separated")
     p.add_argument("--json", type=Path)
+    p.add_argument("--gaps", action="store_true", help="include per-repeat SSE delivery gaps in the JSON summary")
 
     p = sub.add_parser("compare", help="score a candidate arm against a reference arm")
     p.add_argument("reference", help="reference result file(s), comma-separated")
@@ -1065,6 +1111,8 @@ def main() -> int:
     p.add_argument("--json", type=Path)
 
     args = parser.parse_args()
+    if args.command == "summary" and args.gaps and args.json is None:
+        parser.error("summary --gaps requires --json")
     if args.command == "run" and (args.reps < 1 or args.first_rep < 0 or args.output_tokens < 2):
         parser.error("run needs --reps >= 1, --first-rep >= 0 and --output-tokens >= 2")
     return {"corpus": build_corpus, "plan": build_plan, "run": run, "summary": summary, "compare": compare}[

@@ -223,6 +223,37 @@ def test_aggregate_decode_requires_complete_ordered_arrivals_and_usage(mb, recor
     assert mb.aggregate_decode_tps([complete, record]) is None
 
 
+def test_piece_gap_diagnostics_keep_session_phases_and_empty_suffixes(mb):
+    cell = {"c": 2, "requests": [{"sent": 100, "arrivals_s": [1, 2, 10, 11]},
+                                 {"sent": 104, "arrivals_s": [1, 3]}]}
+    assert mb.text_piece_gap_diagnostics(cell) == {
+        "all": {"n": 4, "p99_ms": 8000, "max_ms": 8000},
+        "after_all_first_pieces": {"n": 2, "p99_ms": 2000, "max_ms": 2000},
+    }
+    cell["requests"][1]["arrivals_s"] = [10]
+    assert mb.text_piece_gap_diagnostics(cell)["after_all_first_pieces"] == {
+        "n": 0, "p99_ms": None, "max_ms": None,
+    }
+    assert mb.text_piece_gap_diagnostics({**cell, "c": 3}) is None
+    cell["requests"][1]["arrivals_s"] = [10, 9]
+    assert mb.text_piece_gap_diagnostics(cell) is None
+
+
+def test_summary_can_archive_per_repeat_piece_gaps(mb, tmp_path, monkeypatch):
+    result = Path(arm(tmp_path, mb, "input.json", {(1, 8192): [(5000, 230)]}, session="first"))
+    data = json.loads(result.read_text())
+    data["cells"][0]["requests"] = [{"sent": 100, "arrivals_s": [1, 2, 4]}]
+    result.write_text(json.dumps(data))
+    out = tmp_path / "summary.json"
+    monkeypatch.setattr(sys, "argv", ["matrix_benchmark.py", "summary", str(result), "--gaps", "--json", str(out)])
+    assert mb.main() == 0
+    row, = json.loads(out.read_text())["rows"]
+    assert row["prefill_agg_tps"]["ci95"][1] is None
+    diagnostics, = row["text_piece_gaps"]
+    assert diagnostics["session"] == "first" and diagnostics["repeat"] == 0
+    assert diagnostics["gaps"]["after_all_first_pieces"]["p99_ms"] == 2000
+
+
 def test_opt_in_comparison_recovers_raw_aggregate_decode_and_requires_coverage(mb, tmp_path):
     ref = arm(tmp_path, mb, "ref.json", {(1, 4096): [(5000, 230)]})
     cand = arm(tmp_path, mb, "cand.json", {(1, 4096): [(5000, 240)]})

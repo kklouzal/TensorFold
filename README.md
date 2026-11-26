@@ -1754,7 +1754,8 @@ Throughput candidates are now judged on the whole
 (`tools/matrix_benchmark.py`): 8,192-token prompts at C1, C2, C4, C8 and C16,
 greedy and default sampling, with a predeclared per-cell scoring rule in which
 any cell regression rejects a candidate. `plan --deepseek-v41` uses the CUDA
-server's native DeepSeek encoder. The
+server's native DeepSeek encoder. `summary --gaps --json` reports SSE delivery
+gaps from saved runs. The
 [`0913d721` baseline](docs/benchmarking.md#gemma-4-sm70-baseline-at-0913d721-2026-11-15)
 at `--context 66048` measured C1 prefill of 4,970 → 3,862 tok/s and greedy
 DFlash decode of 235 → 183 tok/s from 4K to 64K prompts (sampled serial decode
