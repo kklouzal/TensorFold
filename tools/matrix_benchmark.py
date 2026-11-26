@@ -5,7 +5,7 @@ Subcommands (see docs/benchmarking.md, "Serving matrix"):
   corpus   Freeze the prompt corpus from a pinned git commit (README.md, docs/**/*.md, src/**/*.py), with the
            tokenizer's special-token strings neutralized. Standard library; needs git.
   plan     Cut one unique, exactly sized chat prompt per (mode, arrival, C, L, repeat, slot) from the corpus and
-           record its character span, token count and SHA-256. Needs ``transformers`` (run it in the serving image).
+           record its character span, token count and SHA-256. Run it in the serving image.
   run      Stream the planned requests at an OpenAI-compatible server: C requests per cell start together (or
            staggered), each with a fixed output length and ignore_eos. Records every request's raw timings, usage
            and the server's per-request statistics where it reports them. Standard library.
@@ -155,16 +155,42 @@ def plan_keys(modes, arrivals, levels, lengths, reps, warmup):
                             yield mode, arrival, c, length, rep, slot
 
 
-_PLAN = {}  # the forked plan workers' read-only corpus, token starts and tokenizer
+_PLAN = {}  # the forked plan workers' read-only corpus, token starts and prompt counter
 
 
-def _count(text: str) -> int:
-    ids = _PLAN["tok"].apply_chat_template([{"role": "user", "content": text}], tokenize=True,
-                                           add_generation_prompt=True, chat_template=_PLAN["template"],
-                                           enable_thinking=False)
-    if hasattr(ids, "keys"):
-        ids = ids["input_ids"]
-    return len(ids)
+def _plan_tokenization(args, corpus):
+    if args.deepseek_v41:
+        from tokenizers import __version__
+
+        from tensorfold.families.deepseek_v4.serving_v41 import V41ChatTemplate
+        from tensorfold.token_metadata import load_tokenizer
+
+        tok = load_tokenizer(args.tokenizer)
+        template = V41ChatTemplate(args.tokenizer)
+
+        def count(text):
+            rendered = template.render([{"role": "user", "content": text}], tools=None, enable_thinking=False)
+            return len(template.encode(tok, rendered))
+
+        starts = [start for start, _ in tok.encode(corpus, add_special_tokens=False).offsets]
+        return count, starts, {"template_sha256": template.provenance()["sha256"],
+                               "render": "TensorFold DeepSeek-V4.1 native chat encoder, enable_thinking=False",
+                               "tokenizers": __version__}
+
+    import transformers
+
+    tok = transformers.AutoTokenizer.from_pretrained(str(args.tokenizer), local_files_only=True)
+    template = args.template.read_text(encoding="utf-8")
+
+    def count(text):
+        ids = tok.apply_chat_template([{"role": "user", "content": text}], tokenize=True,
+                                      add_generation_prompt=True, chat_template=template, enable_thinking=False)
+        return len(ids["input_ids"] if hasattr(ids, "keys") else ids)
+
+    starts = [span[0] for span in tok(corpus, add_special_tokens=False, return_offsets_mapping=True)["offset_mapping"]]
+    return count, starts, {"template_sha256": sha256(template.encode("utf-8")),
+                           "render": "transformers apply_chat_template, add_generation_prompt, enable_thinking=False",
+                           "transformers": transformers.__version__}
 
 
 def _cut(item):
@@ -172,9 +198,10 @@ def _cut(item):
     A merge at the cut can make the count step over the target; the next hashed start is then tried."""
     key, length = item
     corpus, starts, room = _PLAN["corpus"], _PLAN["starts"], _PLAN["room"][length]
+    count = _PLAN["count"]
     tried = []
     for attempt in range(8):
-        budget = length - _count(message(key, ""))
+        budget = length - count(message(key, ""))
         digest = hashlib.sha256(f"{key}#{attempt}".encode() if attempt else key.encode()).digest()
         start = room[int.from_bytes(digest[:8], "big") % len(room)]
         seen = set()
@@ -182,7 +209,7 @@ def _cut(item):
             seen.add(budget)
             end = starts[start + budget]
             text = message(key, corpus[starts[start]:end])
-            n = _count(text)
+            n = count(text)
             tried.append((attempt, budget, n))
             if n == length:
                 return key, {"start": starts[start], "end": end, "tokens": n, "attempt": attempt,
@@ -194,14 +221,10 @@ def _cut(item):
 def build_plan(args) -> int:
     import multiprocessing
 
-    import transformers  # plan only: the serving image provides it
-
     corpus = load_corpus(args.corpus, None)
-    tok = transformers.AutoTokenizer.from_pretrained(str(args.tokenizer), local_files_only=True)
-    template = args.template.read_text(encoding="utf-8")
-    starts = [span[0] for span in tok(corpus, add_special_tokens=False, return_offsets_mapping=True)["offset_mapping"]]
+    count, starts, provenance = _plan_tokenization(args, corpus)
     line_starts = [i for i, c in enumerate(starts) if c == 0 or corpus[c - 1] == "\n"]
-    _PLAN.update(tok=tok, template=template, corpus=corpus, starts=starts,
+    _PLAN.update(count=count, corpus=corpus, starts=starts,
                  room={length: [i for i in line_starts if i + length + 64 < len(starts)] for length in args.lengths})
     arrivals = [arrival_name(ms) for ms in args.stagger_ms]
     items = list(dict.fromkeys((prompt_key(*spec), spec[3]) for spec in plan_keys(
@@ -212,9 +235,7 @@ def build_plan(args) -> int:
     plan = {"schema": PLAN_SCHEMA, "version": 1, "corpus_sha256": sha256(corpus.encode("utf-8")),
             "corpus_path": str(args.corpus), "tokenizer": str(args.tokenizer),
             "tokenizer_sha256": sha256((args.tokenizer / "tokenizer.json").read_bytes()),
-            "template_sha256": sha256(template.encode("utf-8")),
-            "render": "transformers apply_chat_template, add_generation_prompt, enable_thinking=False",
-            "transformers": transformers.__version__, "header": HEADER, "footer": FOOTER,
+            **provenance, "header": HEADER, "footer": FOOTER,
             "prompts": {key: entries[key] for key, _ in sorted(items)}}
     write_json(args.out, plan, indent=None)
     print(json.dumps({"prompts": len(entries), "plan_sha256": sha256(args.out.read_bytes())}))
@@ -980,10 +1001,12 @@ def main() -> int:
     p.add_argument("--tokenizer", type=Path, required=True, help="model directory holding tokenizer.json")
     p.add_argument("--out", type=Path, required=True)
 
-    p = sub.add_parser("plan", help="cut exact-length unique prompts (needs transformers)")
+    p = sub.add_parser("plan", help="cut exact-length unique prompts in the serving image")
     p.add_argument("--corpus", type=Path, required=True)
     p.add_argument("--tokenizer", type=Path, required=True)
-    p.add_argument("--template", type=Path, required=True, help="the served chat template")
+    renderer = p.add_mutually_exclusive_group(required=True)
+    renderer.add_argument("--template", type=Path, help="the served Jinja chat template")
+    renderer.add_argument("--deepseek-v41", action="store_true", help="use the server's native DeepSeek V4.1 encoder")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--modes", type=word_list(MODES), default=list(MODES))
     p.add_argument("--concurrency", type=int_list, default=list(DEFAULT_CONCURRENCY),

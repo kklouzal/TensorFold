@@ -44,7 +44,7 @@ targeted boundary and workload qualification.
 ### Procedure
 
 ```bash
-# once per corpus/plan version (plan needs transformers: run it in the serving image)
+# once per corpus/plan version (run plan in the serving image)
 python3 tools/matrix_benchmark.py corpus --commit COMMIT --tokenizer MODEL_DIR --out corpus.txt
 python tools/matrix_benchmark.py plan --corpus corpus.txt --tokenizer MODEL_DIR \
   --template CHAT_TEMPLATE.jinja --out plan-8k.json --jobs 16
@@ -60,6 +60,8 @@ Each comparison uses one frozen plan and corpus with the same served context on
 every arm. The standard profile needs 16 concurrent lanes and room for each
 8,192-token prompt and 512-token reply. Historical Gemma SM70 measurements using
 `plan-v1.json` and `--context 66048` retain their original workload and context.
+For DeepSeek-V4.1, use `plan --deepseek-v41` in place of `--template` to count
+with the same native encoder that serves the chat requests.
 
 ### Required design
 

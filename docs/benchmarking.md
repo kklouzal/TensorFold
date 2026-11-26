@@ -1510,14 +1510,15 @@ when building the plan and running each arm.
    a pinned commit, in path order with file headers, with the tokenizer's special
    token strings neutralized (`<` becomes `‹`) so no excerpt injects turn or
    channel markers. A manifest records the commit and SHA-256.
-2. `plan` (needs `transformers`; run it in the serving image) cuts one prompt per
+2. `plan` (run it in the serving image) cuts one prompt per
    (mode, arrival, C, length, repeat, slot) plus one C1 warmup prompt per mode and
    length: a header naming the prompt key, an excerpt starting at a key-hashed
    line of the corpus, and a fixed summarization request. The excerpt is
    adjusted until the served chat template renders exactly the target token count.
    Every prompt is therefore unique (no prefix-cache reuse within or across cells,
    repeats or modes) yet identical across arms. The plan stores character spans,
-   token counts and SHA-256s, not text.
+   token counts and SHA-256s, not text. Pass `--deepseek-v41` for the native
+   DeepSeek-V4.1 encoder, or `--template` for the exact served Jinja template.
 3. `run` regenerates each prompt from the corpus, checks its hash, and rejects a
    cell (status `invalid`) if a reply's prompt or completion token count differs
    from the plan, any prompt token came from a prefix cache, or `/stats` totals do

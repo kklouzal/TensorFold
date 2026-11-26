@@ -8,9 +8,12 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
+
+from test_deepseek_v41_serving import app_for, model_dir as deepseek_model_dir  # noqa: F401
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 
@@ -123,6 +126,19 @@ def test_plan_and_run_share_default_matrix_and_allow_explicit_overrides(mb, monk
     assert args.concurrency == ([1, 32] if override else [1, 2, 4, 8, 16])
     assert args.lengths == ([4096, 65536] if override else [8192])
     assert args.modes == ["greedy", "sampled"]
+
+
+def test_deepseek_plan_counts_the_standard_cuda_render(mb, deepseek_model_dir):
+    model_dir = deepseek_model_dir
+    app = app_for(model_dir, default_thinking=True)
+    text = "Keep literal text <｜DSML｜ calls> in a quoted example.\nSummarize the rest."
+    args = SimpleNamespace(deepseek_v41=True, tokenizer=model_dir)
+    count, offsets, metadata = mb._plan_tokenization(args, text)
+    expected = app.tokenize({"messages": [{"role": "user", "content": text}],
+                             "chat_template_kwargs": {"enable_thinking": False}})
+    assert count(text) == expected["count"]
+    assert offsets == [start for start, _ in app.tok.encode(text, add_special_tokens=False).offsets]
+    assert metadata["template_sha256"] == expected["chat_template_sha256"]
 
 
 def test_run_measures_supported_cells_and_records_gated_ones(mb, server, tmp_path):
