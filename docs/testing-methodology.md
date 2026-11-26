@@ -20,10 +20,9 @@ pending; a result for one image, source tree or host does not qualify another.
 
 ## 1. Performance: the serving matrix
 
-Every throughput optimization is judged on the **whole serving matrix**, never
-on one prompt length, one concurrency level or one microbenchmark. The matrix is
-concurrency **C = 1, 2, 4, 8, 16, 24, 32** by rendered prompt length **4K, 8K,
-16K, 32K and 64K** tokens (4,096 to 65,536 exactly), each in two modes:
+Throughput comparisons cover the **whole standard serving matrix**. The default
+uses exactly **8,192 rendered prompt tokens** at **C1, C2, C4, C8 and C16**, each
+in two modes:
 
 - `greedy` (`temperature: 0`; on Gemma 4 SM70 the DFlash speculative path);
 - `sampled` (the server's default sampling with a fixed per-request seed; on
@@ -39,6 +38,8 @@ hit can enter a measurement. Cells the server cannot run are recorded as
 `pending` (C above the served lanes) or `infeasible` (context or KV budget),
 never silently dropped. Full details:
 [Serving matrix](benchmarking.md#serving-matrix-prefill-and-decode-across-concurrency-and-prompt-length).
+Use matching `--lengths` and `--concurrency` overrides in `plan` and `run` for
+targeted boundary and workload qualification.
 
 ### Procedure
 
@@ -46,20 +47,19 @@ never silently dropped. Full details:
 # once per corpus/plan version (plan needs transformers: run it in the serving image)
 python3 tools/matrix_benchmark.py corpus --commit COMMIT --tokenizer MODEL_DIR --out corpus.txt
 python tools/matrix_benchmark.py plan --corpus corpus.txt --tokenizer MODEL_DIR \
-  --template CHAT_TEMPLATE.jinja --out plan.json --jobs 16
+  --template CHAT_TEMPLATE.jinja --out plan-8k.json --jobs 16
 # one server process per session; restart the server between sessions
-python3 tools/matrix_benchmark.py run --model NAME --plan plan.json --corpus corpus.txt \
+python3 tools/matrix_benchmark.py run --model NAME --plan plan-8k.json --corpus corpus.txt \
   --label SOURCE-AND-CONFIG --source-dir SERVED_SRC --out SESSION.json --reps 5
 python3 tools/matrix_benchmark.py summary A1.json,A2.json
 python3 tools/matrix_benchmark.py compare A1.json,A2.json B1.json,B2.json \
   --calibration AA1.json,AA2.json --json comparison.json
 ```
 
-The Gemma 4 SM70 matrix uses frozen inputs in `/home/kklouzal/build-cache/matrix`
-(`corpus-0913d721.txt`, `plan-v1.json`) and the session script
-`tf-session.sh` there (server at `--context 66048`, the smallest context that
-admits a 65,536-token prompt plus 512 output tokens; the context is part of the
-REGION, so compare only equal contexts).
+Each comparison uses one frozen plan and corpus with the same served context on
+every arm. The standard profile needs 16 concurrent lanes and room for each
+8,192-token prompt and 512-token reply. Historical Gemma SM70 measurements using
+`plan-v1.json` and `--context 66048` retain their original workload and context.
 
 ### Required design
 

@@ -1751,7 +1751,7 @@ records both drafter formats, and retains the source-mounted qualification limit
 
 Throughput candidates are now judged on the whole
 [serving matrix](docs/benchmarking.md#serving-matrix-prefill-and-decode-across-concurrency-and-prompt-length)
-(`tools/matrix_benchmark.py`): C = 1–32 by 4K–64K exact-length unique prompts,
+(`tools/matrix_benchmark.py`): 8,192-token prompts at C1, C2, C4, C8 and C16,
 greedy and default sampling, with a predeclared per-cell scoring rule in which
 any cell regression rejects a candidate. The
 [`0913d721` baseline](docs/benchmarking.md#gemma-4-sm70-baseline-at-0913d721-2026-11-15)
@@ -1759,7 +1759,7 @@ at `--context 66048` measured C1 prefill of 4,970 → 3,862 tok/s and greedy
 DFlash decode of 235 → 183 tok/s from 4K to 64K prompts (sampled serial decode
 186 → 153 tok/s); C > 1 cells await multi-lane serving.
 
-A DFlash depth sweep on that matrix (source `cd227249`, same server settings,
+A DFlash depth sweep on the historical 4K–64K matrix (source `cd227249`, same server settings,
 C1 greedy, five repeats a session; acceptance and engine round time shown from
 4K to 64K) selects `--draft-rows 3` under the session scoring rule:
 

@@ -48,6 +48,8 @@ SCHEMA_VERSION = 1
 PLAN_SCHEMA = "tensorfold.matrix-plan"
 CORPUS_SUFFIXES = (("README.md", ""), ("docs/", ".md"), ("src/", ".py"))
 MODES = ("greedy", "sampled")
+DEFAULT_CONCURRENCY = (1, 2, 4, 8, 16)
+DEFAULT_LENGTHS = (8192,)
 SCORED = ("prefill_agg_tps", "decode_median_tps")
 AGGREGATE_DECODE = "decode_agg_tps"
 HEADER = ("Request {key}.\nBelow is an excerpt from a software project's documentation and source code.\n\n")
@@ -984,8 +986,10 @@ def main() -> int:
     p.add_argument("--template", type=Path, required=True, help="the served chat template")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--modes", type=word_list(MODES), default=list(MODES))
-    p.add_argument("--concurrency", type=int_list, default=[1, 2, 4, 8, 16, 24, 32])
-    p.add_argument("--lengths", type=int_list, default=[4096, 8192, 16384, 32768, 65536])
+    p.add_argument("--concurrency", type=int_list, default=list(DEFAULT_CONCURRENCY),
+                   help="comma-separated request counts (default: %(default)s)")
+    p.add_argument("--lengths", type=int_list, default=list(DEFAULT_LENGTHS),
+                   help="comma-separated rendered prompt lengths (default: %(default)s)")
     p.add_argument("--reps", type=int, default=5)
     p.add_argument("--stagger-ms", type=float, nargs="*", default=[0.0])
     p.add_argument("--jobs", type=int, default=8, help="tokenizer worker processes")
@@ -1000,8 +1004,10 @@ def main() -> int:
     p.add_argument("--note", default="", help="free text: launch command, image, flags")
     p.add_argument("--source-dir", type=Path, help="served source tree to digest into the result")
     p.add_argument("--modes", type=word_list(MODES), default=list(MODES))
-    p.add_argument("--concurrency", type=int_list, default=[1, 2, 4, 8, 16, 24, 32])
-    p.add_argument("--lengths", type=int_list, default=[4096, 8192, 16384, 32768, 65536])
+    p.add_argument("--concurrency", type=int_list, default=list(DEFAULT_CONCURRENCY),
+                   help="comma-separated request counts (default: %(default)s)")
+    p.add_argument("--lengths", type=int_list, default=list(DEFAULT_LENGTHS),
+                   help="comma-separated rendered prompt lengths (default: %(default)s)")
     p.add_argument("--reps", type=int, default=5)
     p.add_argument("--first-rep", type=int, default=0, help="first repeat index (continue a server session in another file; every scored session "
                         "must run the same repeats)")

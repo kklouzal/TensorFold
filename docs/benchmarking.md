@@ -11,13 +11,13 @@ image, weights, provider identity and retirement. Tool/plan hashes are separate
 from that runtime provenance. The older generic OpenAI decode-arrival mode remains
 available and keeps its explicitly estimated SSE timing scope.
 
-The standard levels are **1, 2, 4, 8, 16, 24, 32**. These personal deployment
-profiles retain context 262,144 and MTP depth 4:
+The default matrix runs **8,192-token prompts** at **C1, C2, C4, C8 and C16**.
+The personal deployment profiles retain context 262,144 and MTP depth 4:
 
-| Profile | Administrator ceiling | Eligible standard levels |
+| Profile | Administrator ceiling | Explicit full-capacity qualification |
 | --- | ---: | --- |
-| INT8/Q8 KV | 24 | 1,2,4,8,16,24;32 excluded by administrator cap |
-| `rotorquant-iso4-sm70-v1` KV | 32 | All seven, subject to actual safe residency |
+| INT8/Q8 KV | 24 | C24 with `--levels 24` |
+| `rotorquant-iso4-sm70-v1` KV | 32 | C32 with `--levels 32`, subject to actual safe residency |
 
 These are administrator choices, not generic engine limits or measured hardware
 maxima. Use the maintained [V100 personal profile recipe](../deploy/v100/README.md#candidate-launch)
@@ -59,18 +59,18 @@ The worker verifies the actual tokenizer file and full prompt hashes.
 ```bash
 python tools/bench_concurrent.py "$URL" "$MODEL_NAME" \
   --prepare-matrix "$MODEL_FRONTEND_DIR" --profile q4 \
-  --input-tokens 64 --tokens 256 --reps 1 --output matrix-plan.json
+  --tokens 256 --reps 1 --output matrix-plan-8k.json
 ```
 
-The default standard levels are already selected. Preparation does not contact
-or load the GPU model. Use fresh plan/results paths. Stage the canonical tools
+Set `--levels` and `--input-tokens` when preparing a targeted qualification plan.
+Preparation does not contact or load the GPU model. Use fresh plan/results paths. Stage the canonical tools
 and their existing protocol/lifetime/output helpers together read-only, keeping
 their commit/byte identities. Add the plan to the existing private supervised
 launch, preserving the profile's ordinary model/context/method/cache arguments:
 
 ```bash
 python tools/v100_owned_qualification.py --gpus "$TF_RANK_GPUS" \
-  --out /qualification-output/new-run --benchmark-plan matrix-plan.json \
+  --out /qualification-output/new-run --benchmark-plan matrix-plan-8k.json \
   -- "${serve_args[@]}" --expert-tensor-parallel-size 4
 ```
 
@@ -99,7 +99,7 @@ model work or cross-cohort overlap. Then run:
 
 ```bash
 python tools/bench_concurrent.py "$URL" "$MODEL_NAME" \
-  --matrix-plan matrix-plan.json --output matrix-results.json \
+  --matrix-plan matrix-plan-8k.json --output matrix-results.json \
   --timeout 1800 --response-mib 16 --sse-line-kib 64
 ```
 
@@ -1489,9 +1489,8 @@ All rates from this instrumented run remain diagnostic, never P3 acceptance.
 
 `tools/matrix_benchmark.py` measures an OpenAI-compatible server over the whole
 serving matrix and scores a candidate against a reference on all of it. The
-standard axes are concurrency **C = 1, 2, 4, 8, 16, 24, 32** and prompt lengths
-**4K, 8K, 16K, 32K and 64K** (4,096 to 65,536 rendered prompt tokens, exactly),
-in two decoding modes:
+standard workload uses exactly **8,192 rendered prompt tokens** at **C1, C2,
+C4, C8 and C16** in two decoding modes:
 
 - `greedy`: `temperature: 0` (on Gemma 4 SM70 this is the DFlash path);
 - `sampled`: no sampling fields, so the server's defaults apply (Gemma 4:
@@ -1502,6 +1501,8 @@ Every request is a streamed chat completion with thinking off, `ignore_eos` and 
 fixed 512-token output. A cell's C requests start together behind a barrier
 (`sync`); `--stagger-ms X` starts request i at i·X ms instead, a separate arrival
 REGION with its own prompt keys.
+For targeted workloads, set `--lengths` and `--concurrency` to matching values
+when building the plan and running each arm.
 
 ### Prompts
 
@@ -1614,9 +1615,9 @@ M=/models/hf/hub/models--AEON-7--Gemma-4-26B-A4B-it-Uncensored-NVFP4/snapshots/9
 python3 tools/matrix_benchmark.py corpus --commit 0913d721 --tokenizer $M --out corpus.txt
 # in the serving image (transformers available):
 python tools/matrix_benchmark.py plan --corpus corpus.txt --tokenizer $M \
-  --template gemma4-chat-template-google-4d7ae498.jinja --out plan-v1.json --jobs 16
-# against a server launched as in the recipe, with --context 66048:
-python3 tools/matrix_benchmark.py run --model gemma4-26b-a4b --plan plan-v1.json --corpus corpus.txt \
+  --template gemma4-chat-template-google-4d7ae498.jinja --out plan-8k.json --jobs 16
+# against a server launched as in the recipe, with --parallel 16:
+python3 tools/matrix_benchmark.py run --model gemma4-26b-a4b --plan plan-8k.json --corpus corpus.txt \
   --label SOURCE-AND-CONFIG --source-dir SERVED_SRC --out result.json --reps 5
 python3 tools/matrix_benchmark.py summary result.json
 # two or more server sessions per arm, alternating then reversed (A B B A):
@@ -1625,9 +1626,9 @@ python3 tools/matrix_benchmark.py compare refA.json,refB.json candA.json,candB.j
 ```
 
 The matrix server uses the [eight-V100 recipe](recipes/gemma-4.md#eight-v100s-tp8etp4)
-with `--context 66048`, the smallest allocation that admits a 65,536-token
-prompt plus 512 output tokens. Decode attention spans the allocation, so the
-context is part of the REGION: compare only results with the same context.
+with a fixed context that admits an 8,192-token prompt plus 512 output tokens.
+Decode attention spans the allocation, so compare only results with the same
+served context.
 
 ### Gemma 4 SM70 baseline at `0913d721` (2026-11-15)
 

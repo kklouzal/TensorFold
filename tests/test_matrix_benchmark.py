@@ -106,6 +106,25 @@ def run_args(mb, url, plan, corpus, out, *extra):
         sys.argv = old
 
 
+@pytest.mark.parametrize(("command", "arguments"), [
+    ("plan", ["--tokenizer", "model-dir", "--template", "chat.jinja"]),
+    ("run", ["--plan", "plan.json", "--model", "m", "--label", "candidate"]),
+])
+@pytest.mark.parametrize("override", [False, True])
+def test_plan_and_run_share_default_matrix_and_allow_explicit_overrides(mb, monkeypatch, command, arguments, override):
+    argv = ["matrix_benchmark.py", command, "--corpus", "corpus.txt", "--out", "out.json", *arguments]
+    if override:
+        argv.extend(["--concurrency", "1,32", "--lengths", "4096,65536"])
+    monkeypatch.setattr(sys, "argv", argv)
+    parsed = []
+    monkeypatch.setattr(mb, "build_plan" if command == "plan" else "run", parsed.append)
+    mb.main()
+    args, = parsed
+    assert args.concurrency == ([1, 32] if override else [1, 2, 4, 8, 16])
+    assert args.lengths == ([4096, 65536] if override else [8192])
+    assert args.modes == ["greedy", "sampled"]
+
+
 def test_run_measures_supported_cells_and_records_gated_ones(mb, server, tmp_path):
     plan, corpus = make_plan(mb, tmp_path, [100, 4090], [1, 2, 4], 2)
     out = tmp_path / "result.json"
