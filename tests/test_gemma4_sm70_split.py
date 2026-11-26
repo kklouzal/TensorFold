@@ -103,3 +103,55 @@ def test_plan_adds_groups_rather_than_overshoot_the_target():
     assert stops[-1] == L and stops == sorted(set(stops))
     assert max(groups) <= target or len(groups) == L
 
+
+def test_draft_packet_and_proposals_land_before_the_round_done_event(monkeypatch):
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    from tensorfold.families.gemma4.sm70.graphs import MODE_ROUND, Shape
+
+    copies = []
+    packet = torch.zeros((8, 2, 3))
+    packet[0] = torch.tensor([[2., 9., 0.], [3., 12., 0.]])
+    packet[1, 0] = torch.tensor([2., 13., 0.])  # equal score chooses rank zero
+    proposals = torch.tensor([9])
+
+    def landing(source):
+        data = torch.empty_like(source)
+
+        def enqueue(value, *, non_blocking):
+            assert non_blocking
+            copies.append((data, value))
+
+        return SimpleNamespace(copy_=enqueue, numpy=data.numpy, view=data.view)
+
+    shape = object.__new__(Shape)
+    shape.gather_all = False
+    shape.host_compact, shape.host_proposals = landing(packet), landing(proposals)
+    shape.stage = lambda *args: None
+    shape.run = lambda: (packet, proposals)
+    e = object.__new__(E.Gemma4SM70Engine)
+    e.streams, e.block, e.pad = 1, 2, 1
+    e.shapes = {(MODE_ROUND, 1): shape}
+    e.announce = e._run
+
+    def record():
+        assert [source.data_ptr() for _, source in copies] == [packet.data_ptr(), proposals.data_ptr()]
+
+    def synchronize():
+        for target, source in copies:
+            target.copy_(source)
+
+    s = SimpleNamespace(sid=0, slot=0, prompt=[3, 4], out=[6], count=8, done=False, full=False,
+                        drafts=True, forced=None, probabilities=None, constraint=None, history=None,
+                        stop_eos=False, counted=lambda n: None)
+    d = object.__new__(E.Decoder)
+    d.e, d.eos, d.streams = e, (), {s.sid: s}
+    d.costs = dict.fromkeys(e.shapes, 1.0)
+    d.round_ms = d.tokens_per_round = 1.0
+    d.started = SimpleNamespace(record=lambda: None, elapsed_time=lambda event: 1.0)
+    d.done = SimpleNamespace(record=record, synchronize=synchronize)
+    monkeypatch.setattr(E, "TRACE", False)
+    d._launch([s], {})
+    assert d._collect() == [(s, [9, 12])]
+

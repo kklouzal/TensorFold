@@ -80,13 +80,16 @@ def test_cuda_tokenize_gives_the_chat_route_s_prompt(tmp_path):
     with http_server(app) as port:
         status, reply = call(port, "/tokenize", {"messages": HI})
         assert status == 200
-        assert reply == {"count": 19, "max_model_len": 32, "tokens": ids("user:Hi;assistant:") + [THINK]}
+        assert (reply["count"], reply["max_model_len"], reply["tokens"]) == (
+            19, 32, ids("user:Hi;assistant:") + [THINK])
+        assert reply["context_length"] == 32 and reply["harness_tokenizer_version"] == 1
+        assert reply["model"] == "fake-cuda" and reply["chat_template_sha256"] == app.template.selected().sha256
         assert reply["tokens"] == app.prepare({"messages": HI}, True).prompt
         status, off = call(port, "/v1/tokenize", {"messages": HI, "chat_template_kwargs": {"enable_thinking": False},
                                                    "add_generation_prompt": False, "return_token_strs": True})
         assert status == 200 and off["tokens"] == ids("user:Hi;") and off["token_strs"] == list("user:Hi;")
         status, text = call(port, "/v1/tokenize/", {"prompt": "a<think>b"})
-        assert status == 200 and text["tokens"] == [ord("a"), THINK, ord("b")] and text["count"] == 3
+        assert status == 200 and text == {"count": 3, "max_model_len": 32, "tokens": [ord("a"), THINK, ord("b")]}
         status, back = call(port, "/detokenize", {"tokens": text["tokens"]})
         assert status == 200 and back == {"prompt": "a<think>b"}           # special tokens included
         assert call(port, "/v1/detokenize", {"tokens": [[104, 105]]}) == (200, {"prompt": "hi"})

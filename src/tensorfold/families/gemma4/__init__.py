@@ -168,7 +168,7 @@ def check_cuda_prefix_cache_metadata(config, *, flag="--prefix-cache-bytes"):
         raise ValueError(f"{flag} requires Gemma 4 MoE on CUDA")
 
 
-CUDA_TP8 = True   # --tp 8: the eight-V100 TP8/ETP4 provider (families/gemma4/sm70)
+CUDA_TP8 = True   # --tp 8: the eight-V100 provider (families/gemma4/sm70)
 # --kv-dtype: bf16 is the default (FP16 caches on SM70); the RotorQuant formats quantize the --tp 8 provider's
 # target full-attention caches only (sliding rings, snapshots and the drafter stay FP16; sm70/target.KV_FORMATS);
 # every other Gemma 4 CUDA route refuses kv_dtype.
@@ -179,7 +179,7 @@ SM70_OPTIONS = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "e
 
 
 def _sm70_engine(model_dir, *, drafter, rank, master, master_port, no_drafts, context, **options):
-    """Eight-V100 TP8/ETP4 provider for the AEON CT NVFP4 26B-A4B checkpoint (families/gemma4/sm70)."""
+    """Eight-V100 TP8 provider for the AEON CT NVFP4 26B-A4B checkpoint."""
     if options.get("vision"):
         raise ValueError("Gemma4 --tp 8 (SM70) does not serve image/video input yet; drop --vision")
     unsupported = sorted(set(options) - SM70_OPTIONS)
@@ -190,8 +190,8 @@ def _sm70_engine(model_dir, *, drafter, rank, master, master_port, no_drafts, co
     if kv_format not in KV_FORMATS:
         raise ValueError("Gemma4 --tp 8 keeps FP16 KV (SM70 has no BF16 tensor cores) unless --kv-dtype selects a "
                          "quantized full-attention cache: " + " or ".join(k for k in KV_FORMATS if k != "fp16"))
-    if options.get("expert_tensor_parallel_size", 4) != 4:
-        raise ValueError("Gemma4 --tp 8 uses ETP4 x EP2 experts (--expert-tensor-parallel-size 4)")
+    from .sm70.weights import DEFAULT_ETP, checked_etp
+    etp = checked_etp(options.get("expert_tensor_parallel_size", DEFAULT_ETP))
     from tensorfold.families import quant_method, read_config
     if quant_method(read_config(model_dir)) != "compressed-tensors":
         raise ValueError("Gemma4 --tp 8 serves the compressed-tensors NVFP4 export")
@@ -200,7 +200,7 @@ def _sm70_engine(model_dir, *, drafter, rank, master, master_port, no_drafts, co
     return Gemma4SM70Engine(Path(model_dir), rank=rank, tp=8, master=master, master_port=master_port,
                             context=context, drafter="" if no_drafts else drafter, no_drafts=no_drafts,
                             depth=None if rows is None else rows - 1, streams=options.get("parallel", 1),
-                            kv_format=kv_format,
+                            kv_format=kv_format, expert_tensor_parallel_size=etp,
                             **{k: options[k] for k in ("context_explicit", "drafter_bits", "eos_token_ids", "graphs",
                                                        "chat_template_file", "chat_template_name",
                                                        "prefix_host_bytes", "queue_timeout_s") if k in options})

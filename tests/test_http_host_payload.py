@@ -372,11 +372,13 @@ def test_owned_tokenizer_callbacks_never_wait_even_with_empty_owner():
     occupied.close()
 
 
-def test_tokenize_observes_native_count_before_ids_and_lexical_materialization():
+@pytest.mark.parametrize("preview_space", [True, False])
+def test_tokenize_pays_for_ids_lexical_and_native_decode_before_materialization(preview_space):
     from tensorfold.cuda.server import App
 
-    p = pool(10000)
+    p = pool(10000 if preview_space else 2000)
     p.ids_bound = lambda count, *args, **kwargs: (10 * count + 1001, 1000)
+    p.decoded_prompt_bound = lambda count: 1000 * count
     app = App.__new__(App)
     app.host_payload_pool = p
     app._context_limit = lambda: 128
@@ -393,10 +395,21 @@ def test_tokenize_observes_native_count_before_ids_and_lexical_materialization()
         def id_to_token(self, value):
             assert hp.current().lexical_output and hp.current().funded_output_bound == 1000
             return "lexical"
+        def decode(self, ids, *, skip_special_tokens):
+            assert hp.current().claims == {"tokenizer-ids": 1071, "decoded-prompt": 7000}
+            assert len(ids) == 7 and not skip_special_tokens
+            return "<rendered>"
     app.tok = Tokenizer()
     with hp.handler_scope(app):
-        reply = app.tokenize({"prompt": "x", "return_token_strs": True})
-        assert reply["count"] == 7 and reply["token_strs"] == ["lexical"] * 7
+        body = {"prompt": "x", "return_token_strs": True, "return_tokens": False}
+        if preview_space:
+            reply = app.tokenize({**body, "return_prompt": True})
+            assert reply == {"count": 7, "max_model_len": 128, "prompt": "<rendered>",
+                             "token_strs": ["lexical"] * 7}
+        else:
+            with pytest.raises(CapacityError):
+                app.tokenize({**body, "return_prompt": True})
+            assert hp.current().claims == {"tokenizer-ids": 1071}
     assert p.used == 0
 
 

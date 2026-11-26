@@ -1735,9 +1735,9 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
     from tensorfold.server.host_payload import HostPayloadPool, json_wire_bound
     from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
     from tensorfold.cuda.http import TOKENIZER_BODY_LIMIT
-    from .tokenizer_payload import bytelevel_decode_payload
+    from .tokenizer_payload import _bytelevel_decode_layout, bytelevel_decode_payload
     from tensorfold.server.segments import SegmentEncoder, _Segment
-    from tensorfold.server.prompt_literals import MAX_RENDER_BYTES
+    from tensorfold.server.prompt_literals import INSPECTION_CHARS, MAX_RENDER_BYTES
     from array import array
 
     policy, layout = core["json_policy"], _python_layout()
@@ -1991,6 +1991,17 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
         control_bound=control_bound,
         deadline_seconds=scheduler.queue_timeout_s)
     pool.ids_bound = ids_bound
+    # The proof above binds the immutable decoder once. Native work for a
+    # tokenizer preview scales with the prepared IDs, independently of any
+    # simultaneous token-string reply. Inspect the JSON string in 4KiB slices.
+    preview_measurement = (4 * INSPECTION_CHARS + layout["unicode"]
+                           + pool.encoding_bound(12 * INSPECTION_CHARS + 2))
+
+    def decoded_prompt_bound(count):
+        bound = _bytelevel_decode_layout(core["bound"], context=count)
+        return max(bound["native_heap_requested_bytes"], bound["result_to_python_payload_bytes"]) + preview_measurement
+
+    pool.decoded_prompt_bound = decoded_prompt_bound
     authority = result["authority"]
     # Operator evidence for /stats: what the pool is the remainder of (bytes; global over ranks).
     pool.obligations = {**named_fixed, "fixed_total": fixed,

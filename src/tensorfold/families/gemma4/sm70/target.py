@@ -1,4 +1,4 @@
-"""Gemma 4 26B-A4B target on one TP8/ETP4 rank (SM70), profile gemma4-sm70-w4a16-v1.
+"""Gemma 4 26B-A4B target on one TP8 rank (SM70), profile gemma4-sm70-w4a16-v1.
 
 Every rank runs the identical operation sequence on identical inputs; the leader alone samples. A forward's
 rows are segments of KV slots (one stream each, see Layout/Pool). Decode and verification forwards, of any

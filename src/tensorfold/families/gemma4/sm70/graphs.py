@@ -40,6 +40,7 @@ class Shape:
         rows = self.lay.rows
         self.ids_host = np.zeros(rows, dtype=np.int32)
         self.ids = torch.zeros(rows, dtype=torch.int64, device=t.device)
+        self.host_proposals = None
         if mode == MODE_ROUND:
             self.ids_host.fill(engine.head.mask_id)
             self.verify = torch.zeros(rows, dtype=torch.int64, device=t.device)
@@ -47,10 +48,16 @@ class Shape:
             self.proposal_rows = index[index % self.n != 0].contiguous()
             m = count * (self.n - 1)
             self.prop_arange = torch.arange(m, device=t.device)
+            if t.rank == 0:
+                self.host_proposals = torch.empty(m, dtype=torch.int64, pin_memory=True)
         self.row_arange = torch.arange(rows, device=t.device)
         # Plain serial shapes of one row tile (the sampled/grammar/penalty path) also gather every row's complete
         # vocabulary inside the graph, as the C1 engine did: no eager collective after the replay.
         self.gather_all = mode == MODE_SERIAL and rows <= 16
+        # Only rank 0 consumes decisions. A mode runs at most once per scheduler
+        # round, and its landing buffers are read before any next round starts.
+        self.host_compact = (torch.empty((t.world, rows, 3), dtype=torch.float32, pin_memory=True)
+                             if t.rank == 0 and not self.gather_all else None)
         self.full_rows = None
         self.graph = None
         self.out = None
@@ -106,6 +113,14 @@ class Shape:
             self.graph.replay()
             return self.out
         return self.body()
+
+    def land(self, compact, proposals):
+        """Enqueue rank zero's copies on the replay stream, before the round's done event."""
+        if self.host_compact is not None:
+            self.host_compact.copy_(compact, non_blocking=True)
+        if self.host_proposals is not None:
+            self.host_proposals.copy_(proposals, non_blocking=True)
+        return self.host_compact, self.host_proposals
 
     def capture(self, pool):
         stream = torch.cuda.Stream()

@@ -135,19 +135,28 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
 
     etp = getattr(args, "expert_tensor_parallel_size", None)
     if etp is not None:
-        if type(etp) is not int or etp not in (2, 4, 8):
-            raise ValueError("--expert-tensor-parallel-size must be 2, 4 or 8")
-        if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
-                or type(getattr(args, "tp", None)) is not int or args.tp != 8):
-            raise ValueError("--expert-tensor-parallel-size requires Flash Next GGUF on CUDA with --tp 8")
+        model_type = getattr(family, "model_type", "")
+        gemma = model_type in ("gemma4", "gemma4_text")
+        if backend != "cuda" or type(getattr(args, "tp", None)) is not int or args.tp != 8:
+            raise ValueError("--expert-tensor-parallel-size requires CUDA with --tp 8")
+        if gemma:
+            from tensorfold.families.gemma4.sm70.weights import checked_etp
+
+            checked_etp(etp)
+        elif model_type in ("qwen4_exp", "qwen3_8_flash_next"):
+            if type(etp) is not int or etp not in (2, 4, 8):
+                raise ValueError("--expert-tensor-parallel-size must be 2, 4 or 8 for Flash Next")
+        else:
+            raise ValueError("--expert-tensor-parallel-size requires Gemma 4 NVFP4 or Flash Next GGUF")
         if (getattr(args, "expert_ranks", 1) != 1 or getattr(args, "expert_shards", None) is not None
                 or getattr(args, "vram_experts", None) is not None or getattr(args, "indexer_history", "gpu") != "gpu"):
             raise ValueError("--expert-tensor-parallel-size requires resident TP8 GPU histories and expert banks")
-        from tensorfold.gguf_file import resolve_gguf
+        if not gemma:
+            from tensorfold.gguf_file import resolve_gguf
 
-        source = config_dir if config_dir is not None else getattr(args, "model", None)
-        if source is None or resolve_gguf(source) is None:
-            raise ValueError("--expert-tensor-parallel-size requires a local Flash Next GGUF checkpoint")
+            source = config_dir if config_dir is not None else getattr(args, "model", None)
+            if source is None or resolve_gguf(source) is None:
+                raise ValueError("--expert-tensor-parallel-size requires a local Flash Next GGUF checkpoint")
 
     if getattr(args, 'delta4_head', False) and getattr(args, 'lossless_head', False):
         raise ValueError('--delta4-head and --lossless-head are mutually exclusive')

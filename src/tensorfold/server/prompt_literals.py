@@ -20,6 +20,7 @@ from tensorfold.server.prompt_origin import (OriginText, PromptEncodingError, or
                                             trusted, trusted_values)
 
 MAX_RENDER_BYTES = 96 << 20
+INSPECTION_CHARS = 4096
 
 
 def _slot_pattern(literals):

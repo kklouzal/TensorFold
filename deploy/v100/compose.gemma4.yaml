@@ -1,4 +1,4 @@
-# Gemma 4 26B-A4B (AEON compressed-tensors NVFP4) on eight V100-SXM2-32GB, TP8/ETP4, for Harness.
+# Gemma 4 26B-A4B (AEON compressed-tensors NVFP4) on eight V100-SXM2-32GB, TP8 with ETP4 by default.
 # The configuration the V100 live server runs (2026-11-19): z-lab DFlash with private INT8 copies, 3 draft rows,
 # --parallel 8, RotorQuant Q8 KV, the native 262,144-token context, thinking on, automatic prompt-prefix reuse. See
 # docs/recipes/gemma-4.md#eight-v100s-tp8etp4 and docs/gemma4-sm70-concurrency.md.
@@ -10,7 +10,7 @@ services:
   tensorfold:
     image: ${TENSORFOLD_V100_IMAGE:-tensorfold-v100:verified}
     container_name: gemma4-v100
-    entrypoint: [/opt/venv/bin/python, /src/deploy/v100/gemma4_tp_harness.py]
+    entrypoint: [/opt/venv/bin/python, /src/tools/launch_cuda_tp.py]
     command:
       - --gpus
       - 0,1,2,3,4,5,6,7
@@ -28,6 +28,8 @@ services:
       - ${GEMMA4_PARALLEL:-8}
       - --context
       - ${GEMMA4_CONTEXT:-262144}
+      - --expert-tensor-parallel-size
+      - ${GEMMA4_EXPERT_TENSOR_PARALLEL_SIZE:-4}
       - --drafter
       - /drafter
       - --drafter-bits

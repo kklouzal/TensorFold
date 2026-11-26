@@ -79,26 +79,6 @@ def test_gemma4_kernels():
     codes, scales, rowmul = rand_packed(N, K)
     ext.w4_dequant(codes.to(dev), scales.to(dev), N, K, w16)
     check("dequant exact", w16.double() * rowmul.double().to(dev)[:, None], dequant(codes, scales, rowmul), 1e-12)
-    # experts
-    E, W, D, M, S = 8, 176, 2816, 3, 8
-    gu = [rand_packed(2 * W, D) for _ in range(E)]; dn = [rand_packed(D, W) for _ in range(E)]
-    st = lambda parts, i: torch.stack([p[i] for p in parts]).to(dev).contiguous()
-    local = torch.randint(-1, E, (M, S), dtype=torch.int32)
-    wts = torch.rand(M, S)
-    x = torch.randn(M, D)
-    act = torch.empty(M * S, W, device=dev)
-    ext.w4_expert_gateup(x.to(dev), M * S, S, local.to(dev), st(gu, 0), st(gu, 1), st(gu, 2), W, D, act)
-    out = torch.empty(M, D, device=dev)
-    ext.w4_expert_down(act, M, S, local.to(dev), wts.to(dev), st(dn, 0), st(dn, 1), st(dn, 2), D, W, out, D)
-    ref = torch.zeros(M, D, dtype=torch.float64)
-    for m in range(M):
-        for s in range(S):
-            e = int(local[m, s])
-            if e < 0: continue
-            y = x[m].double() @ dequant(*gu[e]).T
-            a = torch.nn.functional.gelu(y[:W], approximate="tanh") * y[W:]
-            ref[m] += wts[m, s].double() * (a @ dequant(*dn[e]).T)
-    check("experts", out, ref, 1e-5)
     # bf16 rows + softcap
     M, N, K = 5, 4096, 2816
     w = torch.randn(N, K).bfloat16(); x = torch.randn(M, K)
@@ -181,6 +161,42 @@ def test_gemma4_kernels():
         vv = x[m, (Hq + 1) * D:].double(); vv = vv / torch.sqrt((vv * vv).mean() + 1e-6)
         check(f"v m{m}", vc[pos % 2048], vv, 2e-3)
         assert int(kp[pos % 2048]) == pos
+
+
+@pytest.mark.parametrize("width", [176, 352, 704])
+def test_gemma4_experts_match_fp64_at_each_etp_width(width):
+    from tensorfold.cuda.sm70.gemma4_native import extension
+
+    ext = extension()
+    device = torch.device("cuda")
+    torch.manual_seed(0)
+    experts, hidden, rows, slots = 4, 2816, 3, 8
+    gate_up = [rand_packed(2 * width, hidden) for _ in range(experts)]
+    down = [rand_packed(hidden, width) for _ in range(experts)]
+    gate_up_device = [torch.stack(parts).to(device) for parts in zip(*gate_up, strict=True)]
+    down_device = [torch.stack(parts).to(device) for parts in zip(*down, strict=True)]
+    local = torch.tensor([
+        [0, -1, 1, -1, -1, 3, -1, 2],
+        [-1, 3, -1, -1, -1, -1, 0, -1],
+        [-1, -1, -1, -1, -1, -1, -1, -1],
+    ], dtype=torch.int32)
+    weights = torch.rand(rows, slots)
+    x = torch.randn(rows, hidden)
+    act = torch.empty(rows * slots, width, device=device)
+    out = torch.empty(rows, hidden, device=device)
+    ext.w4_expert_gateup(x.to(device), rows * slots, slots, local.to(device), *gate_up_device, width, hidden, act)
+    ext.w4_expert_down(act, rows, slots, local.to(device), weights.to(device), *down_device, hidden, width, out, hidden)
+
+    gate_up_ref = [dequant(*parts) for parts in gate_up]
+    down_ref = [dequant(*parts) for parts in down]
+    expected = torch.zeros(rows, hidden, dtype=torch.float64)
+    for row, slot in (local >= 0).nonzero().tolist():
+        expert = int(local[row, slot])
+        y = x[row].double() @ gate_up_ref[expert].T
+        activated = torch.nn.functional.gelu(y[:width], approximate="tanh") * y[width:]
+        expected[row] += weights[row, slot].double() * (activated @ down_ref[expert].T)
+    check("experts", out, expected, 1e-5)
+    assert torch.count_nonzero(out[-1]).item() == 0
 
 
 @pytest.mark.parametrize("K", [16, 176, 272, 2816])

@@ -1,11 +1,11 @@
-"""Rank shards of the AEON compressed-tensors NVFP4 Gemma 4 checkpoint for the SM70 TP8/ETP4 provider.
+"""Rank shards of the AEON compressed-tensors NVFP4 Gemma 4 checkpoint for the SM70 TP8 provider.
 
 Original FP4 code bytes and E4M3 block-scale bytes are sliced, never re-encoded. Each projection keeps its
 own 1/weight_global_scale as an FP32 per-output-row multiplier so projections sharing an input concatenate
 into one launch without rescaling. Layout (world 8):
   sliding attention: q heads 2r, 2r+1 and KV head r; full attention: q heads 2r, 2r+1 and KV head r // 4;
   o_proj: the matching input columns; dense MLP: 272 (ranks 0-3) / 256 (ranks 4-7) intermediate rows;
-  experts (ETP4 x EP2): experts [64 * (r // 4), +64), intermediate slice [176 * (r % 4), +176).
+  experts: ETP consecutive ranks share an equal expert group; each lane owns a contiguous slice of its width.
 BF16 tensors (tied embedding/head, router, norms, scalars) stay original BF16; the embedding is replicated.
 """
 
@@ -19,7 +19,24 @@ from ..cuda.weights import Config
 from ..cuda.nvfp4_weights import CT_PREFIX, validate_headers
 
 WORLD = 8
-ETP = 4
+DEFAULT_ETP = 4
+EXPERT_DEGREES = (1, 2, 4)
+
+
+def checked_etp(degree: int) -> int:
+    if type(degree) is not int or degree not in EXPERT_DEGREES:
+        raise ValueError("Gemma 4 SM70 requires ETP1, ETP2 or ETP4")
+    return degree
+
+
+def expert_slice(experts: int, width: int, rank: int, etp: int) -> tuple[int, int, int, int]:
+    """Return the first expert, expert count, intermediate offset and width for this rank."""
+    groups = WORLD // checked_etp(etp)
+    if experts % groups or width % (etp * 16):
+        raise ValueError("Gemma 4 experts must divide evenly into EP groups and NVFP4-aligned ETP slices")
+    owner, lane = divmod(rank, etp)
+    count, lane_width = experts // groups, width // etp
+    return owner * count, count, lane * lane_width, lane_width
 
 
 def dense_split(intermediate: int, world: int = WORLD) -> list[tuple[int, int]]:
@@ -62,8 +79,8 @@ class Layer:
     o: Packed
     gate_up: Packed       # gate rows | up rows (dense, this rank's width)
     down: Packed
-    experts_gate_up: Packed   # [64, 2*176, K/2]
-    experts_down: Packed      # [64, 2816, 176/2]
+    experts_gate_up: Packed   # [local experts, 2*lane width, hidden/2]
+    experts_down: Packed      # [local experts, hidden, lane width/2]
     router: Any
     norms: dict = field(default_factory=dict)
 
@@ -100,7 +117,8 @@ def _check_scales(tensor, name):
     return raw
 
 
-def load(model_dir: str | Path, rank: int, world: int = WORLD, device="cuda") -> RankWeights:
+def load(model_dir: str | Path, rank: int, world: int = WORLD, device="cuda", *,
+         expert_tensor_parallel_size: int = DEFAULT_ETP) -> RankWeights:
     import torch
     from tensorfold.checkpoint_metadata import read_config, read_json
     from tensorfold.cuda.direct_read import SafeTensors
@@ -109,6 +127,7 @@ def load(model_dir: str | Path, rank: int, world: int = WORLD, device="cuda") ->
 
     if world != WORLD or not 0 <= rank < world:
         raise ValueError("Gemma 4 SM70 provider requires TP8 ranks 0..7")
+    etp = checked_etp(expert_tensor_parallel_size)
     root = Path(model_dir)
     raw = read_config(root)
     index = read_json(root, "model.safetensors.index.json")
@@ -157,11 +176,7 @@ def load(model_dir: str | Path, rank: int, world: int = WORLD, device="cuda") ->
 
     split = dense_split(c.intermediate, world)
     d_off, d_width = split[rank]
-    groups = world // ETP
-    count = c.experts // groups
-    first = (rank // ETP) * count
-    ew = c.moe_width // ETP
-    e_off = (rank % ETP) * ew
+    first, count, e_off, ew = expert_slice(c.experts, c.moe_width, rank, etp)
     layers = []
     for i in range(c.layers):
         p = f"{CT_PREFIX}layers.{i}."

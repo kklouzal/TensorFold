@@ -16,12 +16,12 @@ def parsed(model, degree=None):
     return cli.build_parser().parse_args(argv)
 
 
-@pytest.mark.parametrize("degree", [None, 2, 4, 8])
+@pytest.mark.parametrize("degree", [None, 1, 2, 4, 8])
 def test_parser_preserves_default_and_accepts_only_prepared_degrees(degree):
     assert parsed("checkpoint", degree).expert_tensor_parallel_size == degree
 
 
-@pytest.mark.parametrize("degree", [0, 1, 3, 16])
+@pytest.mark.parametrize("degree", [0, 3, 16])
 def test_parser_rejects_excluded_degrees(degree):
     with pytest.raises(SystemExit):
         parsed("checkpoint", degree)
@@ -42,7 +42,7 @@ def test_programmatic_cli_namespace_rejects_invalid_degrees_before_source_io(deg
 @pytest.mark.parametrize("changes,backend,model_type", [
     ({"tp": 4}, "cuda", "qwen4_exp"),
     ({}, "mlx", "qwen4_exp"),
-    ({}, "cuda", "gemma4"),
+    ({"tp": 1}, "cuda", "gemma4"),
     ({"expert_ranks": 2}, "cuda", "qwen4_exp"),
     ({"expert_shards": "256,256"}, "cuda", "qwen4_exp"),
     ({"vram_experts": "auto"}, "cuda", "qwen4_exp"),
@@ -66,6 +66,53 @@ def test_real_gguf_metadata_passes_service_preflight(tmp_path, degree):
     args = parsed(path, degree)
     family = families.detect(path)
     serve_options.check(args, family, "cuda", config_dir=path)
+
+
+@pytest.mark.parametrize("degree", [1, 2, 4])
+def test_gemma_v100_preflight_and_engine_dispatch(degree, tmp_path, monkeypatch):
+    from tensorfold.families import gemma4
+    from tensorfold.families.gemma4.sm70 import engine
+
+    model_type = "gemma4_text"
+    family = SimpleNamespace(model_type=model_type, package=gemma4)
+    args = cli.build_parser().parse_args([
+        "serve", str(tmp_path), "--backend", "cuda", "--tp", "8", "--master", "127.0.0.1", "--no-drafts",
+        "--expert-tensor-parallel-size", str(degree),
+    ])
+    serve_options.check(args, family, "cuda", config_dir=tmp_path)
+
+    monkeypatch.setattr(families, "read_config", lambda _: {
+        "model_type": model_type,
+        "quantization_config": {"quant_method": "compressed-tensors"},
+    })
+    monkeypatch.setattr(engine, "Gemma4SM70Engine", lambda _, **options: options)
+    assert gemma4.cuda_engine(tmp_path, tp=8, expert_tensor_parallel_size=degree)["expert_tensor_parallel_size"] == degree
+    assert gemma4.cuda_engine(tmp_path, tp=8)["expert_tensor_parallel_size"] == 4
+
+
+def test_gemma_v100_rejects_etp8(tmp_path):
+    from tensorfold.families import gemma4
+
+    family = SimpleNamespace(model_type="gemma4", package=gemma4)
+    with pytest.raises(ValueError, match="ETP1, ETP2 or ETP4"):
+        serve_options.check(parsed(tmp_path, 8), family, "cuda", config_dir=tmp_path)
+
+
+@pytest.mark.parametrize(("degree", "count", "width"), [(1, 16, 704), (2, 32, 352), (4, 64, 176)])
+def test_gemma_expert_shards_cover_every_nvfp4_group_once(degree, count, width):
+    from tensorfold.families.gemma4.sm70.weights import expert_slice
+
+    covered = set()
+    for rank in range(8):
+        first, local_count, offset, local_width = expert_slice(128, 704, rank, degree)
+        assert (local_count, local_width) == (count, width)
+        assert first == rank // degree * count
+        assert offset == rank % degree * width
+        groups = {(expert, column) for expert in range(first, first + count)
+                  for column in range(offset, offset + width, 16)}
+        assert covered.isdisjoint(groups)
+        covered.update(groups)
+    assert covered == {(expert, column) for expert in range(128) for column in range(0, 704, 16)}
 
 
 @pytest.mark.parametrize("degree", [None, 2, 4, 8])

@@ -1,4 +1,4 @@
-"""Gemma 4 26B-A4B on eight V100s: TP8/ETP4 ranks driven by rank 0, up to ``--parallel`` streams together.
+"""Gemma 4 26B-A4B on eight V100s: TP8 ranks driven by rank 0, up to ``--parallel`` streams together.
 
 Rank 0 owns the HTTP App, the shared CUDA Scheduler (tensorfold.cuda.scheduler: admission queue, cancellation,
 per-request delivery on the caller's thread) and this provider's ``Decoder``: KV slots, prompt chunks and
@@ -16,6 +16,7 @@ a stream finishes.
 from __future__ import annotations
 
 import array
+from bisect import bisect_right
 import os
 import struct
 import time
@@ -29,6 +30,7 @@ from .ops import (OP_ATTACH, OP_BATCH, OP_COPY, OP_DETACH, OP_DROP, OP_FORWARD, 
                   OP_LAYERS, OP_RESTORE, OP_SNAP, OP_STOP)
 from .prefix import PrefixOwner
 from .prefix_host import BLOCK_BYTES, _to_slab
+from . import weights as W
 F_LOGITS_LAST, F_APPEND, F_SCORE = 2, 4, 16
 STOP_SHIFT = 8                  # OP_FORWARD flags >> STOP_SHIFT: the layer a split prompt forward pauses at (0: all)
 SCORE_TOP = 20
@@ -52,17 +54,18 @@ class Gemma4SM70Engine:
                  drafter_bits: int = 8, depth: int | None = None, no_drafts: bool = False, streams: int = 1,
                  eos_token_ids=None, chat_template_file=None, chat_template_name=None, graphs: bool = True,
                  keep_slots: int | None = None, prefix_host_bytes: int | None = None,
-                 queue_timeout_s: float | None = None, kv_format: str = "fp16") -> None:
+                 queue_timeout_s: float | None = None, kv_format: str = "fp16",
+                 expert_tensor_parallel_size: int = W.DEFAULT_ETP) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
         from tensorfold.token_metadata import resolve_eos
-        from . import weights as W
         from .target import Target, CHUNK, DECODE_ROWS, prompt_rows
         from .graphs import Shape, MODE_SERIAL, MODE_ROUND, MODE_SERIAL_TAPS, buckets
 
         if tp != W.WORLD or not 0 <= rank < tp:
-            raise ValueError("Gemma 4 SM70 serving requires --tp 8 (TP8 attention/dense, ETP4 experts)")
+            raise ValueError("Gemma 4 SM70 serving requires --tp 8")
+        self.expert_tensor_parallel_size = etp = W.checked_etp(expert_tensor_parallel_size)
         if type(streams) is not int or not 1 <= streams <= MAX_STREAMS:
             raise ValueError(f"Gemma 4 SM70 serves --parallel 1 to {MAX_STREAMS}")
         raw = read_config(model_dir)
@@ -78,7 +81,13 @@ class Gemma4SM70Engine:
         os.environ.setdefault("TF_SMALL_GATHER_BYTES", "262144")
         # row_reduce/fp32_rows: the bulk mailbox of the decode rows' FP32 all-reduce (Target._reduce)
         self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port, row_reduce=True, fp32_rows=True)
-        self.w = W.load(model_dir, rank)
+        local_etp = torch.tensor([etp], dtype=torch.int64, device="cuda")
+        degrees = torch.empty(tp, dtype=torch.int64, device="cuda")
+        self.comm.all_gather(local_etp, degrees)
+        if any(peer != etp for peer in degrees.tolist()):
+            self.comm.close()
+            raise ValueError("Gemma 4 SM70 requires the same expert tensor-parallel size on every rank")
+        self.w = W.load(model_dir, rank, expert_tensor_parallel_size=etp)
         self.snaps = {}                           # prefix snapshot id -> (target rings, drafter rings) on this rank
         # Host prefix tier (prefix_host.py, on by default; --prefix-host-bytes 0 disables): one pinned slab per rank,
         # allocated before the KV budget and the HTTP host pool are measured; host entry id -> its tensors' slab
@@ -210,12 +219,15 @@ class Gemma4SM70Engine:
         self.comm.all_gather(mine, every)
         self.budget = max(0, int(every.min()))
         self.token_bytes = self.target.pool.token_bytes() + (self.head.token_bytes() if self.head else 0)
+        self.model_kv_dtype = self.target.kv_format
+        self.limit = self._admission_limit()
         self._closed = False
         self.vision = None
         self.decoder = self.scheduler = None
         if rank == 0:
             fits = self.budget // self.slot_bytes(self.target.alloc)
-            print(f"[tensorfold] Gemma 4 SM70: --parallel {streams}, KV budget {self.budget / 2**30:.2f} GiB/rank "
+            print(f"[tensorfold] Gemma 4 SM70: TP8/ETP{etp}, --parallel {streams}, "
+                  f"KV budget {self.budget / 2**30:.2f} GiB/rank "
                   f"({self.token_bytes} B/token, full-attention KV {kv_format}, + FP16 rings): {fits} streams of "
                   f"{self.context_window} tokens fit at once; longer admissions wait for memory; {self.keep_slots} "
                   "slots keep idle conversations", flush=True)
@@ -238,6 +250,16 @@ class Gemma4SM70Engine:
         torch.cuda.synchronize()
 
     # ---------------------------------------------------------------------------------------------- memory
+    def _admission_limit(self) -> int:
+        """Largest prompt plus reply the rank-agreed budget can fund for one request."""
+        from .target import CHUNK
+
+        chunks = range(self.target.alloc // CHUNK + 1)
+        funded = bisect_right(chunks, self.budget, key=lambda n: self.slot_bytes(n * CHUNK)) - 1
+        if funded == chunks.stop - 1:
+            return self.context_window
+        return max(0, min(self.context_window, funded * CHUNK - self.block))
+
     def slot_bytes(self, capacity: int) -> int:
         """Ledger bytes of one admitted slot: its full-attention caches, each allocation rounded to 2 MiB."""
         from .target import CHUNK
@@ -427,7 +449,7 @@ class Gemma4SM70Engine:
 
     def _batch(self, mode, count, entries, full):
         """One decode round over ``entries`` [(slot, start, anchor)] padded to the ``count`` shape. Returns the
-        device compact maxima, proposals, the gathered complete rows of the ``full`` segments (or None) and
+        pinned compact maxima and proposals on rank 0, the gathered complete rows of the ``full`` segments (or None) and
         whether those rows are indexed by segment (every segment gathered) rather than by position in ``full``."""
         import torch
         shape = self.shapes[(mode, count)]
@@ -446,6 +468,7 @@ class Gemma4SM70Engine:
         rows = None
         if shape.gather_all:                           # every row gathered inside the graph (graph-owned)
             return compact, proposals, shape.full_rows, True
+        compact, proposals = shape.land(compact, proposals)
         if full:
             n = shape.n
             if full == list(range(len(full))):          # a prefix of the segments: a view, no index upload
@@ -510,8 +533,8 @@ class Gemma4SM70Engine:
             raise ValueError("Gemma 4 needs a nonempty list of in-vocabulary prompt token IDs")
         if type(max_tokens) is not int or max_tokens < 1:
             raise ValueError("max_tokens must be a positive integer")
-        if len(prompt) + max_tokens > self.context_window:
-            raise ValueError(f"prompt and reply exceed the {self.context_window}-token admitted context")
+        if len(prompt) + max_tokens > self.limit:
+            raise ValueError(f"prompt and reply exceed the {self.limit}-token admitted context")
         if self._closed or self.scheduler is None:
             raise RuntimeError("Gemma 4 SM70 engine is closed")
         options = {"background": True} if background else {}
@@ -628,13 +651,9 @@ class Decoder(PrefixOwner):
         e = self.e
         if s.vision is not None:
             raise ValueError("Gemma 4 SM70 does not serve image/video input yet")
-        if len(s.prompt) + s.count > e.context_window:
-            raise ValueError(f"prompt and reply exceed the {e.context_window}-token admitted context")
+        if len(s.prompt) + s.count > e.limit:
+            raise ValueError(f"prompt and reply exceed the {e.limit}-token admitted context")
         capacity = self._cap(len(s.prompt) + s.count + e.block)
-        need = e.slot_bytes(capacity)
-        if need > e.budget:
-            raise ValueError(f"a {len(s.prompt)}-token prompt with {s.count} reply tokens needs {need >> 20} MiB of "
-                             f"KV per GPU; {e.budget >> 20} MiB is available")
         # Prompt reuse: drafting-eligible requests without media; a teacher-forcing sink only when it asks to borrow
         # (it scores the rows it computes). Sampling does not change prompt state (positive temperature reuses).
         reuse = bool(s.draft and s.vision is None)
@@ -909,7 +928,7 @@ class Decoder(PrefixOwner):
             self.costs[key] = 0.9 * self.costs[key] + 0.1 * (now - t0) * 1000
             proposed = proposals.view(bucket, n - 1).tolist() if proposals is not None else None
             if compact is not None:
-                best = compact.cpu().numpy()                   # [world, rows, 3] (already complete)
+                best = compact.numpy()                         # [world, rows, 3] landed before the done event
                 choice = best[:, :, 0].argmax(axis=0)          # first (lowest) rank among equal maxima
                 tokens = best[choice, np.arange(best.shape[1]), 1].astype(np.int64).tolist()
                 maxima = best[choice, np.arange(best.shape[1]), 0]

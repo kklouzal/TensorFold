@@ -193,7 +193,7 @@ __global__ void __launch_bounds__(256) w4_expert_gateup(const float* __restrict_
 
 // Expert down with the routing combine: out[m, n] = sum_s weight[m,s] * down_e(act[m*S+s])[n], slots in
 // ascending order, non-local slots skipped. Down weights: codes [E, N, W/2], scales [E, N, W/16], rowmul [E, N].
-// Half-warps own one output each (W / 16 <= 16 groups).
+// Half-warps own one output each and stride the 16-value groups within the shard.
 __global__ void __launch_bounds__(256) w4_expert_down(const float* __restrict__ act, int slots,
         const int* __restrict__ local, const float* __restrict__ weight, const uint8_t* __restrict__ codes,
         const uint8_t* __restrict__ scales, const float* __restrict__ rowmul, int N, int W,
@@ -1231,7 +1231,7 @@ void w4_expert_gateup_cuda(const Tensor& x, int64_t pairs, int64_t slots, const 
 void w4_expert_down_cuda(const Tensor& act, int64_t M, int64_t slots, const Tensor& local, const Tensor& weight,
                          const Tensor& codes, const Tensor& scales, const Tensor& rowmul, int64_t N, int64_t W,
                          Tensor& out, int64_t ldo) {
-    TORCH_CHECK(W / 16 <= 16, "expert down keeps at most 16 input groups per half-warp");
+    TORCH_CHECK(W > 0 && W <= 704 && W % 16 == 0, "expert down requires an NVFP4-aligned width up to 704");
     const dim3 grid((N + g4::WARPS * 2 - 1) / (g4::WARPS * 2), M);
     g4::w4_expert_down<<<grid, 256, 0, stream()>>>(cptr<float>(act), (int)slots, cptr<int>(local),
         cptr<float>(weight), cptr<uint8_t>(codes), cptr<uint8_t>(scales), cptr<float>(rowmul), (int)N, (int)W,

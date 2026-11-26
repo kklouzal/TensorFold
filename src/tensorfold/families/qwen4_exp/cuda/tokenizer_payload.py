@@ -81,6 +81,12 @@ def _ratio_ceiling(value, ratio, name):
 
 
 def bytelevel_decode_payload(bound, *, context=None, encoded_id_bytes=None):
+    """Project and verify the native decoder at the owning boundary."""
+    return {**_bytelevel_decode_layout(bound, context=context, encoded_id_bytes=encoded_id_bytes),
+            "policy": bytelevel_payload_policy()}
+
+
+def _bytelevel_decode_layout(bound, *, context=None, encoded_id_bytes=None):
     """Bound one synchronous decode, with exactly one source of ID limits.
 
     ``context`` bounds model-decoder IDs. HTTP detokenize has no model-context
@@ -128,5 +134,4 @@ def bytelevel_decode_payload(bound, *, context=None, encoded_id_bytes=None):
         "decoded_utf8_bytes": output, "phase_heap_requested_bytes": phases,
         "native_heap_requested_bytes": total, "result_to_python_payload_bytes": conversion,
         "json_escaped_content_bytes": escaped, "json_escaped_string_bytes": escaped + 2,
-        "policy": bytelevel_payload_policy(),
         "evidence": "source-owned requested layouts; Python owners/allocator/RSS/fixed stack separate"}

@@ -624,6 +624,10 @@ class HostPayloadLease:
         amount = self.pool.segment_bound(_bytes(limit), _bytes(entries), _bytes(text_chars))
         self.set("segment-cache", max(amount, self.claims.get("segment-cache", 0)), allow_wait=False)
 
+    def decoded_prompt(self, count):
+        """Pay the tokenizer preview's native work and retained result before decode."""
+        self.set("decoded-prompt", self.pool.decoded_prompt_bound(_bytes(count)), allow_wait=False)
+
     def render(self, chars, parts):
         amount = self.pool.render_bound(_bytes(chars), _bytes(parts))
         self.set("render", max(amount, self.claims.get("render", 0)), allow_wait=False)

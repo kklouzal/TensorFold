@@ -176,7 +176,9 @@ def make_handler(app: App):
             try:
                 body = json_nesting.loads(
                     read_body(self, limit=TOKENIZER_BODY_LIMIT if tokenizer else GENERATION_BODY_LIMIT) or b"{}")
-                model = requested_model(app, body)          # an id this endpoint does not serve: 404
+                # Tokenizer methods resolve their model under their profile lease.
+                if not tokenizer:
+                    model = requested_model(app, body)
                 # llama.cpp's opt-in prefill progress frames, on a stream
                 progress = isinstance(body, dict) and flag(body, "return_progress", False) and bool(body.get("stream"))
             except RequestError as error:

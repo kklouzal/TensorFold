@@ -11,7 +11,8 @@ import weakref
 from tensorfold.cleanup import finish, raise_failures
 from tensorfold.cuda.profile_binding import ProfileUnavailable
 
-DERIVED = ("grammars", "_thinking_markers", "_thinking_fixed", "_strict_markup", "_probability_decoder", "_form")
+DERIVED = ("grammars", "_thinking_markers", "_thinking_fixed", "_strict_markup", "_probability_decoder", "_form",
+           "_tokenizer_capabilities")
 BINDING = ("model_dir", "vision", "tok", "template", "segments", "served", "aliases", "default_thinking",
            "sampling", "max_tokens", "reasoning_effort", "thinking_budget", "native_context_window", "context_window")
 

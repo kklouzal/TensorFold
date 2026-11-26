@@ -769,7 +769,9 @@ reasoning and holds incomplete control markers while streaming. Channel controls
 stay out of visible content; native quoted tool arguments retain their literal
 values. CUDA and non-CUDA servers share this channel parser.
 
-Harness connections require the container's compatibility entrypoint, `cuda_entrypoint.py` → `tensorfold_harness.py`, with `--thinking-budget 0`. The native CLI's token-count response lacks Harness's versioned model/context metadata. Gemma count-only image preparation can measure prompts beyond the served context while retaining media safety limits; generation still enforces its context window.
+Harness reads versioned model and context metadata from the native CUDA server's `/v1/tokenize`.
+Use `--thinking-budget 0` to leave the reasoning budget to individual requests. Count-only image
+preparation can measure prompts beyond the served context while retaining media safety limits.
 
 Required-tool format discovery follows the rendered call envelope, including DSML. A tool-name list after the example call in a custom chat template no longer becomes part of the forced call prefix. Existing HTTP enforcement regressions and the Heretic installed-model strict-tool checks pass.
 
@@ -777,18 +779,14 @@ CUDA strict tools recognize exact XML templates that render scalar `True`, `Fals
 
 #### Model-owned Harness discovery and counting
 
-The owned launcher selects the checkpoint's template metadata by default;
+The CUDA server selects the checkpoint's template metadata by default;
 `--chat-template` is an optional override. Thinking/replay discovery renders both
 default and tool-use routes and advertises only stable common facts, without
 model-name or known-template-hash inference. Launch values remain defaults and
 request values win. `/v1/tokenize` keeps Harness envelope version 1, shares CPU
-preparation with generation, accepts bounded fixed-length/chunked bodies and
-uses a 96 MiB serialized inspection budget rather than a 16K-token ceiling.
-Prepared owners and the sole count slot cover serialization through response
-writing. These source changes require the selected-model and installed endpoint
-checks in the release record; they do not establish model output quality or
-universal tokenizer workspace bounds. See [API contracts](docs/api.md) and the
-[launcher deployment notes](deploy/gb10/README.md).
+preparation with generation and supports optional token or decoded prompt inspection.
+The native route limits request bodies to 32 MiB and bounds serialized prompt
+inspection. See the [API contract](docs/api.md).
 
 ### CUDA prefill cancellation
 
@@ -1687,6 +1685,13 @@ records the C32 decode timing and mixed-stream results.
 The eight-V100 Gemma 4 provider now serves through the shared CUDA scheduler (`--parallel N`, batched decode
 rounds), reuses prompt prefixes automatically and drafts sampled requests with DFlash
 ([recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4), [design](docs/gemma4-sm70-concurrency.md)).
+The standard CUDA launcher serves Gemma's chat token counts, renderer capabilities and
+request statistics to Harness through the native API. [API reference](docs/api.md)
+For Gemma on V100, `/v1/models` and `/v1/tokenize` report the prompt-plus-reply limit
+that fits one request in the KV budget across all ranks. `/v1/stats` also reports the
+effective full-attention KV format.
+`--expert-tensor-parallel-size` selects ETP1, ETP2 or ETP4 on the eight-V100 Gemma provider.
+ETP4 is the default. ETP1 and ETP2 full-model throughput and perplexity qualification are pending.
 Measured on eight V100-SXM2-32GB (image `4b2661d8`, `--context 262144`, INT8 DFlash 5 rows, Harness T4 template,
 thinking on; previous engine `3f49a0b2` vs this change, one session each):
 

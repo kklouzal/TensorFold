@@ -127,6 +127,53 @@ def test_strict_final_parser_uses_routed_answer_even_without_sampler_grammar(tmp
     assert json.loads(result['calls'][0]['function']['arguments']) == {'text': 'value'}
 
 
+@pytest.mark.parametrize("with_tools", [False, True])
+def test_native_cuda_tokenizes_gemma_chat_with_exact_controls(tmp_path, with_tools, monkeypatch):
+    from tensorfold.engine import exact_sampling
+    from tests.test_cuda_admission import http_server
+    from tests.test_token_routes import call
+
+    plain = GEMMA_CALLS + "{% if add_generation_prompt and enable_thinking %}<|channel>thought\n{% endif %}"
+    instance = app(tmp_path, "unused", template={"default": plain, "tool_use": plain + " "})
+    instance.aliases = ("gemma-alias",)
+    instance.native_context_window = instance.context_window = 4
+    instance.sampling.update(top_k=0, top_p=1.0)
+    body = {"model": "gemma-alias", "messages": [{"role": "user", "content": "Hello."}],
+            "chat_template_kwargs": {"enable_thinking": True}, "temperature": 1.0}
+    if with_tools:
+        schema = {"type": "object", "properties": {"value": {"type": "string"}},
+                  "required": ["value"], "additionalProperties": False}
+        body["tools"] = [tool("f", schema, strict=True)]
+    prepared = instance._prepare(body, True, for_generation=False)
+    expected = prepared.prompt
+    prepared.close()
+
+    def count_seed(tokens):
+        assert not tokens  # count validates sampling without keying it to the whole prompt
+        return 0
+
+    monkeypatch.setattr(exact_sampling, "seed_for", count_seed)
+    with http_server(instance) as port:
+        status, count = call(port, "/v1/tokenize", {**body, "return_tokens": False})
+        assert status == 200, count
+        assert count["count"] == len(expected) > count["context_length"] == count["max_model_len"] == 4
+        assert count["model"] == "gemma-alias"
+        assert count["harness_tokenizer_version"] == 1
+        assert count["chat_template_sha256"] == instance.template.selected(tools=with_tools).sha256
+        assert count["capabilities"]["thinking_control"]["keyword"] == "enable_thinking"
+        assert "tokens" not in count and "prompt" not in count
+        status, inspected = call(port, "/v1/tokenize", {**body, "return_prompt": True})
+        assert status == 200, inspected
+        assert inspected["tokens"] == expected
+        assert inspected["prompt"] == instance.tok.decode(expected, skip_special_tokens=False)
+        assert "<|channel>thought\n" in inspected["prompt"]
+        for field in ("return_tokens", "return_prompt"):
+            status, refused = call(port, "/v1/tokenize", {**body, field: 1})
+            assert status == 400 and f"{field} must be a boolean" in refused["error"]["message"]
+        assert call(port, "/v1/tokenize", {**body, "model": "other"})[0] == 404
+    assert not instance.engine.calls
+
+
 @pytest.mark.parametrize('headers', [(), ('<|tool_call>call:other{',), ('<|tool_call>call:echo{',)])
 @pytest.mark.parametrize('quoted', [False, True])
 def test_native_boundary_shields_only_quoted_tool_values_independent_of_names(headers, quoted):

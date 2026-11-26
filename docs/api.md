@@ -44,11 +44,21 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 | `POST /v1/responses/input_tokens` | A Responses request's input tokens, rendered as its chat completion runs them; no text is generated |
 | `POST /v1/decisions` | Choice, score, and yes/no probabilities from the next-token logits; no text is generated |
 
-Harness uses the container's `tensorfold_harness.py` compatibility entrypoint. Launch thinking settings are defaults; an explicit request overrides them, including `thinking_budget: 0` for unlimited reasoning. Its `/v1/tokenize` accepts chat requests and returns integer `count`, the requested served `model` (including an alias), positive `context_length`, and `harness_tokenizer_version: 1`. It uses generation's CPU rendering/token boundaries without running the engine or waiting for its lane; histories beyond the served context can be counted. Independent media safety checks remain active. The native CLI's vLLM response above has a different metadata contract.
+The standard CUDA server supports exact counting for Harness and other clients through `/v1/tokenize`.
+For chat requests it includes the served `model` (including a requested alias), `context_length`,
+the version-1 count marker `harness_tokenizer_version`, and captured renderer metadata. Counting
+uses generation's CPU preparation without running the engine or reserving a lane. Text histories
+beyond the served context can be counted. Media requests follow the active frontend's limits.
+Launch thinking settings are defaults that requests can override.
 
-The launcher accepts bounded Content-Length or HTTP/1.1 chunked bodies up to 96 MiB; ambiguous framing is rejected. The body has an absolute 30-second read deadline checked between single I/O operations. Optional `return_tokens` / `return_prompt` inspection has a 96 MiB **serialized JSON byte** budget, rather than a fixed token ceiling. One bounded preparation slot covers body consumption, preparation, owner closure, serialization and response writing. Count-only responses do not attach token arrays or decode a diagnostic prompt; native preparation still materializes its prompt IDs. These are input/output and concurrency bounds, not a generic tokenizer-workspace guarantee.
+The CUDA tokenizer retains the vLLM-compatible `count`, `max_model_len` and `tokens` fields by
+default. Send `return_tokens: false` to omit the token array or `return_prompt: true` to inspect the
+decoded render, including special tokens. Prompt inspection is bounded by the render's JSON byte
+budget. The native tokenizer endpoint admits request bodies up to 32 MiB.
 
-Discovery probes the actual captured default and `tool_use` renderers at startup. Common `thinking_control`, `reasoning_replay_field` and `preserve_reasoning` facts are declared only when stable probes establish agreement on both routes; unsupported, fixed, unstable or conflicting facts are omitted. Fingerprints identify captured source, without a model-name or known-hash capability whitelist. Render facts do not promise model obedience. Installed endpoint and selected-model verification is recorded separately from source implementation.
+Discovery probes the active default and tool renderers. Stable agreement on both routes governs
+the advertised `thinking_control`, `reasoning_replay_field` and `preserve_reasoning` fields.
+The fingerprint identifies the captured renderer source.
 
 Late system-message discovery checks distinct prior-user, assistant, late-system
 and following-user markers in rendered order. A template that hoists system text
@@ -98,8 +108,8 @@ currently exposed by this API.
 
 Flash Next's RAM expert cache, optional host pinning, shared KV-window budget and
 same-host NCCL expert ranks are startup settings. Rank 0 owns the HTTP server;
-followers execute their routed experts. The container's expert launcher retains
-the Harness entrypoint, including `/v1/tokenize`. A shared KV budget can queue a
+followers execute their routed experts. The standard CUDA server handles `/v1/tokenize`.
+A shared KV budget can queue a
 request or stop the newest blocked request with an explicit error; existing
 `memory_waits` and `memory_stops` statistics and metrics expose that pressure.
 See [desktop configuration and validation](desktop-report-remediation.md).
@@ -690,7 +700,8 @@ Times are seconds, sizes bytes.
 | `model.id`, `model.aliases` | `--name` and each `--alias` |
 | `model.model_type`, `model.context_length` | The checkpoint's `model_type`; the served context (the `max_model_len` of `/v1/models`) |
 | `model.default_max_tokens`, `model.thinking_default`, `model.vision` | The reply limit a request without one gets, whether replies think by default, whether images are accepted |
-| `model.kv_dtype`, `model.mtp_drafts` | The KV cache format (`KEY/VALUE` when they differ) and drafts a round, where the engine has them |
+| `model.kv_dtype`, `model.mtp_drafts` | The KV cache format (`KEY/VALUE` when they differ) and drafts a round, where the engine has them. Gemma 4 TP8 reports the full-attention format. Its sliding-window rings remain FP16. |
+| `model.expert_tensor_parallel_size` | The number of ranks that jointly evaluate each routed expert, where reported by the engine |
 | `limits.lanes` | Allocated concurrent request slots (CUDA `--parallel`; 1 when one runs at a time; the Mac's batch). Adaptive resident capacity can exceed one execution microbatch; its effective admission ceiling and actual scheduled count are in `runtime` |
 | `limits.pending_requests`, `limits.engine_calls`, `limits.http_connections` | `--max-pending-requests`, `--max-engine-calls`, `--max-http-connections`, or null when unset |
 | `limits.prefix_cache_entries` | Maximum kept prompt points where that backend uses an entry ceiling; null for the Gemma byte-budget archive |

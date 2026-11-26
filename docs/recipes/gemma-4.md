@@ -31,7 +31,10 @@ tensorfold serve /models/gemma4 --backend cuda --drafter /models/gemma4-dflash \
   --host 0.0.0.0 --port 8888 --name gemma4-26b
 ```
 
-For Harness, keep the standard container entrypoint (`cuda_entrypoint.py` → `tensorfold_harness.py`) and add `--thinking-budget 0`; this delegates budgets to individual requests. The CLI otherwise enables thinking by default, subject to a checkpoint-fixed template. Overriding the entrypoint with `python -m tensorfold` omits Harness's required `harness_tokenizer_version`, `model` and `context_length` response fields. Count-only image requests may exceed the context window; normal generation retains its context check and all media limits remain active.
+Harness uses the native CUDA server's `/v1/tokenize`. Set `--thinking-budget 0` to delegate budgets
+to individual requests. The CLI enables thinking by default, subject to a checkpoint-fixed
+template. Set `return_tokens: false` for a count-only chat request. Media counts follow the
+active frontend's limits.
 
 The checkpoint's chat template and generation metadata remain authoritative. The zecanard mixed4/6 template fixes thinking on; an explicit conflicting request is refused. Use a template override to select different behavior. Image/video inputs use the local standard Gemma processor, without executing checkpoint Python. Multiple clips in one request currently require equal sampled frame counts; unequal counts are refused before preprocessing. On GB10, configure `TENSORFOLD_MEMORY_RESERVE_GIB=16`; system `MemAvailable` governs unified-memory admission. Full-model CUDA startup, output and throughput checks for this mixed4/6 path remain pending; the measurements below describe the earlier Apple implementation only. The separate NVFP4 release has its own evidence below.
 
@@ -74,9 +77,16 @@ the separate provider in `src/tensorfold/families/gemma4/sm70/`, selected by `--
 ordinary `tensorfold serve` process supervised by `tools/launch_cuda_tp.py`; rank 0 serves HTTP and drives
 the others over same-host control pipes.
 
+The HTTP context length is the smaller of the configured window and the largest single request
+that the startup KV budget can fund on every rank. Read it from `/v1/models`, `/v1/tokenize`, or
+`/v1/stats`. The stats endpoint also reports the target's effective full-attention KV format.
+
 Layout: sliding attention TP8 (two query heads and one KV head per rank), full attention two query heads
-per rank with its KV head replicated over four ranks, dense MLP 272/256 rows per rank, routed experts
-ETP4 x EP2 (64 experts per rank, intermediate slice 176). Decode rows all-gather FP32 partials and sum them
+per rank with its KV head replicated over four ranks, and dense MLP 272/256 rows per rank.
+`--expert-tensor-parallel-size` accepts `1`, `2`, or `4`. The default ETP4 layout has 64 experts per rank and
+an intermediate slice of 176. ETP2 uses 32 experts and a slice of 352. ETP1 assigns 16 complete experts to
+each rank. Each layout uses the original NVFP4 checkpoint. ETP1 and ETP2 full-model performance and quality
+qualification are pending. Decode rows all-gather FP32 partials and sum them
 in rank order (from 16 attention rows / 8 FFN rows a rank-ordered FP32 bulk all-reduce, the same bits); prompt
 rows all-reduce. The DFlash companion is split the same way (four query heads, one
 KV head, MLP 704 per rank) and borrows the vocabulary-parallel BF16 target head.

@@ -330,9 +330,13 @@ request limit returns HTTP503 with the existing retry header.
 
 [compose.gemma4.yaml](compose.gemma4.yaml) serves the AEON compressed-tensors NVFP4 Gemma 4 26B-A4B with the z-lab
 DFlash drafter for Harness, in the configuration the V100 trial server runs: `--parallel 8`, the native 262,144-token
-context, RotorQuant Q8 KV (`--kv-dtype rotorquant8-norm`), INT8 drafter copies with 3 draft rows, thinking on, automatic prompt-prefix reuse, and every rank started
-through the Harness entrypoint ([gemma4_tp_harness.py](gemma4_tp_harness.py)) so `/v1/tokenize` and Harness model
-metadata work. It needs the whole GPU set (stop the SC117 service first) and no NUMA plan.
+context, RotorQuant Q8 KV (`--kv-dtype rotorquant8-norm`), INT8 drafter copies with 3 draft rows,
+thinking on and automatic prompt-prefix reuse. The standard launcher serves native
+`/v1/tokenize` and renderer metadata. It needs the whole GPU set (stop the SC117 service first)
+and no NUMA plan.
+`GEMMA4_EXPERT_TENSOR_PARALLEL_SIZE` selects `1`, `2` or `4` (default). All three layouts load
+the same checkpoint. See the [Gemma 4 recipe](../../docs/recipes/gemma-4.md#eight-v100s-tp8etp4)
+for the qualification status of ETP1 and ETP2.
 
 ```sh
 GEMMA4_MODEL_PATH=/models/.../AEON-7--Gemma-4-26B-A4B-it-Uncensored-NVFP4/snapshots/<rev> \
