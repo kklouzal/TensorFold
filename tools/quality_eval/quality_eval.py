@@ -6,10 +6,11 @@
       e.g. inside the serving image). Chat documents (``messages``) use TensorFold's served template renderer,
       thinking off; text documents (``text``) are tokenized raw, without BOS.
   score --tokens corpus-v1.tokens.json --out RUN.json [--url http://127.0.0.1:8000] [--backend tensorfold|vllm]
-        [--top 20] [--repeat 1] [--model NAME] [--continuation-limit N]
+        [--top 20] [--repeat 1] [--model NAME] [--continuation-limit N] [--serial-decode]
       TensorFold: POST /v1/tensorfold/score (the server must run with TENSORFOLD_PRIVATE_SCORE=1). Every
       document's prompt tokens are scored by prompt-pass (prefill) rows and its continuation by teacher-forced
       decode/MTP-verify rows (``--continuation-limit N``: only the first N, for prefill-path runs). vLLM: /v1/completions with ``prompt_logprobs`` over prompt+continuation (one pass).
+      For TensorFold, ``--serial-decode`` requests scoring without draft verification.
   cachecheck --tokens corpus.tokens.json --mode extend|repeat|prime --out-cold COLD.json --out-cached CACHED.json
         [--url ...] [--top 20] [--continuation-limit N] [--min-prompt 64] [--align ROWS] [--prime-first]
       Prefix-cache qualification (TensorFold only). Per document: prime the server's prompt cache with a plain
@@ -39,6 +40,7 @@ import random
 import sys
 import time
 import urllib.request
+from functools import partial
 from pathlib import Path
 
 SCHEMA_TOKENS = "tensorfold.quality-corpus-tokens"
@@ -123,10 +125,12 @@ def _post(url: str, body: dict, timeout: float = 1800.0) -> dict:
         raise SystemExit(f"{url}: HTTP {error.code}: {error.read()[:2000]!r}") from None
 
 
-def _score_tensorfold(url: str, doc: dict, top: int, model: str | None) -> dict:
+def _score_tensorfold(url: str, doc: dict, top: int, model: str | None, *, draft: bool = True) -> dict:
     body = {"prompt": doc["prompt"], "continuation": doc["continuation"], "top_logprobs": top}
     if model:
         body["model"] = model
+    if not draft:
+        body["draft"] = False
     got = _post(url.rstrip("/") + "/v1/tensorfold/score", body)
     prompt = got["prompt"]
     if [row["id"] for row in prompt] != doc["prompt"][1:] or [row["id"] for row in got["continuation"]] != doc["continuation"]:
@@ -134,8 +138,11 @@ def _score_tensorfold(url: str, doc: dict, top: int, model: str | None) -> dict:
     reply = got["continuation"]
     if reply[0].get("origin") != "prompt-end" or any(row.get("origin") == "prompt-end" for row in reply[1:]):
         raise SystemExit(f"{doc['id']}: unexpected row origins")
+    stats = got.get("stats")
+    if not draft and stats and stats.get("drafted", 0) != 0:
+        raise SystemExit(f"{doc['id']}: the server reported drafts during serial scoring")
     # The reply's first token comes from the prompt pass's head, so it belongs to the prefill path.
-    return {"prefill": prompt + reply[:1], "decode": reply[1:], "stats": got.get("stats")}
+    return {"prefill": prompt + reply[:1], "decode": reply[1:], "stats": stats}
 
 
 def _score_vllm(url: str, doc: dict, top: int, model: str | None) -> dict:
@@ -162,11 +169,15 @@ def _score_vllm(url: str, doc: dict, top: int, model: str | None) -> dict:
 
 
 def score(args) -> None:
+    if args.serial_decode and args.backend != "tensorfold":
+        raise SystemExit("--serial-decode requires the TensorFold scoring backend")
     tokens_path = Path(args.tokens)
     corpus = json.loads(tokens_path.read_text(encoding="utf-8"))
     if corpus.get("schema") != SCHEMA_TOKENS:
         raise SystemExit("not a frozen corpus token file")
     scorer = _score_tensorfold if args.backend == "tensorfold" else _score_vllm
+    if args.serial_decode:
+        scorer = partial(_score_tensorfold, draft=False)
     limit = args.continuation_limit
     if limit is not None and limit < 1:
         raise SystemExit("--continuation-limit needs at least one token (the prompt-end row)")
@@ -193,6 +204,7 @@ def score(args) -> None:
     out = {"schema": SCHEMA_RUN, "version": 1, "backend": args.backend, "label": args.label, "url": args.url,
            "top": args.top, "tokens_file": tokens_path.name, "tokens_sha256": _sha(tokens_path),
            **({"continuation_limit": limit} if limit is not None else {}),
+           **({"decode_mode": "serial"} if args.serial_decode else {}),
            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "runs": runs}
     Path(args.out).write_text(json.dumps(out, separators=(",", ":")) + "\n", encoding="utf-8")
 
@@ -360,6 +372,8 @@ def compare(args) -> None:
         raise SystemExit("the runs scored different frozen corpora")
     if a.get("continuation_limit") != b.get("continuation_limit"):
         raise SystemExit("the runs scored different continuation limits")
+    if a.get("decode_mode") != b.get("decode_mode"):
+        raise SystemExit("the runs used different decoding modes")
     ra, rb = _rows(a), _rows(b)
     if set(ra) != set(rb):
         raise SystemExit("the runs scored different positions")
@@ -452,6 +466,7 @@ def main(argv=None) -> None:
     p.add_argument("--continuation-limit", type=int,
                    help="score only each document's first N continuation tokens (a prefill-path run; compare "
                         "requires both runs to use the same N)")
+    p.add_argument("--serial-decode", action="store_true", help="TensorFold only: score continuation rows with drafting disabled")
     p.set_defaults(run=score)
     p = sub.add_parser("cachecheck")
     p.add_argument("--tokens", required=True)

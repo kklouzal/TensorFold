@@ -169,6 +169,11 @@ python3 tools/quality_eval/quality_eval.py score --tokens TOKENS.json --out B.js
 python3 tools/quality_eval/quality_eval.py compare A.json B.json --out quality.json
 ```
 
+Pass `--serial-decode` to both TensorFold scoring runs to compare continuation
+quality with speculative verification disabled. The run records
+`"decode_mode": "serial"`, and comparisons require matching modes. Use the
+default scoring mode to evaluate the shipping configuration as well.
+
 Documents with `messages` are chat documents: the conversation before the final
 assistant message is rendered by the chat template with thinking off and the
 final reply is scored; `--chat-template` uses the served template file instead of
