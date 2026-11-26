@@ -133,6 +133,7 @@ class DS41Engine:
             raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8")
         etp = W.checked_etp(expert_tensor_parallel_size)
         w576_fp32 = self._experimental_w576_fp32 = os.environ.get("TENSORFOLD_DS41_EXPERIMENT_W576_FP32") == "1"
+        sp_fp32 = os.environ.get("TENSORFOLD_DS41_EXPERIMENT_SP_FP32") == "1"
         if expert_balance_state is not None:
             if (not serve or type(expert_balance_sample_every) is not int or not 1 <= expert_balance_sample_every <= 1 << 20
                     or type(expert_balance_half_life) is not int or not 1 <= expert_balance_half_life <= 1 << 52):
@@ -176,12 +177,13 @@ class DS41Engine:
         prebuild.wait(small_gather.__name__)
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
-            settings = [etp, int(expert_placement is not None), int(expert_balance_live) | (int(w576_fp32) << 1)]
+            mode = int(expert_balance_live) | (int(w576_fp32) << 1) | (int(sp_fp32) << 2)
+            settings = [etp, int(expert_placement is not None), mode]
             local = torch.tensor(settings, dtype=torch.int64, device=device)
             agreed = torch.empty(tp * len(settings), dtype=torch.int64, device=device)
             self.comm.all_gather(local, agreed)
             if agreed.tolist() != settings * tp:
-                raise ValueError("DeepSeek-V4.1 ranks must agree on ETP degree, expert placement and decode math")
+                raise ValueError("DeepSeek-V4.1 ranks must agree on ETP degree, expert placement and experimental math")
             del local, agreed
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
@@ -400,6 +402,8 @@ class DS41Engine:
                         and self.w.compact_expert_down and prefix_host_bytes == 16 << 30 and slab.per_rank == 2 << 30)
         if w576_fp32 and not (serve and compact_128k):
             raise ValueError("experimental W576 FP32 requires the native compact 128K H64 text serving profile")
+        if sp_fp32 and not compact_128k:
+            raise ValueError("experimental SP FP32 requires the native compact 128K H64 text profile")
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(graph_keys) if capture else 0
         prompt_reserve = RESERVE
         if etp == W.ETP and h64_text:
@@ -410,7 +414,7 @@ class DS41Engine:
         target_started = time.perf_counter()
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device, lattice=lattice,
-                             bias_vl=self.bias_vl, rope=rope, layout=layout)
+                             bias_vl=self.bias_vl, rope=rope, layout=layout, fp32_sp=sp_fp32)
         if self.expert_observer is not None:
             self.target.expert_usage = self.expert_observer.usage
         clock.add("target", target_started, time.perf_counter() - target_started)

@@ -391,3 +391,28 @@ def test_lattice_etp2_experts_against_fp32(ops, kind):
 @pytest.mark.parametrize("kind", [16, 17, 29])
 def test_lattice_etp1_experts_against_fp32(ops, kind):
     _check_partitioned_lattice(ops, kind, 1)
+
+
+def test_lattice_fp32_sp_combine_preserves_order_and_valid_rows(ops):
+    lat, _, _ = ops
+    ext = lat.extension()
+    tokens, hidden, top = 1024, 5120, 6
+    routes = tokens * top
+    down = torch.empty((routes, hidden), device="cuda", dtype=torch.float16)
+    values = (1.0, 0.00048828125, 0.0, 65504.0, 2**-24, -65504.0)
+    for index, value in enumerate(values):
+        down[index].fill_(value)
+    valid = torch.tensor([len(values)], device="cuda", dtype=torch.int32)
+    inverse = torch.arange(routes, device="cuda", dtype=torch.int32)
+    inverse[:12] = torch.tensor([0, 8, 1, 9, 2, 10, 3, 11, 4, 6, 5, 7], device="cuda",
+                                dtype=torch.int32)
+    exact = torch.empty((tokens, hidden), device="cuda", dtype=torch.float32)
+    ordinary = torch.empty((tokens, hidden), device="cuda", dtype=torch.float16)
+    ext.combine_fp32_sp(down, inverse, valid, exact)
+    ext.combine(down, inverse, valid, ordinary, top)
+    assert torch.equal(ordinary, exact.half())
+    assert torch.all(exact[0] == 1.0 + 0.00048828125)
+    assert torch.count_nonzero(exact[1:]) == 0
+    alias = down.view(torch.float32).view(-1, hidden)[:tokens]
+    with pytest.raises(RuntimeError, match="disjoint inputs and output"):
+        ext.combine_fp32_sp(down, inverse, valid, alias)

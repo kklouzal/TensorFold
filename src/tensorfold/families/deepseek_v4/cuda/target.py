@@ -144,7 +144,7 @@ class Pool:
 # ------------------------------------------------------------------------------------------------ the model
 class Target:
     def __init__(self, w: Weights, comm: Collectives, *, slots: int, pages: int, max_tokens: int, context: int,
-                 engram, device, lattice, rope, layout, bias_vl=None):
+                 engram, device, lattice, rope, layout, bias_vl=None, fp32_sp=False):
         from .kernels import quant_rope, mu_state
         self.w, self.c, self.g = w, comm, w.geometry
         self.device = device
@@ -154,6 +154,7 @@ class Target:
         # ratio): the admitted context, or a smaller startup graph class (graphs.py) every row of the batch fits
         self.index_context = context
         self.max_tokens = max_tokens
+        self.fp32_sp = fp32_sp
         self.pool = Pool(self.g, pages, slots, device, layout=layout)
         self.rotor_cache = None
         if layout.rotorquant:
@@ -453,17 +454,22 @@ class Target:
                                            fragment_down=self.w.compact_expert_down,
                                            shared=shared_out, round_routed=round_routed)
             return self.c.sum(send, torch.float16)
+        padded_rows = None
         if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
+            if (self.fp32_sp and shard is not None and image is None
+                    and SP_MIN <= shard.tokens == x.shape[0] <= self.max_tokens):
+                padded_rows = shard.size * 8
             out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                       ly.gate_up_type, ly.down_type, ly.down_left, self.lattice,
-                                      fragment_down=self.w.compact_expert_down)
+                                      fragment_down=self.w.compact_expert_down,
+                                      fp32_sp_rows=padded_rows)
         else:  # EM3 expert-major decode is graph-capturable.
             out = self.decode_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                           ly.gate_up_type, ly.down_type, ly.down_left,
                                           fragment_down=self.w.compact_expert_down)
         hidden = native.shared_swiglu(*ly.sh_gu(x))
         if shard is not None:
-            total = shard.padded(out)
+            total = out if padded_rows is not None else shard.padded(out)
             total[:shard.tokens] += self._linear(hidden, ly.sh_down)
             return self.c.scatter_sum(total, shard)
         return self.c.sum(add_halves(out, self._linear(hidden, ly.sh_down)), torch.float16)

@@ -164,15 +164,18 @@ class Workspace:
 
 
 def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, workspace, *, out=None,
-            fragment_down=False):
+            fragment_down=False, fp32_sp_rows=None):
     """Routed experts for FP16 x [M, 5120], top-6 local ids/probabilities -> FP16 [M, 5120] (numerics: see the
     module docstring). With fragment_down, the ETP4 down bank uses fragments of the original GGUF rows."""
+    tokens = x.shape[0]
+    if fp32_sp_rows is not None and (out is not None or not fragment_down or not 1024 <= tokens <= 8192
+                                     or type(fp32_sp_rows) is not int or fp32_sp_rows != (tokens + 7) // 8 * 8):
+        raise ValueError("a padded FP32 SP output requires the compact ETP4 grouped prefill path")
     if gate_type not in LATTICE or down_type not in LATTICE:
         raise ValueError("V4.1 lattice prefill experts require IQ2_XXS/IQ2_XS/IQ1_M carriers")
     experts_n, inter = gate.shape[0], gate.shape[1]
     if fragment_down and inter != ROWS:
         raise ValueError("down fragments require ETP4")
-    tokens = x.shape[0]
     routes = tokens * TOP
     if (inter != workspace.intermediate or x.shape[1] != HIDDEN or ids.shape != (tokens, TOP)
             or down.shape[:2] != (experts_n, HIDDEN)):
@@ -217,6 +220,12 @@ def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, w
     transcode_down = ext.transcode_down_fragments if fragment_down else ext.transcode
     projection("dn", down_type, HIDDEN, inter, int(left), down, None, hidden, None,
                down_rows, transcode_down)
+    if fp32_sp_rows is not None:
+        # Allocate the collective send at combine, after the larger gate/up operands retire.
+        send = torch.empty((fp32_sp_rows, HIDDEN), dtype=torch.float32, device=device)
+        ext.combine_fp32_sp(down_rows, inverse, valid, send[:tokens])
+        send[tokens:].zero_()
+        return send
     if out is None:
         out = torch.empty_like(x)
     ext.combine(down_rows, inverse, valid, out, TOP)

@@ -21,6 +21,8 @@ void ds41_lattice_swiglu(const torch::Tensor&, const torch::Tensor&, const torch
                          torch::Tensor, double);
 void ds41_lattice_combine(const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, torch::Tensor, int64_t);
 
+void ds41_lattice_combine_fp32_sp(const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, torch::Tensor);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("lattice_gemm", &ds41kern::lattice_gemm_op);
   m.def("variant_name", &ds41kern::variant_name_op);
@@ -30,4 +32,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("tile_lists", &ds41_lattice_tile_lists);
   m.def("swiglu", &ds41_lattice_swiglu);
   m.def("combine", &ds41_lattice_combine);
+  m.def("combine_fp32_sp", &ds41_lattice_combine_fp32_sp);
 }
