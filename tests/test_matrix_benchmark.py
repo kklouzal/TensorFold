@@ -119,6 +119,7 @@ def test_run_measures_supported_cells_and_records_gated_ones(mb, server, tmp_pat
     for cell in data["cells"]:
         assert cell["status"] == "measured" and cell["metrics"]["requests"] == cell["c"]
         assert cell["metrics"]["prefill_agg_tps"] > 0 and cell["metrics"]["decode_median_tps"] > 0
+        assert cell["metrics"]["decode_agg_tps"] > 0
     keys = [r["key"] for c in data["cells"] + data["warmup"] for r in c["requests"]]
     assert len(keys) == len(set(keys))  # every request has its own prompt
     greedy = [r for r in Fake.seen if r.get("temperature") == 0]
@@ -150,10 +151,12 @@ def arm(tmp_path, mb, name, values, session=None, plan="p"):
     return str(path)
 
 
-def compare(mb, tmp_path, ref, cand, *calibration):
+def compare(mb, tmp_path, ref, cand, *calibration, aggregate=False):
     out = tmp_path / "cmp.json"
     old = sys.argv
     sys.argv = ["matrix_benchmark.py", "compare", ref, cand, "--json", str(out)]
+    if aggregate:
+        sys.argv.append("--aggregate-decode")
     for group in calibration:
         sys.argv += ["--calibration", group]
     try:
@@ -161,6 +164,69 @@ def compare(mb, tmp_path, ref, cand, *calibration):
     finally:
         sys.argv = old
     return json.loads(out.read_text())
+
+
+def test_aggregate_decode_uses_the_whole_cohort_interval(mb):
+    requests = [
+        {"sent": 100.0, "arrivals_s": [1, 2, 3], "usage": {"completion_tokens": 13}},
+        {"sent": 103.0, "arrivals_s": [1, 2, 3], "usage": {"completion_tokens": 19}},
+    ]
+    assert mb.aggregate_decode_tps(requests) == 6.0  # 30 tokens over 101–106, including the gap
+    assert mb.aggregate_decode_tps(requests[:1]) == 6.0
+    assert mb.aggregate_decode_tps([]) is None
+
+
+@pytest.mark.parametrize("record", [
+    {},
+    {"sent": "100", "arrivals_s": [1, 2], "usage": {"completion_tokens": 2}},
+    {"sent": 100, "arrivals_s": [1, 3, 2], "usage": {"completion_tokens": 2}},
+    {"sent": 100, "arrivals_s": [1, 2], "usage": {"completion_tokens": True}},
+    {"sent": 100, "arrivals_s": [1, float("nan"), 2], "usage": {"completion_tokens": 2}},
+])
+def test_aggregate_decode_requires_complete_ordered_arrivals_and_usage(mb, record):
+    complete = {"sent": 100.0, "arrivals_s": [1, 2, 3], "usage": {"completion_tokens": 13}}
+    assert mb.aggregate_decode_tps([complete, record]) is None
+
+
+def test_opt_in_comparison_recovers_raw_aggregate_decode_and_requires_coverage(mb, tmp_path):
+    ref = arm(tmp_path, mb, "ref.json", {(1, 4096): [(5000, 230)]})
+    cand = arm(tmp_path, mb, "cand.json", {(1, 4096): [(5000, 240)]})
+    key = "v1/greedy/sync/c1/l4096"
+    missing = compare(mb, tmp_path, ref, cand, aggregate=True)
+    assert missing["coverage"]["missing_aggregate_decode"] == [key]
+    assert missing["verdict"].startswith("incomplete")
+
+    for path, span in ((ref, 4.0), (cand, 2.0)):
+        file = Path(path)
+        data = json.loads(file.read_text())
+        data["cells"][0]["requests"] = [
+            {"sent": 10.0, "arrivals_s": [1, 1 + span], "usage": {"completion_tokens": 512}}
+        ]
+        file.write_text(json.dumps(data))
+    result = compare(mb, tmp_path, ref, cand, aggregate=True)
+    aggregate = result["aggregate"]["decode_agg_tps"]
+    assert aggregate["geomean_ratio"] == pytest.approx(2.0) and aggregate["df"] == 0
+    assert result["coverage"]["missing_aggregate_decode"] == []
+    assert result["verdict"].startswith("uncertain")
+
+
+def test_aggregate_comparison_refuses_partial_cohorts_and_disjoint_metric_repeats(mb, tmp_path):
+    values = {(2, 4096): [(5000, 230), (5100, 240)]}
+    ref = arm(tmp_path, mb, "ref.json", values)
+    cand = arm(tmp_path, mb, "cand.json", values)
+    complete = [{"sent": 10.0, "arrivals_s": [1, 2], "usage": {"completion_tokens": 512}}] * 2
+    for path, valid_repeat in ((ref, 0), (cand, 1)):
+        file = Path(path)
+        data = json.loads(file.read_text())
+        for cell in data["cells"]:
+            cell["requests"] = complete if cell["rep"] == valid_repeat else complete[:1]
+        file.write_text(json.dumps(data))
+    result = compare(mb, tmp_path, ref, cand, aggregate=True)
+    row, = result["rows"]
+    assert row["decode_median_tps"]["repeats"] == [0, 1]
+    assert row["decode_agg_tps"] is None and "decode_agg_tps" not in result["aggregate"]
+    assert result["coverage"]["missing_aggregate_decode"] == ["v1/greedy/sync/c2/l4096"]
+    assert result["verdict"].startswith("incomplete")
 
 
 BASE = {(1, 4096): [(5000, 230), (5010, 200), (4990, 250)], (1, 65536): [(3800, 180), (3900, 170), (3850, 190)]}

@@ -31,7 +31,9 @@ concurrency **C = 1, 2, 4, 8, 16, 24, 32** by rendered prompt length **4K, 8K,
 
 Two metrics are scored per cell: `prefill_agg_tps` (all prompt tokens / time to
 the last request's first token) and `decode_median_tps` (median request decode
-rate). Every request is a streamed chat completion with thinking off,
+rate). Use `compare --aggregate-decode` when cohort decode is an objective.
+It scores `decode_agg_tps` over the cohort's first-to-last text interval.
+Every request is a streamed chat completion with thinking off,
 `ignore_eos` and 512 output tokens; every prompt is unique, so no prefix-cache
 hit can enter a measurement. Cells the server cannot run are recorded as
 `pending` (C above the served lanes) or `infeasible` (context or KV budget),

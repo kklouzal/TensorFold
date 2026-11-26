@@ -1692,6 +1692,8 @@ that fits one request in the KV budget across all ranks. `/v1/stats` also report
 effective full-attention KV format.
 `--expert-tensor-parallel-size` selects ETP1, ETP2 or ETP4 on the eight-V100 Gemma provider.
 ETP4 is the default. ETP1 and ETP2 full-model throughput and perplexity qualification are pending.
+Serving-matrix comparisons can include cohort-wide decode throughput with
+`compare --aggregate-decode`. [Benchmark method](docs/benchmarking.md#metrics-1)
 Measured on eight V100-SXM2-32GB (image `4b2661d8`, `--context 262144`, INT8 DFlash 5 rows, Harness T4 template,
 thinking on; previous engine `3f49a0b2` vs this change, one session each):
 

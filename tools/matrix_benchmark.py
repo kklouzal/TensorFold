@@ -16,13 +16,15 @@ Per request: TTFT = first streamed text piece - send; prefill tok/s = prompt tok
 (completion tokens - 1) / (last piece - first piece). SSE pieces can carry several tokens (DFlash rounds), so the
 client decode rate is a text-arrival estimate; the TensorFold per-request ``tensorfold`` object (engine
 ``prefill_s``/``decode_s``) is recorded beside it. Per cell repeat: prefill_agg = all prompt tokens / (last
-request's first piece - first send); decode_median = median request decode tok/s; total = (prompt + completion
-tokens) / makespan.
+request's first piece - first send); decode_agg = committed tokens after excluding one first token per request,
+divided by the time between the first and last text arrivals across the cohort; decode_median = median request
+decode tok/s; total = (prompt + completion tokens) / makespan.
 """
 
 import argparse
 import hashlib
 import json
+from itertools import pairwise
 import math
 import platform
 import statistics
@@ -47,6 +49,7 @@ PLAN_SCHEMA = "tensorfold.matrix-plan"
 CORPUS_SUFFIXES = (("README.md", ""), ("docs/", ".md"), ("src/", ".py"))
 MODES = ("greedy", "sampled")
 SCORED = ("prefill_agg_tps", "decode_median_tps")
+AGGREGATE_DECODE = "decode_agg_tps"
 HEADER = ("Request {key}.\nBelow is an excerpt from a software project's documentation and source code.\n\n")
 FOOTER = ("\n\nWrite a detailed technical summary of the excerpt above: its purpose, its main components and "
           "any notable design decisions.")
@@ -337,6 +340,46 @@ def request_metrics(record: dict) -> dict:
     return out
 
 
+def finite_measurement(value) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def aggregate_decode_tps(requests: list[dict]) -> float | None:
+    """Client-observed cohort decode, preserving stagger and time between streams."""
+    if not requests:
+        return None
+    windows = []
+    completion = 0
+    for request in requests:
+        if type(request) is not dict:
+            return None
+        sent, arrivals, usage = request.get("sent"), request.get("arrivals_s"), request.get("usage")
+        tokens = usage.get("completion_tokens") if type(usage) is dict else None
+        if (not finite_measurement(sent) or type(arrivals) is not list or len(arrivals) < 2
+                or type(tokens) is not int or tokens < 2 or not finite_measurement(tokens)
+                or any(not finite_measurement(t) or t < 0 for t in arrivals)
+                or any(a > b for a, b in pairwise(arrivals)) or arrivals[-1] <= arrivals[0]):
+            return None
+        windows.append((float(sent), float(arrivals[0]), float(arrivals[-1])))
+        completion += tokens - 1
+    origin = min(sent for sent, _, _ in windows)
+    first = min(sent - origin + start for sent, start, _ in windows)
+    last = max(sent - origin + end for sent, _, end in windows)
+    interval = last - first
+    if not math.isfinite(interval) or interval <= 0:
+        return None
+    try:
+        rate = completion / interval
+    except OverflowError:
+        return None
+    return rate if math.isfinite(rate) and rate > 0 else None
+
+
 def rep_metrics(requests: list[dict]) -> dict:
     start = min(r["sent"] for r in requests)
     firsts = [r["sent"] - start + r["arrivals_s"][0] for r in requests if r["arrivals_s"]]
@@ -350,6 +393,7 @@ def rep_metrics(requests: list[dict]) -> dict:
     out = {"requests": len(requests), "prompt_tokens": prompt, "completion_tokens": completion,
            "makespan_s": makespan,
            "prefill_agg_tps": prompt / max(firsts) if len(firsts) == len(requests) and max(firsts) > 0 else None,
+           AGGREGATE_DECODE: aggregate_decode_tps(requests),
            "decode_median_tps": statistics.median(decode) if len(decode) == len(requests) else None,
            "decode_min_tps": min(decode) if len(decode) == len(requests) else None,
            "ttft_median_s": statistics.median(ttft) if ttft else None, "ttft_max_s": max(ttft) if ttft else None,
@@ -641,7 +685,18 @@ def load_arm(spec: str) -> dict:
 
 
 def rep_values(reps: dict, metric: str) -> dict:
-    return {rep: cell["metrics"][metric] for rep, cell in reps.items() if cell["metrics"].get(metric)}
+    values = {}
+    for rep, cell in reps.items():
+        value = cell["metrics"].get(metric)
+        if metric == AGGREGATE_DECODE:
+            requests = cell.get("requests")
+            if metric not in cell["metrics"] and type(requests) is list and len(requests) == cell["c"]:
+                value = aggregate_decode_tps(requests)
+            if not finite_measurement(value) or value <= 0:
+                continue
+        if value:
+            values[rep] = value
+    return values
 
 
 def describe(sessions: list[dict]) -> dict:
@@ -719,7 +774,7 @@ def summary(args) -> int:
             continue
         sessions = [s[key] for s in arm["sessions"].values() if key in s]
         row = {"cell": key, "status": "measured", "reps": sum(len(s) for s in sessions), "sessions": len(sessions)}
-        for metric in SCORED + ("total_tps", "output_tps", "ttft_max_s", "server_decode_median_tps"):
+        for metric in (*SCORED, AGGREGATE_DECODE, "total_tps", "output_tps", "ttft_max_s", "server_decode_median_tps"):
             values = [rep_values(s, metric) for s in sessions]
             if all(len(v) == len(s) for v, s in zip(values, sessions)):
                 row[metric] = describe(values)
@@ -739,7 +794,7 @@ def summary(args) -> int:
             return "n/a"
         lo, hi = value["ci95"]
         return f"{value['geomean']:.1f} ({lo:.1f}-{hi:.1f}) n={value['n']}/{value['sessions']}s"
-    grid(rows, cell, ("prefill_agg_tps", "decode_median_tps"))
+    grid(rows, cell, (*SCORED, AGGREGATE_DECODE))
     return 0
 
 
@@ -767,6 +822,7 @@ RULE = ("unit: one server session (process). Per (cell, metric) and session: mea
 
 
 def compare(args) -> int:
+    scored = (AGGREGATE_DECODE, *SCORED) if args.aggregate_decode else SCORED
     ref, cand = load_arm(args.reference), load_arm(args.candidate)
     calibration = [load_arm(spec) for spec in args.calibration]
     if ref["plan"] != cand["plan"] or ref["output_tokens"] != cand["output_tokens"]:
@@ -793,15 +849,17 @@ def compare(args) -> int:
             return None, []
         shared = set.intersection(*(set(values) for _, _, values in found))
         if not shared:
+            if metric == AGGREGATE_DECODE:
+                return None, []
             raise ValueError(f"{key} {metric}: the sessions share no repeat (run every session on the same repeats)")
         return sorted(shared), [(g, sid, statistics.fmean(math.log(values[r]) for r in shared))
                                 for g, sid, values in found]
 
-    family = max(1, sum(1 for key in common for metric in SCORED if session_means(key, metric)[0]))
-    rows, per_session = [], {metric: {} for metric in SCORED}
+    family = max(1, sum(1 for key in common for metric in scored if session_means(key, metric)[0]))
+    rows, per_session = [], {metric: {} for metric in scored}
     for key in common:
         row = {"cell": key}
-        for metric in SCORED:
+        for metric in scored:
             shared, means = session_means(key, metric)
             if not shared:
                 row[metric] = None
@@ -814,7 +872,7 @@ def compare(args) -> int:
                 per_session[metric].setdefault((g, sid), {})[key] = m
         rows.append(row)
     aggregate = {}
-    for metric in SCORED:
+    for metric in scored:
         cells = [row[metric] for row in rows if row[metric]]
         if not cells:
             continue
@@ -837,12 +895,22 @@ def compare(args) -> int:
                              "gains": sum(c["class"] == "gain" for c in cells),
                              "regressions": sum(c["class"] == "regression" for c in cells),
                              "uncertain": sum(c["class"] == "uncertain" for c in cells)}
-    regressions = [(row["cell"], m) for row in rows for m in SCORED if row[m] and row[m]["class"] == "regression"]
-    gains = [(row["cell"], m) for row in rows for m in SCORED if row[m] and row[m]["class"] == "gain"]
+    regressions = [(row["cell"], m) for row in rows for m in scored if row[m] and row[m]["class"] == "regression"]
+    gains = [(row["cell"], m) for row in rows for m in scored if row[m] and row[m]["class"] == "gain"]
     regressions += [("aggregate", m) for m, value in aggregate.items() if value["ci95"][1] < 1]
     gains += [("aggregate", m) for m, value in aggregate.items() if value["ci95"][0] > 1]
+    missing_aggregate = []
+    if args.aggregate_decode:
+        for row in rows:
+            key = row["cell"]
+            if row[AGGREGATE_DECODE] is None or any(
+                    len(rep_values(session[key], AGGREGATE_DECODE)) != len(session[key])
+                    for arm in arms for session in arm["sessions"].values() if key in session):
+                missing_aggregate.append(key)
     if missing:
         verdict = "incomplete: the candidate lacks reference-measured cells"
+    elif missing_aggregate:
+        verdict = "incomplete: aggregate decode is unavailable for some measured repeats"
     elif regressions:
         verdict = ("regression: " + ", ".join(f"{cell} {metric}" for cell, metric in regressions) +
                    " (a gain elsewhere cannot offset it)")
@@ -858,6 +926,7 @@ def compare(args) -> int:
               "calibration": [group["files"] for group in calibration], "rule": RULE, "family_size": family,
               "verdict": verdict, "aggregate": aggregate, "rows": rows,
               "coverage": {"common": len(common), "missing_in_candidate": missing, "only_in_candidate": extra,
+                           "missing_aggregate_decode": missing_aggregate,
                            "reference_gated": ref["gated"], "candidate_gated": cand["gated"]}}
     if args.json:
         write_json(args.json, json_safe(result))
@@ -880,7 +949,7 @@ def compare(args) -> int:
             mark += "!"  # the 95% screen alone flags it: more sessions needed
         lo, hi = value["ci_family"]
         return f"{value['ratio']:.3f} ({lo:.3f}-{hi:.3f}) {mark}"
-    grid([{"cell": key} for key in set(common) | set(missing) | set(extra)], cell, SCORED)
+    grid([{"cell": key} for key in set(common) | set(missing) | set(extra)], cell, scored)
     print(f"sessions: reference {len(ref['sessions'])}, candidate {len(cand['sessions'])}, calibration groups "
           + (", ".join(str(len(group["sessions"])) for group in calibration) or "none"))
     for metric, value in aggregate.items():
@@ -962,6 +1031,8 @@ def main() -> int:
     p.add_argument("--calibration", action="append", default=[], metavar="FILES",
                    help="comma-separated result files of one identical-configuration A/A group (repeatable): extra "
                         "server sessions for the between-session variance")
+    p.add_argument("--aggregate-decode", action="store_true",
+                   help="also score aggregate decode from each repeat's client-observed cohort interval")
     p.add_argument("--json", type=Path)
 
     args = parser.parse_args()

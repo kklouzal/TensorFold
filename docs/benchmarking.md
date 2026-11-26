@@ -1535,6 +1535,10 @@ it, and `/stats` totals are differenced around each cell. Per cell repeat:
 - `prefill_agg_tps` = all prompt tokens / (last request's first piece − first send);
   at C1 this is prompt tokens / TTFT;
 - `decode_median_tps` = median request decode tok/s;
+- `decode_agg_tps` = the cohort's completion tokens minus one per request,
+  divided by the time from the earliest first text piece to the latest last
+  text piece. It includes gaps between streams and uses the same client text
+  arrival estimate as the per-request decode metric;
 - `total_tps` = (prompt + completion tokens) / makespan and `output_tps`
   (reported, not scored).
 
@@ -1547,8 +1551,10 @@ corpus hashes, the served source digest (`--source-dir`), `/v1/models`, `/stats`
 
 ### Scoring rule (predeclared)
 
-`compare REFERENCE CANDIDATE [--calibration FILES ...]` scores only
-`prefill_agg_tps` and `decode_median_tps`, separately. Each argument is a
+`compare REFERENCE CANDIDATE [--calibration FILES ...]` scores
+`prefill_agg_tps` and `decode_median_tps` separately. Use `--aggregate-decode`
+to score `decode_agg_tps` alongside them. Older runs can be scored when they
+retained raw arrivals and usage for every measured repeat. Each argument is a
 comma-separated list of result files. The experimental unit is the **server
 session** (one server process): `run` records the `/stats` instance id, files of
 one instance merge, and a result without one counts as its own session.
