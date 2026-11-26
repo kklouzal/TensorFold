@@ -172,9 +172,13 @@ class HostSlab:
         if self._pin_worker is not None:
             def allocate():
                 try:
-                    return self._pin.result()
-                finally:
-                    self._pin_observed = self._pin.done()
+                    slab = self._pin.result()
+                except BaseException as error:
+                    if self._pin.done() and not self._pin.cancelled() and self._pin.exception() is error:
+                        self._pin_observed = True
+                    raise
+                self._pin_observed = True
+                return slab
 
         slab = pin_agreed(allocate, every_rank, self.per_rank, explicit=self.explicit, requested=self.total,
                           rank=self.rank, lane="DeepSeek-V4.1 SM70: ")

@@ -101,6 +101,41 @@ def test_abort_joins_experimental_pin_before_releasing_native_owners(monkeypatch
     assert events == ["notify", "pin join", "pin result", "fence", "engram"]
 
 
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_pin_wait_keeps_any_distinct_worker_failure_for_abort(monkeypatch, interrupted):
+    from concurrent.futures import Future
+    from tensorfold.families.deepseek_v4.cuda.prefix import HostSlab
+    from tensorfold.families.qwen4_exp.cuda import prefix_host
+
+    worker_failure = RuntimeError("pin worker failed")
+    interrupt = KeyboardInterrupt("pin wait interrupted")
+    future = Future()
+    future.set_exception(worker_failure)
+    if interrupted:
+        original = future.result
+
+        def interrupt_once():
+            future.result = original
+            raise interrupt
+
+        future.result = interrupt_once
+    slab = object.__new__(HostSlab)
+    slab._pin, slab._pin_worker, slab._pin_observed = future, object(), False
+    slab.tp, slab.rank, slab.total, slab.explicit, slab.per_rank = 8, 0, 16 << 30, True, 2 << 30
+    monkeypatch.setattr(prefix_host, "pin_agreed", lambda allocate, *args, **kwargs: allocate())
+    with pytest.raises((RuntimeError, KeyboardInterrupt)) as caught:
+        slab.finish()
+    assert caught.value is (interrupt if interrupted else worker_failure)
+    assert slab._pin_observed is not interrupted
+    if interrupted:
+        with pytest.raises(RuntimeError) as pending:
+            slab.report_pin_error()
+        assert pending.value is worker_failure
+    else:
+        slab.report_pin_error()
+    assert slab._pin is None
+
+
 def test_mapper_can_duplicate_after_original_shards_close(monkeypatch, tmp_path):
     from tensorfold.cuda import cohort
     from tensorfold.families.deepseek_v4.cuda.startup import ExpertStartup
