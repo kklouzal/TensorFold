@@ -40,6 +40,67 @@ def test_default_constructor_keeps_original_initialization(monkeypatch):
     DS41Engine("model", rank=1, tp=8)
 
 
+@pytest.mark.parametrize(("variable", "flag"), [
+    ("TENSORFOLD_DS41_EXPERIMENT_W576_FP32", "w576_fp32"),
+    ("TENSORFOLD_DS41_EXPERIMENT_SP_FP32", "sp_fp32"),
+])
+def test_experimental_constructor_owns_startup_without_balance_state(monkeypatch, variable, flag):
+    from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine
+    from tensorfold.families.deepseek_v4.cuda.startup import ExpertStartup
+
+    monkeypatch.setenv(variable, "1")
+
+    def initialize(engine, model, *, startup, **arguments):
+        assert isinstance(startup, ExpertStartup)
+        assert arguments[flag] and arguments["expert_balance_state"] is None
+        assert not arguments["expert_balance_live"]
+
+    monkeypatch.setattr(DS41Engine, "_initialize", initialize)
+    DS41Engine("model", rank=0, tp=8, serve=(flag == "w576_fp32"), no_expert_balance=True)
+
+
+def test_wrong_agreed_host_tier_refused_before_pin_can_start(monkeypatch):
+    import concurrent.futures
+    from tensorfold.families.deepseek_v4.cuda import prefix
+    from tensorfold.families.deepseek_v4.cuda.startup import ExpertStartup
+
+    tensor = lambda values, **options: values
+    empty = lambda length, **options: SimpleNamespace(min=lambda: 1 << 30)
+    monkeypatch.setattr(prefix, "torch", SimpleNamespace(tensor=tensor, empty=empty, int64=object()))
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", lambda *args, **kwargs: pytest.fail("pin started"))
+    comm = SimpleNamespace(all_gather=lambda mine, agreed: None)
+    startup = ExpertStartup()
+    with pytest.raises(ValueError, match="host prefix bytes per rank"):
+        prefix.HostSlab(comm, 0, 8, 16 << 30, required_per_rank=2 << 30, startup=startup)
+    assert startup.slab is None
+
+
+def test_abort_joins_experimental_pin_before_releasing_native_owners(monkeypatch):
+    from tensorfold.cuda import cohort
+    from tensorfold.families.deepseek_v4.cuda.startup import ExpertStartup
+
+    startup, events = ExpertStartup(), []
+    failure = RuntimeError("asynchronous pin failed")
+
+    def outcome():
+        events.append("pin result")
+        raise failure
+
+    def join(*, cancel):
+        assert cancel
+        events.append("pin join")
+
+    startup.slab = SimpleNamespace(join_pin=join, report_pin_error=outcome)
+    startup.engram = SimpleNamespace(close=lambda: events.append("engram"))
+    monkeypatch.setattr(cohort, "notify_failure", lambda: events.append("notify"))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(
+        synchronize=lambda: events.append("fence"))))
+    with pytest.raises(RuntimeError) as caught:
+        startup.abort(SimpleNamespace())
+    assert caught.value is failure and startup.slab is None
+    assert events == ["notify", "pin join", "pin result", "fence", "engram"]
+
+
 def test_mapper_can_duplicate_after_original_shards_close(monkeypatch, tmp_path):
     from tensorfold.cuda import cohort
     from tensorfold.families.deepseek_v4.cuda.startup import ExpertStartup

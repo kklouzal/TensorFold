@@ -82,6 +82,8 @@ class DS41Engine:
                  no_expert_balance: bool = False,
                  **_options) -> None:
         expert_balance_live = serve and not no_expert_balance
+        w576_fp32 = os.environ.get("TENSORFOLD_DS41_EXPERIMENT_W576_FP32") == "1"
+        sp_fp32 = os.environ.get("TENSORFOLD_DS41_EXPERIMENT_SP_FP32") == "1"
         if no_expert_balance and (expert_placement is not None or expert_balance_state is not None):
             raise ValueError("disabled expert balancing cannot accept a placement or history file")
         if not expert_balance_live and expert_balance_state is not None:
@@ -100,8 +102,9 @@ class DS41Engine:
                        kv_dtype=kv_dtype, expert_tensor_parallel_size=expert_tensor_parallel_size,
                        expert_placement=expert_placement, expert_balance_state=expert_balance_state,
                        expert_balance_sample_every=expert_balance_sample_every,
-                       expert_balance_half_life=expert_balance_half_life, expert_balance_live=expert_balance_live)
-        if expert_placement is None and expert_balance_state is None:
+                       expert_balance_half_life=expert_balance_half_life, expert_balance_live=expert_balance_live,
+                       w576_fp32=w576_fp32, sp_fp32=sp_fp32)
+        if expert_placement is None and expert_balance_state is None and not (w576_fp32 or sp_fp32):
             self._initialize(model_dir, startup=None, **options)
             return
 
@@ -117,7 +120,8 @@ class DS41Engine:
     def _initialize(self, model_dir, *, rank, tp, master, master_port, context, slots, max_tokens, parallel,
                     serve, queue_timeout_s, graphs, keep_slots, prefix_host_bytes, vision, vision_urls,
                     vision_offload, yarn_factor, kv_dtype, expert_tensor_parallel_size, expert_placement,
-                    expert_balance_state, expert_balance_sample_every, expert_balance_half_life, expert_balance_live, startup):
+                    expert_balance_state, expert_balance_sample_every, expert_balance_half_life, expert_balance_live,
+                    w576_fp32, sp_fp32, startup):
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -132,8 +136,8 @@ class DS41Engine:
         if tp != W.WORLD or not 0 <= rank < tp:
             raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8")
         etp = W.checked_etp(expert_tensor_parallel_size)
-        w576_fp32 = self._experimental_w576_fp32 = os.environ.get("TENSORFOLD_DS41_EXPERIMENT_W576_FP32") == "1"
-        sp_fp32 = os.environ.get("TENSORFOLD_DS41_EXPERIMENT_SP_FP32") == "1"
+        self._experimental_w576_fp32 = w576_fp32
+        experiment = w576_fp32 or sp_fp32
         if expert_balance_state is not None:
             if (not serve or type(expert_balance_sample_every) is not int or not 1 <= expert_balance_sample_every <= 1 << 20
                     or type(expert_balance_half_life) is not int or not 1 <= expert_balance_half_life <= 1 << 52):
@@ -193,13 +197,33 @@ class DS41Engine:
         if type(keep_slots) is not int or keep_slots < 0:
             raise ValueError("keep_slots must be a nonnegative integer")
         self.keep_slots = keep_slots
+        # Development smoke runs load only the first N decoder layers.
+        smoke = int(os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS") or 0)
+        if smoke > 0 and expert_balance_state is not None:
+            raise ValueError("DeepSeek expert balancing requires all model layers")
+        capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
+        h64_text = rotorquant and not vision and capture and self.context <= 131_072 and max_tokens <= MAX_TOKENS
+        from .graphs import shape_keys
+        graph_keys = shape_keys(slots, self.context) if capture else ()
+        compact_profile = (etp == W.ETP and h64_text and tuple(graph_keys) == H64_128K_GRAPH_KEYS
+                           and self.context == 131_072 and slots == MAX_STREAMS
+                           and keep_slots == default_keep_slots(slots) and max_tokens == MAX_TOKENS
+                           and yarn_factor is None and self.yarn_factor == 16.0 and smoke <= 0
+                           and prefix_host_bytes == 16 << 30)
+        # After rank mode agreement, reject unsupported experiments before opening the checkpoint.
+        if w576_fp32 and not (serve and compact_profile):
+            raise ValueError("experimental W576 FP32 requires the native compact 128K H64 text serving profile")
+        if sp_fp32 and not compact_profile:
+            raise ValueError("experimental SP FP32 requires the native compact 128K H64 text profile")
+        if experiment and vision_offload:
+            raise ValueError("DeepSeek-V4.1 SM70 keeps its vision tower in VRAM: --vision-offload is unsupported")
         entry = raw.get("gguf_file") or raw.get("gguf_entrypoint")
         engram_file = raw.get("engram_file")
         if not entry or not engram_file:
             raise ValueError("the DeepSeek-V4.1 model directory's config.json must name gguf_file (the backbone's "
                              "first shard) and engram_file (the llama.cpp Engram GGUF)")
         resolve = lambda p: Path(p) if Path(p).is_absolute() else model_dir / p
-        bind_files = expert_placement is not None or expert_balance_state is not None
+        bind_files = startup is not None
         shards = W.Shards(resolve(entry), resolve(engram_file), bind_files=True) if bind_files else W.Shards(
             resolve(entry), resolve(engram_file))
         placement_options = {}
@@ -220,12 +244,6 @@ class DS41Engine:
                 Path(expert_placement), store=self.comm.store, rank=rank, checkpoint=checkpoint,
                 layers=g.layers, experts=g.experts, etp=etp,
             )
-        # Development smoke (TENSORFOLD_DS41_SMOKE_LAYERS=N): only the first N decoder layers load, so plumbing and
-        # integration changes run in seconds; outputs are not the model's. Below the first Engram layer the table is
-        # never read, so it is not mapped either. Numerics gates and benchmarks never set it.
-        smoke = int(os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS") or 0)
-        if smoke > 0 and expert_balance_state is not None:
-            raise ValueError("DeepSeek expert balancing requires all model layers")
         self.expert_observer = None
         self.expert_live = None
         if expert_balance_state is not None:
@@ -302,8 +320,6 @@ class DS41Engine:
                 engram = startup.map_engram(shards.duplicate_file(engram_path), map_engram)
         if layers is not None:
             print(f"[tensorfold] rank {rank}: DEVELOPMENT SMOKE: {len(layers)} of {g.layers} layers loaded", flush=True)
-        capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
-        h64_text = rotorquant and not vision and capture and self.context <= 131_072 and max_tokens <= MAX_TOKENS
         prebuild.wait()
         with clock.phase("weights"):
             self.w = W.load(shards, g, rank, device, layers=layers, expert_tensor_parallel_size=etp,
@@ -319,6 +335,8 @@ class DS41Engine:
         shards.close()
         if startup is not None:
             startup.shards = None
+        if experiment and not self.w.compact_expert_down:
+            raise ValueError("experimental FP32 requires actual compact expert banks")
         # Image input (--vision): the vision router bias and a TP8 part of the mmproj tower on every rank (each rank
         # reads only its part). Every rank encodes in step (``_tower``), so each ends with the same span and a prompt
         # chunk's image rows need no broadcast. Loaded before the KV pool is sized, so the pool pays for it; the pool
@@ -369,7 +387,10 @@ class DS41Engine:
         # rank's Engram registration is done: pinning while the Engram table registers slowed m-pf1's registration
         # 4x) until before the graph capture.
         slab_started = time.perf_counter()
-        slab = HostSlab(self.comm, rank, tp, prefix_host_bytes)
+        if experiment:
+            slab = HostSlab(self.comm, rank, tp, prefix_host_bytes, required_per_rank=2 << 30, startup=startup)
+        else:
+            slab = HostSlab(self.comm, rank, tp, prefix_host_bytes)
         # The lattice prefill experts' persistent canonical-bank workspace exists before the KV pool is
         # sized, so it does not come out of RESERVE.
         from tensorfold.cuda.sm70 import ds41_lattice_moe
@@ -393,17 +414,7 @@ class DS41Engine:
         # The decode graphs are captured after the KV pool exists, so their memory comes out of the free memory too:
         # ~30 MiB per captured graph outside the torch pool (graph/NCCL resources) + ~40 MiB pool (ds41-graphs g2:
         # 606 MiB for 18 buckets on one capture stream).
-        from .graphs import shape_keys
-        graph_keys = shape_keys(slots, self.context) if capture else ()
-        compact_128k = (etp == W.ETP and h64_text and tuple(graph_keys) == H64_128K_GRAPH_KEYS
-                        and self.context == 131_072 and slots == MAX_STREAMS
-                        and keep_slots == default_keep_slots(slots) and max_tokens == MAX_TOKENS
-                        and yarn_factor is None and self.yarn_factor == 16.0 and layers is None
-                        and self.w.compact_expert_down and prefix_host_bytes == 16 << 30 and slab.per_rank == 2 << 30)
-        if w576_fp32 and not (serve and compact_128k):
-            raise ValueError("experimental W576 FP32 requires the native compact 128K H64 text serving profile")
-        if sp_fp32 and not compact_128k:
-            raise ValueError("experimental SP FP32 requires the native compact 128K H64 text profile")
+        compact_128k = compact_profile and self.w.compact_expert_down and slab.per_rank == 2 << 30
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(graph_keys) if capture else 0
         prompt_reserve = RESERVE
         if etp == W.ETP and h64_text:
@@ -438,6 +449,8 @@ class DS41Engine:
         self._warm()
         with clock.phase("slab-join"):
             self.host_per_rank, self.host_slab = slab.finish()
+            if experiment:
+                startup.retire_slab()
         clock.add("slab", slab_started, time.perf_counter() - slab_started)
         self.prefix.slab = self.host_slab
         if rank == 0:

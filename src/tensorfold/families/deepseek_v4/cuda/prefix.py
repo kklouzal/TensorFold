@@ -120,7 +120,7 @@ class HostSlab:
     the rest of the startup, until ``finish`` (one collective, every rank) -> (bytes, slab). No CUDA graph may be
     captured in between (a pinned allocation is not allowed during a global-mode capture)."""
 
-    def __init__(self, comm, rank: int, tp: int, requested: int | None):
+    def __init__(self, comm, rank: int, tp: int, requested: int | None, *, required_per_rank=None, startup=None):
         from tensorfold.families.qwen4_exp.cuda.prefix_host import default_bytes, pinned_slab_bytes
         if requested is not None and (type(requested) is not int or requested < 0):
             raise ValueError("prefix_host_bytes must be a nonnegative byte count")
@@ -131,12 +131,31 @@ class HostSlab:
         agreed = torch.empty(tp, dtype=torch.int64, device="cuda")
         comm.all_gather(mine, agreed)
         self.per_rank = int(agreed.min())
+        if required_per_rank is not None and self.per_rank != required_per_rank:
+            raise ValueError(f"experimental FP32 requires {required_per_rank} host prefix bytes per rank")
         self._pin = None
+        self._pin_worker = None
+        self._pin_observed = False
+        if startup is not None:
+            startup.slab = self
         if self.per_rank:
             from concurrent.futures import ThreadPoolExecutor
             pool = ThreadPoolExecutor(1, thread_name_prefix="ds41-slab")
+            if startup is not None:
+                self._pin_worker = pool
             self._pin = pool.submit(lambda: torch.empty(self.per_rank, dtype=torch.uint8, pin_memory=True))
             pool.shutdown(wait=False)
+
+    def join_pin(self, *, cancel=False):
+        if self._pin_worker is not None:
+            self._pin_worker.shutdown(wait=True, cancel_futures=cancel)
+            self._pin_worker = None
+
+    def report_pin_error(self):
+        """Publish an unobserved pin failure after the worker has been joined."""
+        job, self._pin = self._pin, None
+        if job is not None and not self._pin_observed and not job.cancelled():
+            job.result()
 
     def finish(self):
         from tensorfold.families.qwen4_exp.cuda.prefix_host import pin_agreed
@@ -149,7 +168,15 @@ class HostSlab:
             self.comm.all_gather(torch.tensor([ok], dtype=torch.int64, device="cuda"), flags)
             return flags.tolist()
 
-        slab = pin_agreed(self._pin.result, every_rank, self.per_rank, explicit=self.explicit, requested=self.total,
+        allocate = self._pin.result
+        if self._pin_worker is not None:
+            def allocate():
+                try:
+                    return self._pin.result()
+                finally:
+                    self._pin_observed = self._pin.done()
+
+        slab = pin_agreed(allocate, every_rank, self.per_rank, explicit=self.explicit, requested=self.total,
                           rank=self.rank, lane="DeepSeek-V4.1 SM70: ")
         return (self.per_rank, slab) if slab is not None else (0, None)
 

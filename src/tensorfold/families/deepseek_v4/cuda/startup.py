@@ -116,6 +116,7 @@ class ExpertStartup:
         self.engram_job = None
         self.engram_fd = None
         self.engram = None
+        self.slab = None
 
     def map_engram(self, fd, construct):
         from concurrent.futures import ThreadPoolExecutor
@@ -158,6 +159,14 @@ class ExpertStartup:
 
         finish((observe, close_lease))
 
+    def retire_slab(self, *, cancel=False):
+        slab = self.slab
+        if slab is not None:
+            slab.join_pin(cancel=cancel)
+            self.slab = None
+            if cancel:
+                slab.report_pin_error()
+
     def abort(self, engine, primary=None):
         from tensorfold.cleanup import finish
         from tensorfold.cuda.cohort import notify_failure
@@ -165,8 +174,8 @@ class ExpertStartup:
         self.engine = engine
 
         def retire_native():
-            if self.mapper is not None:
-                return  # a failed join retains the possibly live mapper and mapping
+            if self.mapper is not None or self.slab is not None:
+                return  # a failed join retains the remaining borrowers and mapping
             scheduler = getattr(engine, "scheduler", None)
             if scheduler is not None:
                 scheduler.close()
@@ -187,5 +196,5 @@ class ExpertStartup:
             operations.append(self.history.close)
         # The mapper can still be waiting in HostEngram's store exchange.
         # Notify the process supervisor before waiting for that borrower.
-        operations.extend((lambda: self.retire_mapper(primary), retire_native))
+        operations.extend((lambda: self.retire_mapper(primary), lambda: self.retire_slab(cancel=True), retire_native))
         finish(operations)
