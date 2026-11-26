@@ -1559,6 +1559,17 @@ requests are still waiting for their first response. An empty interval carries
 zero observations and null times. These diagnostics do not change the timed
 client or the throughput verdict.
 
+For mixed prefill and decode, run the synchronous plan with
+`--newcomer-after-pieces N` and concurrency levels of at least two. The last
+request waits until every other request delivers N nonempty SSE text pieces.
+The result records when the newcomer was sent and when it first replied, along
+with all incumbent delivery times. A cell is invalid if an incumbent's last
+piece arrived before the newcomer was sent. This lets you compare the
+newcomer's time to first text and the incumbents' delivery gaps during its
+prefill. One SSE piece can carry multiple generated tokens. Use the usage totals
+and full-cohort times for the aggregate decode metric. Run this separately from
+the synchronous throughput matrix.
+
 ### Scoring rule (predeclared)
 
 `compare REFERENCE CANDIDATE [--calibration FILES ...]` scores

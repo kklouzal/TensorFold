@@ -306,21 +306,24 @@ def request_body(args, mode: str, key: str, text: str) -> dict:
     return body
 
 
-def stream_request(base: str, body: dict, gate: threading.Barrier, delay: float, args, limits) -> dict:
+def stream_request(base: str, body: dict, gate: threading.Barrier, delay: float, args, limits, *,
+                   before_send=None, milestone=None) -> dict:
     data = json.dumps(body).encode()
     request = urllib.request.Request(base + "/v1/chat/completions", data=data,
                                      headers={"Content-Type": "application/json"})
     gate.wait(timeout=120)
     if delay:
         time.sleep(delay)
-    sent = time.perf_counter()
+    mixed_load = before_send is not None or milestone is not None
+    sent = before_send() if before_send is not None else time.perf_counter()
+    timeout = min(args.timeout, args.deadline) if mixed_load else args.timeout
     pieces, usage, runtime, texts, refusals = [], None, None, [], 0
     while True:  # --retry-overloaded: a capacity refusal (503) is resent; its time counts from the first send
         try:
-            response = urllib.request.urlopen(request, timeout=args.timeout)
+            response = urllib.request.urlopen(request, timeout=timeout)
             break
         except urllib.error.HTTPError as error:
-            if error.code != 503 or refusals >= args.retry_overloaded:
+            if mixed_load or error.code != 503 or refusals >= args.retry_overloaded:
                 raise
             refusals += 1
             time.sleep(args.retry_delay)
@@ -337,7 +340,12 @@ def stream_request(base: str, body: dict, gate: threading.Barrier, delay: float,
                 if piece:
                     pieces.append(now - sent)
                     texts.append(piece)
+            if milestone is not None and len(pieces) >= milestone[0]:
+                milestone[1]()
+                milestone = None
     ended = time.perf_counter() - sent
+    if mixed_load and ended > args.deadline:
+        raise TimeoutError("whole-request deadline exceeded")
     if usage is None:
         raise ValueError("stream ended without usage")
     protocol.completion_usage(usage, args.output_tokens, prompt=True)
@@ -462,8 +470,9 @@ def settle_stats(base: str, before, expected: int):
 
 
 def run_cell(base: str, args, plan: dict, corpus: str, mode: str, arrival: str, stagger: float, c: int, length: int,
-             rep, limits, session) -> dict:
-    keys = [prompt_key(mode, arrival, c, length, rep, slot) for slot in range(c)]
+             rep, limits, session, *, newcomer_after_pieces=0) -> dict:
+    prompt_arrival = "sync" if newcomer_after_pieces else arrival
+    keys = [prompt_key(mode, prompt_arrival, c, length, rep, slot) for slot in range(c)]
     bodies = []
     for key in keys:
         entry = plan["prompts"].get(key)
@@ -478,12 +487,60 @@ def run_cell(base: str, args, plan: dict, corpus: str, mode: str, arrival: str, 
         raise RuntimeError("server is not idle before the cell")
     gate = threading.Barrier(c)
     results: list = [None] * c
+    if newcomer_after_pieces:
+        release = threading.Event()
+        progress_lock = threading.Lock()
+        remaining = c - 1
+        blocked = None
+        submitted = False
+
+        def incumbent_ready():
+            nonlocal remaining
+            with progress_lock:
+                remaining -= 1
+                if not remaining:
+                    release.set()
+
+        def incumbent_stopped(reason):
+            nonlocal blocked
+            with progress_lock:
+                if not submitted and blocked is None:
+                    blocked = reason
+                    release.set()
+
+        def claim_newcomer_send():
+            nonlocal submitted
+            cutoff = time.perf_counter() + args.deadline
+            released = release.wait(args.deadline)
+            with progress_lock:
+                sent = time.perf_counter()
+                if not released or sent > cutoff:
+                    raise TimeoutError("incumbents did not release the newcomer before the deadline")
+                if blocked is not None:
+                    raise RuntimeError(blocked)
+                submitted = True
+                return sent
 
     def worker(i: int):
         try:
-            results[i] = stream_request(base, bodies[i], gate, i * stagger / 1e3, args, limits)
+            if newcomer_after_pieces:
+                if i == c - 1:
+                    results[i] = stream_request(base, bodies[i], gate, 0, args, limits, before_send=claim_newcomer_send)
+                else:
+                    results[i] = stream_request(base, bodies[i], gate, 0, args, limits,
+                                                milestone=(newcomer_after_pieces, incumbent_ready))
+                    if len(results[i]["arrivals_s"]) < newcomer_after_pieces:
+                        reason = f"{keys[i]}: incumbent ended before the text-piece milestone"
+                        results[i]["error"] = reason
+                    else:
+                        reason = f"{keys[i]}: incumbent ended before the newcomer was sent"
+                    incumbent_stopped(reason)
+            else:
+                results[i] = stream_request(base, bodies[i], gate, i * stagger / 1e3, args, limits)
         except BaseException as error:  # noqa: BLE001 - reported in the cell, never counted as a measurement
             gate.abort()
+            if newcomer_after_pieces and i != c - 1:
+                incumbent_stopped(f"{keys[i]}: incumbent failed before the newcomer was sent")
             results[i] = {"error": f"{type(error).__name__}: {error}"}
 
     threads = [threading.Thread(target=worker, args=(i,), name=f"matrix-{i}") for i in range(c)]
@@ -512,6 +569,16 @@ def run_cell(base: str, args, plan: dict, corpus: str, mode: str, arrival: str, 
             problems.append(f"{key}: {cached} prompt tokens came from a prefix cache")
         if record["metrics"]["decode_tps"] is None:
             problems.append(f"{key}: no decode interval (fewer than two text pieces)")
+    if newcomer_after_pieces:
+        newcomer = results[-1]
+        sent = newcomer["sent"]
+        origin = min(r["sent"] for r in results)
+        pieces = newcomer["arrivals_s"]
+        if any(not (r["sent"] + r["arrivals_s"][newcomer_after_pieces - 1] <= sent
+                    < r["sent"] + r["arrivals_s"][-1]) for r in results[:-1]):
+            problems.append("newcomer was sent outside an incumbent's requested decode interval")
+        cell["newcomer"] = {"after_pieces": newcomer_after_pieces, "request_key": keys[-1],
+                            "sent_s": sent - origin, "first_text_s": sent - origin + pieces[0] if pieces else None}
     try:
         after = settle_stats(base, before, c)
     except (RuntimeError, TimeoutError) as error:
@@ -568,7 +635,8 @@ def run(args) -> int:
         raise ValueError("the server reports no lane count; pass --lanes")
     context = model.get("max_model_len") or ((stats or {}).get("model") or {}).get("context_length")
     info = {"lanes": lanes, "context": context}
-    arrival = arrival_name(args.stagger_ms)
+    arrival = (f"after{args.newcomer_after_pieces}pieces" if args.newcomer_after_pieces
+               else arrival_name(args.stagger_ms))
     report = {"schema": SCHEMA, "version": SCHEMA_VERSION, "label": args.label, "note": args.note,
               "created_unix_s": time.time(), "argv": sys.argv, "url": base, "model": args.model,
               "output_tokens": args.output_tokens, "arrival": arrival, "stagger_ms": args.stagger_ms,
@@ -603,7 +671,7 @@ def run(args) -> int:
                     if cell_gate(args, info, c, length):
                         continue
                     cell = run_cell(base, args, plan, corpus, mode, arrival, args.stagger_ms, c, length, rep, limits,
-                                    report["session"])
+                                    report["session"], newcomer_after_pieces=args.newcomer_after_pieces)
                     failures += cell["status"] != "measured"
                     report["cells"].append(cell)
                     metrics = cell.get("metrics") or {}
@@ -1082,6 +1150,9 @@ def main() -> int:
     p.add_argument("--warmup-lengths", type=int_list, help="C=1 warmup requests per mode (default: every length)")
     p.add_argument("--output-tokens", type=int, default=512)
     p.add_argument("--stagger-ms", type=float, default=0.0, help="start request i at i x this many ms")
+    p.add_argument("--newcomer-after-pieces", type=int, default=0, metavar="N",
+                   help="send the final request once every incumbent has delivered N nonempty SSE text pieces; "
+                        "uses prompts from the synchronous plan")
     p.add_argument("--lanes", type=int, help="concurrent request slots when the server has no /stats")
     p.add_argument("--kv-tokens", type=int, help="KV token budget: gate cells whose C x (L + output) exceeds it")
     p.add_argument("--allow-prompt-token-drift", action="store_true",
@@ -1115,6 +1186,12 @@ def main() -> int:
         parser.error("summary --gaps requires --json")
     if args.command == "run" and (args.reps < 1 or args.first_rep < 0 or args.output_tokens < 2):
         parser.error("run needs --reps >= 1, --first-rep >= 0 and --output-tokens >= 2")
+    if args.command == "run" and (args.newcomer_after_pieces < 0 or
+            args.newcomer_after_pieces and (args.stagger_ms != 0 or min(args.concurrency) < 2 or
+                                           not 0 < args.deadline <= threading.TIMEOUT_MAX or
+                                           not math.isfinite(args.timeout) or args.timeout <= 0 or args.retry_overloaded)):
+        parser.error("newcomer mode needs a positive piece count, C >= 2, positive bounded timeouts, "
+                     "and zero staggering and overload retries")
     return {"corpus": build_corpus, "plan": build_plan, "run": run, "summary": summary, "compare": compare}[
         args.command](args)
 

@@ -54,6 +54,8 @@ class Fake(BaseHTTPRequestHandler):
     """Prompt tokens = message characters; one SSE piece per token; optional prefix-cache report."""
     cached = 0
     seen: ClassVar[list] = []
+    piece_hook = None
+    refuse = None
 
     def log_message(self, *args):
         pass
@@ -72,12 +74,17 @@ class Fake(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         Fake.seen.append(request)
+        if Fake.refuse is not None and Fake.refuse(request):
+            self.send_error(503)
+            return
         prompt = len(request["messages"][0]["content"])
         n = request["max_tokens"]
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         for i in range(n):
+            if Fake.piece_hook is not None:
+                Fake.piece_hook(request, i)
             self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": f"t{i} "}}]}).encode() +
                              b"\n\n")
             self.wfile.flush()
@@ -107,6 +114,91 @@ def run_args(mb, url, plan, corpus, out, *extra):
         return mb.main()
     finally:
         sys.argv = old
+
+
+def test_newcomer_waits_for_every_incumbent_without_blocking_their_streams(mb, server, tmp_path, monkeypatch):
+    plan, corpus = make_plan(mb, tmp_path, [100], [3], 1)
+    out = tmp_path / "overlap.json"
+    newcomer_started = threading.Event()
+
+    def hold_after_two_pieces(body, piece):
+        text = body["messages"][0]["content"]
+        if "/sync/c3/l100/r0/s2" in text:
+            newcomer_started.set()
+        elif "/sync/c3/l100/r0/" in text and piece == 2:
+            assert newcomer_started.wait(5)
+
+    monkeypatch.setattr(Fake, "piece_hook", hold_after_two_pieces)
+    assert run_args(mb, server, plan, corpus, out, "--modes", "greedy", "--lengths", "100",
+                    "--concurrency", "3", "--lanes", "3", "--reps", "1",
+                    "--newcomer-after-pieces", "2", "--deadline", "5") == 0
+    artifact = json.loads(out.read_text())
+    cell, = artifact["cells"]
+    assert cell["status"] == "measured" and cell["key"] == "v1/greedy/after2pieces/c3/l100"
+    assert cell["newcomer"]["request_key"] == "v1/greedy/sync/c3/l100/r0/s2"
+    assert cell["newcomer"]["first_text_s"] > cell["newcomer"]["sent_s"]
+    assert artifact["warmup"][0]["arrival"] == "warmup"
+
+
+def test_newcomer_is_never_sent_when_an_incumbent_ends_before_the_milestone(mb, server, tmp_path):
+    plan, corpus = make_plan(mb, tmp_path, [100], [2], 1)
+    out = tmp_path / "incomplete.json"
+    assert run_args(mb, server, plan, corpus, out, "--modes", "greedy", "--lengths", "100",
+                    "--concurrency", "2", "--reps", "1", "--newcomer-after-pieces", "9", "--deadline", "5") == 1
+    cell, = json.loads(out.read_text())["cells"]
+    assert cell["status"] == "failed"
+    assert any("ended before the text-piece milestone" in p for p in cell["problems"])
+    assert cell["requests"][0]["usage"]["completion_tokens"] == 8
+    assert not any("/sync/c2/l100/r0/s1" in b["messages"][0]["content"] for b in Fake.seen)
+
+
+def test_newcomer_is_never_sent_after_a_ready_incumbent_finishes(mb, server, tmp_path, monkeypatch):
+    plan, corpus = make_plan(mb, tmp_path, [100], [3], 1)
+    out = tmp_path / "finished.json"
+
+    def wait_for_first_incumbent(body, piece):
+        if piece == 0 and "/sync/c3/l100/r0/s1" in body["messages"][0]["content"]:
+            first = next((t for t in threading.enumerate() if t.name == "matrix-0"), None)
+            if first is not None:
+                first.join(5)
+                assert not first.is_alive()
+
+    monkeypatch.setattr(Fake, "piece_hook", wait_for_first_incumbent)
+    assert run_args(mb, server, plan, corpus, out, "--modes", "greedy", "--lengths", "100",
+                    "--concurrency", "3", "--lanes", "3", "--reps", "1",
+                    "--newcomer-after-pieces", "2", "--deadline", "5") == 1
+    cell, = json.loads(out.read_text())["cells"]
+    assert cell["status"] == "failed" and "incumbent ended before the newcomer was sent" in cell["problems"][0]
+    assert all(r["usage"]["completion_tokens"] == 8 for r in cell["requests"][:2])
+    assert not any("/sync/c3/l100/r0/s2" in b["messages"][0]["content"] for b in Fake.seen)
+
+
+def test_newcomer_refusal_is_a_failed_cell_and_cannot_be_retried(mb, server, tmp_path, monkeypatch):
+    plan, corpus = make_plan(mb, tmp_path, [100], [2], 1)
+    out = tmp_path / "refused.json"
+    newcomer_started = threading.Event()
+
+    def refuse_newcomer(body):
+        if "/sync/c2/l100/r0/s1" in body["messages"][0]["content"]:
+            newcomer_started.set()
+            return True
+        return False
+
+    def hold_after_two_pieces(body, piece):
+        if piece == 2 and "/sync/c2/l100/r0/s0" in body["messages"][0]["content"]:
+            assert newcomer_started.wait(5)
+
+    monkeypatch.setattr(Fake, "refuse", refuse_newcomer)
+    monkeypatch.setattr(Fake, "piece_hook", hold_after_two_pieces)
+    args = ("--modes", "greedy", "--lengths", "100", "--concurrency", "2", "--reps", "1",
+            "--newcomer-after-pieces", "2", "--deadline", "5")
+    with pytest.raises(SystemExit) as error:
+        run_args(mb, server, plan, corpus, out, *args, "--retry-overloaded", "1")
+    assert error.value.code == 2 and not Fake.seen
+    assert run_args(mb, server, plan, corpus, out, *args) == 1
+    cell, = json.loads(out.read_text())["cells"]
+    assert cell["status"] == "failed" and "HTTP Error 503" in cell["problems"][0]
+    assert sum("/sync/c2/l100/r0/s1" in b["messages"][0]["content"] for b in Fake.seen) == 1
 
 
 @pytest.mark.parametrize(("command", "arguments"), [
