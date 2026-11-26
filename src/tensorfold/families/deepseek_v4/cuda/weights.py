@@ -529,6 +529,7 @@ class Layer:
     owns_kv: bool = False
     has_indexer: bool = False
     expert_to_local: object = None   # optional int32[E], -1 for a global expert owned by another group
+    expert_groups_changed: bool = False   # cohort-wide canonical ownership, independent of this rank's slot order
 
 
 @dataclass
@@ -589,7 +590,7 @@ def _load(L, shards, geometry, rank, device, layers, expert_placement=None):
     scratch = dense.Scratch(device)
     group = lambda *members: dense.Group(members, scratch)   # noqa: E731
     if expert_placement is not None:
-        from .expert_transfer import local_expert_layout
+        from .expert_transfer import expert_groups_changed, local_expert_layout
 
         group_slots = g.experts // (TP // L.etp)
     out = []
@@ -629,7 +630,9 @@ def _load(L, shards, geometry, rank, device, layers, expert_placement=None):
         ly.gate_bias = L.floating(p + "exp_probs_b.bias", f32)
         placement = {}
         if expert_placement is not None:
-            layout = local_expert_layout(expert_placement[i], owner=L.g, group_slots=group_slots)
+            row = expert_placement[i]
+            ly.expert_groups_changed = expert_groups_changed(row, group_slots=group_slots)
+            layout = local_expert_layout(row, owner=L.g, group_slots=group_slots)
             if layout is not None:
                 placement["expert_ids"], local = layout
                 ly.expert_to_local = torch.tensor(local, dtype=torch.int32, device=device)

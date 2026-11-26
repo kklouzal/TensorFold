@@ -442,7 +442,7 @@ class Target:
                 from .kernels.band import place_routes
 
                 local, weights = place_routes(ids, probabilities, expert_to_local)
-        if round_routed is not None:
+        if round_routed is not None and ly.expert_groups_changed:
             if (shard is not None or image is not None or not step.single_token_slots or not step.pack_window_ring
                     or x.shape[0] >= lattice_moe.MIN_TOKENS):
                 raise RuntimeError("experimental W576 combine requires a captured ordinary H64 text row batch")
@@ -456,7 +456,7 @@ class Target:
             return self.c.sum(send, torch.float16)
         padded_rows = None
         if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
-            if (self.fp32_sp and shard is not None and image is None
+            if (self.fp32_sp and ly.expert_groups_changed and shard is not None and image is None
                     and SP_MIN <= shard.tokens == x.shape[0] <= self.max_tokens):
                 padded_rows = shard.size * 8
             out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,

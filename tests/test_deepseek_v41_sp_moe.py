@@ -22,7 +22,7 @@ def _local_bank(ids, weights, first, count):
     return torch.where(owns, ids - first, 0).int(), torch.where(owns, weights, 0)
 
 
-def _exercise_sp_routes(patch, rank, device, comm=None, *, fp32_sp=False):
+def _exercise_sp_routes(patch, rank, device, comm=None, *, fp32_sp=False, moved=False):
     from tensorfold.cuda.sm70 import ds41_lattice_moe, onecat_ds41
     from tensorfold.families.deepseek_v4.cuda import target, vision
     from tensorfold.families.deepseek_v4.cuda.kernels import band, mhc, router
@@ -42,7 +42,7 @@ def _exercise_sp_routes(patch, rank, device, comm=None, *, fp32_sp=False):
     first, count = rank // 4 * (experts // 2), experts // 2
     layer = SimpleNamespace(index=0, gate=None, gate_bias=text_bias, exp_gate=None, exp_up=None,
                             exp_down=None, gate_up_type=16, down_type=16, down_left=0, sh_down=None,
-                            sh_gu=lambda y: (y, y))
+                            sh_gu=lambda y: (y, y), expert_groups_changed=moved)
 
     def local_router(logits, bias, top_k, scale, start, n):
         weights, ids = _route(logits, bias, top_k, scale)
@@ -55,7 +55,7 @@ def _exercise_sp_routes(patch, rank, device, comm=None, *, fp32_sp=False):
     patch.setattr(onecat_ds41, "shared_swiglu", lambda gate, up: gate)
 
     def invoke(image):
-        retained = fp32_sp and image is None
+        retained = fp32_sp and moved and image is None
         # Reference routes all rows, with no sequence sharding or EP filtering.
         # Reuse the shipping router to isolate the subsequent transport and mapping.
         p, ids = vision.route_with_vision(logits, text_bias, image_bias, image, 6, 1.5)
@@ -126,8 +126,51 @@ def test_sequence_shard_gathers_before_expert_localization(monkeypatch, rank):
     _exercise_sp_routes(monkeypatch, rank, "cpu")
 
 
-def test_retained_sp_reuses_padded_fp32_send_and_falls_back_for_vision(monkeypatch):
-    _exercise_sp_routes(monkeypatch, 7, "cpu", fp32_sp=True)
+@pytest.mark.parametrize("moved", (False, True))
+def test_retained_sp_reuses_padded_fp32_send_only_for_moved_text_layers(monkeypatch, moved):
+    _exercise_sp_routes(monkeypatch, 7, "cpu", fp32_sp=True, moved=moved)
+
+
+@pytest.mark.parametrize(("moved", "round_tag", "fused"), [
+    (False, 0, False), (False, 1, False), (True, None, False), (True, 0, True), (True, 1, True),
+])
+def test_graph_moe_retains_original_round_flag_only_for_moved_layers(monkeypatch, moved, round_tag, fused):
+    from tensorfold.cuda.sm70 import onecat_ds41
+    from tensorfold.families.deepseek_v4.cuda import target
+    from tensorfold.families.deepseek_v4.cuda.kernels import band, mhc
+
+    row = torch.ones(1, 4, dtype=torch.float16)
+    tag = None if round_tag is None else torch.tensor([round_tag])
+    step = SimpleNamespace(round_w576_routed=tag, expert_sample=None, single_token_slots=True,
+                           pack_window_ring=True)
+    layer = SimpleNamespace(gate=None, gate_bias=None, exp_gate=None, exp_up=None, exp_down=None, gate_up_type=16,
+                            down_type=16, down_left=0, sh_down=None, sh_gu=lambda x: (x, x),
+                            expert_groups_changed=moved)
+    monkeypatch.setattr(mhc, "fp32_projection", lambda *_: None)
+    monkeypatch.setattr(band, "route_local", lambda *_: (None, None))
+    monkeypatch.setattr(band, "add_halves", lambda a, b: a.float() + b.float())
+    monkeypatch.setattr(onecat_ds41, "shared_swiglu", lambda _, up: up)
+    sends = []
+
+    def experts(x, *args, fragment_down, shared=None, round_routed=None):
+        assert fragment_down
+        if fused:
+            assert round_routed is tag and shared is row
+            return x.float() + shared.float()
+        assert round_routed is None and shared is None
+        return x
+
+    def collective(x, dtype):
+        assert dtype == torch.float16
+        sends.append(x)
+        return x.to(dtype)
+
+    owner = SimpleNamespace(c=SimpleNamespace(sum=collective), g=SimpleNamespace(top_k=6, routed_scale=1.5),
+                            local=range(192), w=SimpleNamespace(compact_expert_down=True),
+                            decode_moe=SimpleNamespace(experts=experts), _linear=lambda x, _: x)
+    actual = target.Target.moe(owner, layer, row, step=step)
+    (send,) = sends
+    assert send.dtype == torch.float32 and torch.equal(actual, row + row)
 
 
 def run_native(rank, world, master, port):

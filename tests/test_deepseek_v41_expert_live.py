@@ -3,8 +3,12 @@ from types import SimpleNamespace
 import pytest
 
 from tensorfold.families.deepseek_v4.cuda.expert_live import LiveExpertPlacement
-from tensorfold.families.deepseek_v4.cuda.expert_rebalance_wire import PeerRefusal, Phase, Refusal
-from tensorfold.families.deepseek_v4.cuda.expert_transfer import local_expert_layout, plan_expert_transfers
+from tensorfold.families.deepseek_v4.cuda.expert_rebalance_wire import PeerRefusal, Phase, Refusal, placement_digest
+from tensorfold.families.deepseek_v4.cuda.expert_transfer import (
+    expert_groups_changed,
+    local_expert_layout,
+    plan_expert_transfers,
+)
 
 
 def setup_transfer(etp):
@@ -48,6 +52,45 @@ def test_unchanged_local_slots_keep_the_arithmetic_route(etp):
             assert selected == plan.proposed[0][offset:offset + plan.group_slots]
             assert all(inverse[logical] == slot for slot, logical in enumerate(selected))
             assert inverse.count(-1) == 384 - plan.group_slots
+
+
+def test_apply_rebuilds_with_cohort_wide_canonical_group_membership(monkeypatch):
+    import torch
+
+    _, move, _, _ = setup_transfer(4)
+    canonical = move.current[0]
+    within = (canonical[1], canonical[0], *canonical[2:])
+    mixed = (move.proposed[0], within, *move.proposed[2:])
+    restored = (canonical, *mixed[1:])
+    assert not expert_groups_changed(within, group_slots=move.group_slots)
+    assert local_expert_layout(within, owner=0, group_slots=move.group_slots) is not None
+    stream = SimpleNamespace(synchronize=lambda: None)
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda _device: stream)
+
+    for rank in range(8):
+        layers = [SimpleNamespace(expert_to_local=None, expert_groups_changed=False) for _ in move.current]
+        engine = SimpleNamespace(rank=rank, expert_tensor_parallel_size=4, graphs=object(),
+                                 w=SimpleNamespace(group=rank // 4, layers=layers),
+                                 prefix=SimpleNamespace(retire_placement_prefixes=lambda: None),
+                                 comm=SimpleNamespace(device="cpu", check=lambda: None, barrier=lambda: None))
+        live = LiveExpertPlacement(engine, epoch=0, placement=move.current, operation=33)
+        observed = []
+
+        def capture():
+            assert engine.graphs is None
+            observed.append([layer.expert_groups_changed for layer in layers])
+            engine.graphs = object()
+
+        engine.recapture_expert_graphs = capture
+        for epoch, proposed in enumerate((mixed, restored), 1):
+            plan = plan_expert_transfers(live.placement, proposed, etp=4)
+            pending = SimpleNamespace(plan=plan, movement=SimpleNamespace(enqueue=lambda: None),
+                                      transaction=SimpleNamespace(target_epoch=epoch,
+                                                                  target_digest=placement_digest(proposed, etp=4)))
+            live._apply_prepared(pending)
+            assert live.epoch == epoch and live.placement == proposed
+            assert (layers[1].expert_to_local is not None) == (rank < 4)
+        assert observed == [[True, *([False] * 39)], [False] * 40]
 
 
 @pytest.mark.parametrize("etp", (1, 2, 4))

@@ -6,6 +6,11 @@ from dataclasses import dataclass
 Placement = tuple[tuple[int, ...], ...]
 
 
+def expert_groups_changed(row: tuple[int, ...], *, group_slots: int) -> bool:
+    """Does any expert in this validated layer row live outside its canonical group?"""
+    return any(slot // group_slots != expert // group_slots for slot, expert in enumerate(row))
+
+
 def local_expert_layout(row: tuple[int, ...], *, owner: int, group_slots: int):
     """Return the local slot order and inverse map for an already validated placement row."""
     start = owner * group_slots

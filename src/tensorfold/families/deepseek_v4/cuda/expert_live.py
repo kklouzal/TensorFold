@@ -15,7 +15,7 @@ from .expert_rebalance_wire import (
     placement_from_ids,
     validate_receipts,
 )
-from .expert_transfer import ExpertTransferPlan, local_expert_layout, plan_expert_transfers
+from .expert_transfer import ExpertTransferPlan, expert_groups_changed, local_expert_layout, plan_expert_transfers
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +122,7 @@ class LiveExpertPlacement:
         torch.cuda.current_stream(engine.comm.device).synchronize()
         engine.comm.check()
         for layer, row in zip(engine.w.layers, pending.plan.proposed, strict=True):
+            layer.expert_groups_changed = expert_groups_changed(row, group_slots=pending.plan.group_slots)
             layout = local_expert_layout(row, owner=engine.w.group, group_slots=pending.plan.group_slots)
             if layout is None:
                 layer.expert_to_local = None
