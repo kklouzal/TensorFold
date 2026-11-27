@@ -8,9 +8,12 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
+
+from test_deepseek_v41_serving import app_for, model_dir as deepseek_model_dir  # noqa: F401
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 
@@ -51,6 +54,8 @@ class Fake(BaseHTTPRequestHandler):
     """Prompt tokens = message characters; one SSE piece per token; optional prefix-cache report."""
     cached = 0
     seen: ClassVar[list] = []
+    piece_hook = None
+    refuse = None
 
     def log_message(self, *args):
         pass
@@ -69,12 +74,17 @@ class Fake(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         Fake.seen.append(request)
+        if Fake.refuse is not None and Fake.refuse(request):
+            self.send_error(503)
+            return
         prompt = len(request["messages"][0]["content"])
         n = request["max_tokens"]
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         for i in range(n):
+            if Fake.piece_hook is not None:
+                Fake.piece_hook(request, i)
             self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": f"t{i} "}}]}).encode() +
                              b"\n\n")
             self.wfile.flush()
@@ -106,6 +116,123 @@ def run_args(mb, url, plan, corpus, out, *extra):
         sys.argv = old
 
 
+def test_newcomer_waits_for_every_incumbent_without_blocking_their_streams(mb, server, tmp_path, monkeypatch):
+    plan, corpus = make_plan(mb, tmp_path, [100], [3], 1)
+    out = tmp_path / "overlap.json"
+    newcomer_started = threading.Event()
+
+    def hold_after_two_pieces(body, piece):
+        text = body["messages"][0]["content"]
+        if "/sync/c3/l100/r0/s2" in text:
+            newcomer_started.set()
+        elif "/sync/c3/l100/r0/" in text and piece == 2:
+            assert newcomer_started.wait(5)
+
+    monkeypatch.setattr(Fake, "piece_hook", hold_after_two_pieces)
+    assert run_args(mb, server, plan, corpus, out, "--modes", "greedy", "--lengths", "100",
+                    "--concurrency", "3", "--lanes", "3", "--reps", "1",
+                    "--newcomer-after-pieces", "2", "--deadline", "5") == 0
+    artifact = json.loads(out.read_text())
+    cell, = artifact["cells"]
+    assert cell["status"] == "measured" and cell["key"] == "v1/greedy/after2pieces/c3/l100"
+    assert cell["newcomer"]["request_key"] == "v1/greedy/sync/c3/l100/r0/s2"
+    assert cell["newcomer"]["first_text_s"] > cell["newcomer"]["sent_s"]
+    assert artifact["warmup"][0]["arrival"] == "warmup"
+
+
+def test_newcomer_is_never_sent_when_an_incumbent_ends_before_the_milestone(mb, server, tmp_path):
+    plan, corpus = make_plan(mb, tmp_path, [100], [2], 1)
+    out = tmp_path / "incomplete.json"
+    assert run_args(mb, server, plan, corpus, out, "--modes", "greedy", "--lengths", "100",
+                    "--concurrency", "2", "--reps", "1", "--newcomer-after-pieces", "9", "--deadline", "5") == 1
+    cell, = json.loads(out.read_text())["cells"]
+    assert cell["status"] == "failed"
+    assert any("ended before the text-piece milestone" in p for p in cell["problems"])
+    assert cell["requests"][0]["usage"]["completion_tokens"] == 8
+    assert not any("/sync/c2/l100/r0/s1" in b["messages"][0]["content"] for b in Fake.seen)
+
+
+def test_newcomer_is_never_sent_after_a_ready_incumbent_finishes(mb, server, tmp_path, monkeypatch):
+    plan, corpus = make_plan(mb, tmp_path, [100], [3], 1)
+    out = tmp_path / "finished.json"
+
+    def wait_for_first_incumbent(body, piece):
+        if piece == 0 and "/sync/c3/l100/r0/s1" in body["messages"][0]["content"]:
+            first = next((t for t in threading.enumerate() if t.name == "matrix-0"), None)
+            if first is not None:
+                first.join(5)
+                assert not first.is_alive()
+
+    monkeypatch.setattr(Fake, "piece_hook", wait_for_first_incumbent)
+    assert run_args(mb, server, plan, corpus, out, "--modes", "greedy", "--lengths", "100",
+                    "--concurrency", "3", "--lanes", "3", "--reps", "1",
+                    "--newcomer-after-pieces", "2", "--deadline", "5") == 1
+    cell, = json.loads(out.read_text())["cells"]
+    assert cell["status"] == "failed" and "incumbent ended before the newcomer was sent" in cell["problems"][0]
+    assert all(r["usage"]["completion_tokens"] == 8 for r in cell["requests"][:2])
+    assert not any("/sync/c3/l100/r0/s2" in b["messages"][0]["content"] for b in Fake.seen)
+
+
+def test_newcomer_refusal_is_a_failed_cell_and_cannot_be_retried(mb, server, tmp_path, monkeypatch):
+    plan, corpus = make_plan(mb, tmp_path, [100], [2], 1)
+    out = tmp_path / "refused.json"
+    newcomer_started = threading.Event()
+
+    def refuse_newcomer(body):
+        if "/sync/c2/l100/r0/s1" in body["messages"][0]["content"]:
+            newcomer_started.set()
+            return True
+        return False
+
+    def hold_after_two_pieces(body, piece):
+        if piece == 2 and "/sync/c2/l100/r0/s0" in body["messages"][0]["content"]:
+            assert newcomer_started.wait(5)
+
+    monkeypatch.setattr(Fake, "refuse", refuse_newcomer)
+    monkeypatch.setattr(Fake, "piece_hook", hold_after_two_pieces)
+    args = ("--modes", "greedy", "--lengths", "100", "--concurrency", "2", "--reps", "1",
+            "--newcomer-after-pieces", "2", "--deadline", "5")
+    with pytest.raises(SystemExit) as error:
+        run_args(mb, server, plan, corpus, out, *args, "--retry-overloaded", "1")
+    assert error.value.code == 2 and not Fake.seen
+    assert run_args(mb, server, plan, corpus, out, *args) == 1
+    cell, = json.loads(out.read_text())["cells"]
+    assert cell["status"] == "failed" and "HTTP Error 503" in cell["problems"][0]
+    assert sum("/sync/c2/l100/r0/s1" in b["messages"][0]["content"] for b in Fake.seen) == 1
+
+
+@pytest.mark.parametrize(("command", "arguments"), [
+    ("plan", ["--tokenizer", "model-dir", "--template", "chat.jinja"]),
+    ("run", ["--plan", "plan.json", "--model", "m", "--label", "candidate"]),
+])
+@pytest.mark.parametrize("override", [False, True])
+def test_plan_and_run_share_default_matrix_and_allow_explicit_overrides(mb, monkeypatch, command, arguments, override):
+    argv = ["matrix_benchmark.py", command, "--corpus", "corpus.txt", "--out", "out.json", *arguments]
+    if override:
+        argv.extend(["--concurrency", "1,32", "--lengths", "4096,65536"])
+    monkeypatch.setattr(sys, "argv", argv)
+    parsed = []
+    monkeypatch.setattr(mb, "build_plan" if command == "plan" else "run", parsed.append)
+    mb.main()
+    args, = parsed
+    assert args.concurrency == ([1, 32] if override else [1, 2, 4, 8, 16])
+    assert args.lengths == ([4096, 65536] if override else [8192])
+    assert args.modes == ["greedy", "sampled"]
+
+
+def test_deepseek_plan_counts_the_standard_cuda_render(mb, deepseek_model_dir):
+    model_dir = deepseek_model_dir
+    app = app_for(model_dir, default_thinking=True)
+    text = "Keep literal text <｜DSML｜ calls> in a quoted example.\nSummarize the rest."
+    args = SimpleNamespace(deepseek_v41=True, tokenizer=model_dir)
+    count, offsets, metadata = mb._plan_tokenization(args, text)
+    expected = app.tokenize({"messages": [{"role": "user", "content": text}],
+                             "chat_template_kwargs": {"enable_thinking": False}})
+    assert count(text) == expected["count"]
+    assert offsets == [start for start, _ in app.tok.encode(text, add_special_tokens=False).offsets]
+    assert metadata["template_sha256"] == expected["chat_template_sha256"]
+
+
 def test_run_measures_supported_cells_and_records_gated_ones(mb, server, tmp_path):
     plan, corpus = make_plan(mb, tmp_path, [100, 4090], [1, 2, 4], 2)
     out = tmp_path / "result.json"
@@ -119,6 +246,7 @@ def test_run_measures_supported_cells_and_records_gated_ones(mb, server, tmp_pat
     for cell in data["cells"]:
         assert cell["status"] == "measured" and cell["metrics"]["requests"] == cell["c"]
         assert cell["metrics"]["prefill_agg_tps"] > 0 and cell["metrics"]["decode_median_tps"] > 0
+        assert cell["metrics"]["decode_agg_tps"] > 0
     keys = [r["key"] for c in data["cells"] + data["warmup"] for r in c["requests"]]
     assert len(keys) == len(set(keys))  # every request has its own prompt
     greedy = [r for r in Fake.seen if r.get("temperature") == 0]
@@ -150,10 +278,12 @@ def arm(tmp_path, mb, name, values, session=None, plan="p"):
     return str(path)
 
 
-def compare(mb, tmp_path, ref, cand, *calibration):
+def compare(mb, tmp_path, ref, cand, *calibration, aggregate=False):
     out = tmp_path / "cmp.json"
     old = sys.argv
     sys.argv = ["matrix_benchmark.py", "compare", ref, cand, "--json", str(out)]
+    if aggregate:
+        sys.argv.append("--aggregate-decode")
     for group in calibration:
         sys.argv += ["--calibration", group]
     try:
@@ -161,6 +291,100 @@ def compare(mb, tmp_path, ref, cand, *calibration):
     finally:
         sys.argv = old
     return json.loads(out.read_text())
+
+
+def test_aggregate_decode_uses_the_whole_cohort_interval(mb):
+    requests = [
+        {"sent": 100.0, "arrivals_s": [1, 2, 3], "usage": {"completion_tokens": 13}},
+        {"sent": 103.0, "arrivals_s": [1, 2, 3], "usage": {"completion_tokens": 19}},
+    ]
+    assert mb.aggregate_decode_tps(requests) == 6.0  # 30 tokens over 101–106, including the gap
+    assert mb.aggregate_decode_tps(requests[:1]) == 6.0
+    assert mb.aggregate_decode_tps([]) is None
+
+
+@pytest.mark.parametrize("record", [
+    {},
+    {"sent": "100", "arrivals_s": [1, 2], "usage": {"completion_tokens": 2}},
+    {"sent": 100, "arrivals_s": [1, 3, 2], "usage": {"completion_tokens": 2}},
+    {"sent": 100, "arrivals_s": [1, 2], "usage": {"completion_tokens": True}},
+    {"sent": 100, "arrivals_s": [1, float("nan"), 2], "usage": {"completion_tokens": 2}},
+])
+def test_aggregate_decode_requires_complete_ordered_arrivals_and_usage(mb, record):
+    complete = {"sent": 100.0, "arrivals_s": [1, 2, 3], "usage": {"completion_tokens": 13}}
+    assert mb.aggregate_decode_tps([complete, record]) is None
+
+
+def test_piece_gap_diagnostics_keep_session_phases_and_empty_suffixes(mb):
+    cell = {"c": 2, "requests": [{"sent": 100, "arrivals_s": [1, 2, 10, 11]},
+                                 {"sent": 104, "arrivals_s": [1, 3]}]}
+    assert mb.text_piece_gap_diagnostics(cell) == {
+        "all": {"n": 4, "p99_ms": 8000, "max_ms": 8000},
+        "after_all_first_pieces": {"n": 2, "p99_ms": 2000, "max_ms": 2000},
+    }
+    cell["requests"][1]["arrivals_s"] = [10]
+    assert mb.text_piece_gap_diagnostics(cell)["after_all_first_pieces"] == {
+        "n": 0, "p99_ms": None, "max_ms": None,
+    }
+    assert mb.text_piece_gap_diagnostics({**cell, "c": 3}) is None
+    cell["requests"][1]["arrivals_s"] = [10, 9]
+    assert mb.text_piece_gap_diagnostics(cell) is None
+
+
+def test_summary_can_archive_per_repeat_piece_gaps(mb, tmp_path, monkeypatch):
+    result = Path(arm(tmp_path, mb, "input.json", {(1, 8192): [(5000, 230)]}, session="first"))
+    data = json.loads(result.read_text())
+    data["cells"][0]["requests"] = [{"sent": 100, "arrivals_s": [1, 2, 4]}]
+    result.write_text(json.dumps(data))
+    out = tmp_path / "summary.json"
+    monkeypatch.setattr(sys, "argv", ["matrix_benchmark.py", "summary", str(result), "--gaps", "--json", str(out)])
+    assert mb.main() == 0
+    row, = json.loads(out.read_text())["rows"]
+    assert row["prefill_agg_tps"]["ci95"][1] is None
+    diagnostics, = row["text_piece_gaps"]
+    assert diagnostics["session"] == "first" and diagnostics["repeat"] == 0
+    assert diagnostics["gaps"]["after_all_first_pieces"]["p99_ms"] == 2000
+
+
+def test_opt_in_comparison_recovers_raw_aggregate_decode_and_requires_coverage(mb, tmp_path):
+    ref = arm(tmp_path, mb, "ref.json", {(1, 4096): [(5000, 230)]})
+    cand = arm(tmp_path, mb, "cand.json", {(1, 4096): [(5000, 240)]})
+    key = "v1/greedy/sync/c1/l4096"
+    missing = compare(mb, tmp_path, ref, cand, aggregate=True)
+    assert missing["coverage"]["missing_aggregate_decode"] == [key]
+    assert missing["verdict"].startswith("incomplete")
+
+    for path, span in ((ref, 4.0), (cand, 2.0)):
+        file = Path(path)
+        data = json.loads(file.read_text())
+        data["cells"][0]["requests"] = [
+            {"sent": 10.0, "arrivals_s": [1, 1 + span], "usage": {"completion_tokens": 512}}
+        ]
+        file.write_text(json.dumps(data))
+    result = compare(mb, tmp_path, ref, cand, aggregate=True)
+    aggregate = result["aggregate"]["decode_agg_tps"]
+    assert aggregate["geomean_ratio"] == pytest.approx(2.0) and aggregate["df"] == 0
+    assert result["coverage"]["missing_aggregate_decode"] == []
+    assert result["verdict"].startswith("uncertain")
+
+
+def test_aggregate_comparison_refuses_partial_cohorts_and_disjoint_metric_repeats(mb, tmp_path):
+    values = {(2, 4096): [(5000, 230), (5100, 240)]}
+    ref = arm(tmp_path, mb, "ref.json", values)
+    cand = arm(tmp_path, mb, "cand.json", values)
+    complete = [{"sent": 10.0, "arrivals_s": [1, 2], "usage": {"completion_tokens": 512}}] * 2
+    for path, valid_repeat in ((ref, 0), (cand, 1)):
+        file = Path(path)
+        data = json.loads(file.read_text())
+        for cell in data["cells"]:
+            cell["requests"] = complete if cell["rep"] == valid_repeat else complete[:1]
+        file.write_text(json.dumps(data))
+    result = compare(mb, tmp_path, ref, cand, aggregate=True)
+    row, = result["rows"]
+    assert row["decode_median_tps"]["repeats"] == [0, 1]
+    assert row["decode_agg_tps"] is None and "decode_agg_tps" not in result["aggregate"]
+    assert result["coverage"]["missing_aggregate_decode"] == ["v1/greedy/sync/c2/l4096"]
+    assert result["verdict"].startswith("incomplete")
 
 
 BASE = {(1, 4096): [(5000, 230), (5010, 200), (4990, 250)], (1, 65536): [(3800, 180), (3900, 170), (3850, 190)]}

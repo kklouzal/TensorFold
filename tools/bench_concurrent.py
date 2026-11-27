@@ -256,7 +256,7 @@ def aggregates(runs: list[dict]) -> dict:
 
 
 
-STANDARD_LEVELS = (1, 2, 4, 8, 16, 24, 32)
+STANDARD_LEVELS = (1, 2, 4, 8, 16)
 PROFILE_CAPS = {"q8": 24, "q4": 32}
 MATRIX_TEXT = "A careful engineer records observations, checks each result, and explains the next useful step. "
 
@@ -750,7 +750,8 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("base")
     p.add_argument("model")
-    p.add_argument("--levels", default="1,2,4,8,16,24,32", help="concurrent requests, a comma list")
+    p.add_argument("--levels", default=",".join(map(str, STANDARD_LEVELS)),
+                   help="comma-separated concurrent request counts (default: %(default)s)")
     p.add_argument("--tokens", type=int, default=256)
     p.add_argument("--reps", type=int, default=3)
     p.add_argument("--seed", type=int, default=1234)
@@ -769,7 +770,8 @@ def main() -> int:
     p.add_argument("--prepare-matrix", type=Path)
     p.add_argument("--matrix-plan", type=Path)
     p.add_argument("--profile", choices=tuple(PROFILE_CAPS), default="q8")
-    p.add_argument("--input-tokens", default="64")
+    p.add_argument("--input-tokens", default="8192",
+                   help="comma-separated prompt token counts for --prepare-matrix (default: %(default)s)")
     p.add_argument("--timeout", type=float, default=1800)
     protocol.add_arguments(p)
     args = p.parse_args()

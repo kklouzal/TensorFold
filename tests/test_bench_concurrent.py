@@ -152,8 +152,14 @@ def matrix_fixture():
     return plan
 
 
-def test_matrix_defaults_include_two_and_explicit_profile_caps(bench):
-    assert bench.STANDARD_LEVELS == (1, 2, 4, 8, 16, 24, 32)
+def test_matrix_defaults_use_8k_and_keep_explicit_profile_caps(bench, monkeypatch, tmp_path):
+    waves = []
+    monkeypatch.setattr(bench, 'prepare_matrix', lambda *args: waves.append(args) or {})
+    monkeypatch.setattr(sys, 'argv', ['bench_concurrent.py', 'http://127.0.0.1', 'fixture',
+                                     '--prepare-matrix', str(tmp_path), '--output', str(tmp_path / 'plan.json')])
+    assert bench.main() == 0
+    _, _, _, levels, inputs, _, _ = waves[0]
+    assert levels == [1, 2, 4, 8, 16] and inputs == [8192]
     assert bench.PROFILE_CAPS == {'q8': 24, 'q4': 32}
 
 
@@ -177,7 +183,7 @@ def test_natural_matrix_preparation_exact_lengths_unique_requests_and_admin_excl
     from test_segment_encoder import bpe
     tokenizer = bpe()
     tokenizer.save(str(tmp_path / 'tokenizer.json'))
-    plan = bench.prepare_matrix(tmp_path, 'fixture', 'q8', list(bench.STANDARD_LEVELS), [256], 4, 1)
+    plan = bench.prepare_matrix(tmp_path, 'fixture', 'q8', [1, 2, 4, 8, 16, 24, 32], [256], 4, 1)
     assert plan['excluded_levels'] == [32]
     assert [c['level'] for c in plan['cohorts']] == [1, 1, 2, 4, 8, 16, 24]
     hashes = set()
