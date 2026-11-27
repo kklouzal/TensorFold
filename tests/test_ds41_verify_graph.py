@@ -567,6 +567,119 @@ def test_vision_prefill_uses_the_ordinary_target_round_in_d3_serving(monkeypatch
     assert decoder.round() == ["ordinary target result"]
 
 
+def test_cold_long_prompt_seeds_the_whole_draft_window_across_singleton_tail():
+    from tensorfold.cuda.streams import Stream
+    from tensorfold.families.deepseek_v4.cuda.engine import FixedDraftDecoder
+    from tensorfold.families.deepseek_v4.cuda.prefix import chunk_end, chunk_splits
+
+    decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
+    tapped = []
+
+    def step(entries, ids, logits_rows, flags, *, tap_from=None):
+        (slot, start, rows), = entries
+        assert slot == 0 and rows == len(ids) and flags == 0
+        if tap_from is not None:
+            tapped.extend(range(start + tap_from, start + rows))
+
+    decoder.e = SimpleNamespace(step=step)
+    prompt_length = 24 * 8192 + 1
+    stream = Stream([10] * prompt_length, count=32)
+    stream.forced = stream.head = None
+    stream.slot = stream.pos = 0
+    decoder._admitted(stream)
+    bounds = chunk_splits([], stream.pos, prompt_length, 8192)
+    assert bounds[-1] == prompt_length - 1
+    start = stream.pos
+    while start < prompt_length:
+        stop = chunk_end(bounds, start, prompt_length)
+        decoder._text_chunk(stream, start, stop, stop == prompt_length, 0)
+        start = stop
+    assert stream.draft_seed
+    assert tapped == list(range(prompt_length - 128, prompt_length))
+
+
+@pytest.mark.parametrize("pause_after_units", [0, 20])
+def test_singleton_tap_packet_bypasses_decode_graph_and_seeds_draft_head(pause_after_units):
+    import array
+
+    from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine, F_DRAFT_TAPS, OP_LAYERS, OP_STEP, _HEAD
+
+    engine = DS41Engine.__new__(DS41Engine)
+    engine.rank, engine.world, engine.slots, engine.units = 0, 8, 4, 80
+    engine.geometry = SimpleNamespace(hidden=8)
+    engine.expert_observer = None
+    engine.part = engine.layer_marks = None
+    frames, seeded, graph_calls, segments = [], [], [], []
+    engine.pipes = SimpleNamespace(send=frames.append)
+
+    def taps(state, stop, indices, out, marks):
+        assert state["step"].positions.tolist() == [65]
+        assert indices.tolist() == [0] and marks is None
+        out.fill_(7)
+        segments.append(stop)
+
+    def insert_context(slots, values, positions):
+        seeded.append((slots.tolist(), positions.tolist(), values.tolist()))
+
+    engine._draft_verify = SimpleNamespace(
+        pending=None, head=SimpleNamespace(insert_context=insert_context),
+    )
+    engine.target = SimpleNamespace(
+        device=torch.device("cpu"), pool=SimpleNamespace(owned={2: [12, 13]}),
+        begin=lambda step: {"step": step}, layers_with_draft_taps=taps,
+        end=lambda _state, rows: rows.tolist(),
+    )
+    engine.coll = SimpleNamespace(gather=lambda value: value)
+    engine.graphs = SimpleNamespace(sizes=(1,), run=lambda *args, **kwargs: graph_calls.append(args) or "graph")
+
+    result = engine.step([(2, 65, 1)], [10], [0], pause_after_units, tap_from=0)
+    if pause_after_units:
+        assert result is None and not seeded and engine.part[2] == (2,)
+        assert engine.announce(OP_LAYERS, 80) == [0]
+        assert engine.part is None and segments == [pause_after_units, 80]
+    else:
+        assert result == [0] and segments == [80]
+    assert not graph_calls
+    assert seeded == [([2], [65], [[7.0] * 24])]
+    payload = array.array("i", [2, 65, 1, 10, 0, 0]).tobytes()
+    assert frames[0] == _HEAD.pack(OP_STEP, 1, 1, 1, F_DRAFT_TAPS | pause_after_units) + payload
+    assert engine.step([(2, 65, 1)], [10], [0]) == "graph"
+    assert len(graph_calls) == 1
+
+
+def test_draft_trace_distinguishes_shadow_admission_and_active_fallback(monkeypatch):
+    from tensorfold.cuda.streams import Stream
+    from tensorfold.families.deepseek_v4.cuda import engine
+
+    def stream(**options):
+        result = Stream([10] * 192, count=32, **options)
+        result.forced = result.head = None
+        result.pos = 0
+        return result
+
+    decoder = engine.FixedDraftDecoder.__new__(engine.FixedDraftDecoder)
+    monkeypatch.setattr(engine, "TRACE_DRAFT", False)
+    hidden = stream()
+    decoder._admitted(hidden)
+    assert hidden.draft_seed and "dspark_admission" not in hidden.stats()
+
+    monkeypatch.setattr(engine, "TRACE_DRAFT", True)
+    excluded = stream(sampling=SimpleNamespace(temperature=float("nan")), constraint=object())
+    excluded.head, excluded.pos = object(), len(excluded.prompt)
+    shadow = engine.Decoder.__new__(engine.Decoder)
+    shadow._admitted(excluded)
+    assert excluded.stats()["dspark_shadow"]
+    assert excluded.stats()["dspark_admission"] == ("grammar", "sampling", "exact_cache_hit")
+
+    eligible = stream()
+    decoder._admitted(eligible)
+    assert eligible.stats()["dspark_admission"] == ()
+    assert "dspark_shadow" not in eligible.stats()
+    monkeypatch.setattr(engine.Decoder, "_launch", lambda *_args: None)
+    decoder._launch([eligible], {})
+    assert not eligible.draft_seed and eligible.stats()["dspark_fallback"] == "ordinary_decode"
+
+
 def test_paused_prefill_disjointness_is_checked_before_vector_transport():
     from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine, OP_DRAFT_VERIFY_BATCH
 
