@@ -10,7 +10,7 @@ services:
   tensorfold:
     image: ${TENSORFOLD_V100_IMAGE:-tensorfold-v100:verified}
     container_name: gemma4-v100
-    entrypoint: [/opt/venv/bin/python, /src/tools/launch_cuda_tp.py]
+    entrypoint: [/opt/venv/bin/python, /src/deploy/v100/gemma4_tp_harness.py]
     command:
       - --gpus
       - 0,1,2,3,4,5,6,7

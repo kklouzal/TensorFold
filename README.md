@@ -774,9 +774,10 @@ reasoning and holds incomplete control markers while streaming. Channel controls
 stay out of visible content; native quoted tool arguments retain their literal
 values. CUDA and non-CUDA servers share this channel parser.
 
-Harness reads versioned model and context metadata from the native CUDA server's `/v1/tokenize`.
-Use `--thinking-budget 0` to leave the reasoning budget to individual requests. Count-only image
-preparation can measure prompts beyond the served context while retaining media safety limits.
+The Gemma containers supply Harness tokenization through their existing entrypoints. Native CUDA
+also exposes versioned model and context metadata at `/v1/tokenize`. Use `--thinking-budget 0`
+to leave reasoning budgets to individual requests. Count-only image preparation can measure prompts
+beyond the served context while retaining media safety limits.
 
 Required-tool format discovery follows the rendered call envelope, including DSML. A tool-name list after the example call in a custom chat template no longer becomes part of the forced call prefix. Existing HTTP enforcement regressions and the Heretic installed-model strict-tool checks pass.
 
