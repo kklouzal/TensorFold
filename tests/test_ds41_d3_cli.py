@@ -30,7 +30,10 @@ def command(model, draft):
             "--draft-method", "dspark", "--drafter", str(draft)]
 
 
-@pytest.mark.parametrize("vision_flags", [[], ["--vision"], ["--vision", "--vision-max-images", "0"]])
+@pytest.mark.parametrize("vision_flags", [
+    [], ["--vision"], ["--vision", "--vision-max-images", "0"],
+    ["--vision", "--vision-max-images", "0", "--vision-image-tokens", "0"],
+])
 def test_full_window_d3_uses_the_local_draft_bundle(config, monkeypatch, vision_flags):
     from tensorfold.families.deepseek_v4.cuda import engine
 
