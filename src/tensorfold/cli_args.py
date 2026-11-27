@@ -323,7 +323,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "(with --parallel P above N: N full windows plus P-N shorter resident windows). "
                             "Other Flash Next resident GGUF/RAM-expert modes reserve N full KV windows across slots. "
                             "DeepSeek-V4.1 TP8 RotorQuant Q4 at native context: auto selects only full-window lanes "
-                            "up to --parallel (default ceiling 32)")
+                            "up to --parallel (default ceiling 32), after loading any enabled vision tower")
     speed.add_argument("--kv-short-window", type=_short_window, default=None, metavar="TOKENS|auto",
                        help="Flash Next GGUF GPU histories with --parallel P above --kv-full-windows N: the "
                             "prompt-plus-reply window of the other P-N resident slots (auto: the largest that fits); "

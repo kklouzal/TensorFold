@@ -125,8 +125,9 @@ remain to be verified.
 
 ### Experimental native-context window funding
 
-Use `--kv-dtype rotorquant-iso64-norm4-h64 --kv-full-windows auto` for TP8 text
+Use `--kv-dtype rotorquant-iso64-norm4-h64 --kv-full-windows auto` for TP8
 serving at the checkpoint's native context with native YaRN and decode graphs.
+Add `--vision` with the [vision artifacts](#image-input---vision) to serve images.
 The option works with ETP1/2/4 and honors the existing expert balancing opt-out.
 `--parallel N` caps the search, including `--parallel 1`. The ceiling is 32 when
 no numeric limit is supplied. The automatic keep-slot default uses the
@@ -134,7 +135,8 @@ selected lane count. Leave the compact 128K-only W576 and SP FP32 experiments
 unset when launching this profile.
 
 The planner uses the minimum free device bytes across the eight ranks after
-model and persistent expert workspace loading. For each lane count it charges
+loading the model, enabled vision tower and drafter, and persistent expert
+workspace. For each lane count it charges
 the window rings, the generic allowance for that count's actual graph keys,
 and the existing 3 GiB prompt reserve. The resulting shared pool must fund
 every selected full-context window and page-rounded stable prefix snapshots.
@@ -163,14 +165,15 @@ candidate selection and Top-K ordering use the same inputs.
 
 ### Experimental DSpark D3 at native context
 
-On the full-window RotorQuant Q4 text profile at TP8/ETP4, replace `--no-drafts`
+On the full-window RotorQuant Q4 profile at TP8/ETP4, replace `--no-drafts`
 with `--draft-method dspark --drafter /models/ds41-dspark-1017 --mtp-drafts 3`.
 Use the local 1017 FT bundle with its `official` and `ft` directories. Keep
 `--temperature 0` if you want omitted-temperature requests to be eligible for
 drafting. The experimental path targets one to three eligible greedy decode
 streams. Check the funded lane count and configured depth in `/v1/stats`.
 The `dspark.verify_rounds_by_active` counters count committed verification
-rounds by the number of active requests in the vector.
+rounds by the number of active requests in the vector. Image requests use target-only decoding.
+When a mixed batch cannot use the draft verifier, it uses the ordinary decode path.
 Draft residency and graph captures consume VRAM. Native 1M validation and
 paired quality and throughput measurements are pending for this mode.
 

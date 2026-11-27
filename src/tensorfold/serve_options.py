@@ -205,8 +205,8 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             raise ValueError("DeepSeek-V4.1 CUDA DSpark requires --drafter with a local FT bundle directory")
         if (getattr(args, "tp", 1) != 8 or etp not in (None, 4) or getattr(args, "kv_dtype", None) != ROTOR_KV_DTYPE
                 or getattr(args, "kv_full_windows", None) != "auto" or getattr(args, "no_graphs", False)
-                or getattr(args, "vision", False) or getattr(args, "yarn_factor", None) is not None):
-            raise ValueError("DeepSeek-V4.1 CUDA DSpark requires TP8/ETP4 RotorQuant Q4 text, "
+                or getattr(args, "yarn_factor", None) is not None):
+            raise ValueError("DeepSeek-V4.1 CUDA DSpark requires TP8/ETP4 RotorQuant Q4, "
                              "native YaRN, CUDA graphs and --kv-full-windows auto")
     draft_rows = getattr(args, "draft_rows", None)
     if draft_rows is not None:

@@ -181,10 +181,10 @@ class DS41Engine:
         self.context = self.context_window = int(context or rope.context_limit)
         if not 1 <= self.context <= rope.context_limit:
             raise ValueError(f"DeepSeek-V4.1 context must be within the {rope.context_limit}-token YaRN window")
-        if full_windows_auto and (not rotorquant or vision or vision_offload or not graphs or yarn_factor is not None
+        if full_windows_auto and (not rotorquant or vision_offload or not graphs or yarn_factor is not None
                                   or self.context != rope.context_limit or max_tokens != MAX_TOKENS or experiment):
-            raise ValueError("DeepSeek-V4.1 --kv-full-windows auto requires the native RotorQuant Q4 text context "
-                             "with decode graphs, the ordinary prompt chunk and native YaRN")
+            raise ValueError("DeepSeek-V4.1 --kv-full-windows auto requires RotorQuant Q4 at native context "
+                             "with decode graphs, the ordinary prompt chunk, native YaRN and no vision offload")
         self.rank, self.world = rank, tp
         self.vocab = g.vocab
         self.max_tokens = max_tokens
@@ -207,13 +207,15 @@ class DS41Engine:
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
             mode = (int(expert_balance_live) | (int(w576_fp32) << 1) | (int(sp_fp32) << 2)
-                    | (int(rotorquant) << 3) | (int(full_windows_auto) << 4) | (int(draft_root is not None) << 5))
+                    | (int(rotorquant) << 3) | (int(full_windows_auto) << 4) | (int(draft_root is not None) << 5)
+                    | (int(vision) << 6))
             settings = [etp, int(expert_placement is not None), mode]
             local = torch.tensor(settings, dtype=torch.int64, device=device)
             agreed = torch.empty(tp * len(settings), dtype=torch.int64, device=device)
             self.comm.all_gather(local, agreed)
             if agreed.tolist() != settings * tp:
-                raise ValueError("DeepSeek-V4.1 ranks must agree on KV storage, full-window and draft mode, ETP degree, expert placement and experimental math")
+                raise ValueError("DeepSeek-V4.1 ranks must agree on KV storage, full-window, draft and vision modes, "
+                                 "ETP degree, expert placement and experimental math")
             del local, agreed
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
@@ -444,6 +446,7 @@ class DS41Engine:
                                         device=device)
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
+        # Sample after both optional model companions are resident. Tower warm-up uses the prompt reserve.
         free = torch.cuda.mem_get_info()[0]
         sizing_inputs = []
         if full_windows_auto:
