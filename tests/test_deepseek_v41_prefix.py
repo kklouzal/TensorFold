@@ -26,6 +26,41 @@ def _target(slots=4, pages=64, layers=3, *, rotorquant=False):
     return SimpleNamespace(pool=pool, c2=c2, hash_state=SimpleNamespace(history=history))
 
 
+def test_native_full_windows_use_real_snapshot_geometry_and_exact_graph_buckets():
+    from tensorfold.families.deepseek_v4.cuda.graphs import shape_keys
+    from tensorfold.families.deepseek_v4.cuda.prefix import SlotState, full_window_plan
+
+    target = _target(slots=2, pages=1, layers=40, rotorquant=True)
+    snapshots = SlotState(target)
+    ring_bytes = sum(ring[0].nbytes for ring in target.pool.rings)
+    assert snapshots.raw == sum(part.nbytes for part in snapshots._parts(0)) == 1_404_984
+    assert snapshots.pages == 26
+    layout = target.pool.layout
+    assert layout.page_bytes == 54_400 and layout.block_size == 64
+
+    def plan(free, ceiling, keep=None):
+        return full_window_plan(free, 1_048_576, ceiling, keep, layout, ring_bytes, len(target.c2),
+                                prompt_reserve=3072 << 20, graph_fixed=128 << 20, graph_each=40 << 20)
+
+    def fits(lanes, keep, graphs):
+        return (((3072 + 128 + graphs * 40) << 20) + (lanes + keep + 1) * 1_392_640
+                + (lanes * 16_384 + 26 * 6 * max(1, keep)) * 54_400)
+
+    exact = fits(17, 17, 45)
+    funded = plan(exact, 32)
+    assert funded["funded_lanes"] == funded["keep_slots"] == 17
+    assert funded["graph_keys"] == shape_keys(17, 1_048_576)
+    assert (17, 1_048_576) in funded["graph_keys"]
+    assert funded["pool_pages"] == 17 * 16_384 + 102 * 26
+    assert plan(exact - 1, 32)["funded_lanes"] == 16
+
+    explicit = plan(fits(1, 0, 1), 1, 0)
+    assert (explicit["keep_slots"], explicit["stable_snapshot_points"], explicit["funded_lanes"]) == (0, 6, 1)
+    assert plan(fits(1, 12, 1), 1, 12)["keep_slots"] == 12
+    with pytest.raises(ValueError, match="cannot fund one"):
+        plan(fits(1, 8, 1) - 1, 32)
+
+
 def _fill(target, slot, seed):
     g = torch.Generator().manual_seed(seed)
     for ring in target.pool.rings:

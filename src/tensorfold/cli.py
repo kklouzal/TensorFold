@@ -507,11 +507,13 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options["yarn_factor"] = args.yarn_factor
     options["context"] = context if context is not None else args.context
     options["context_explicit"] = args.context is not None or getattr(args, "position_profile_manifest", None) is not None
-    streams = 1 if str(args.parallel).strip().lower() == "auto" else _parallel(args.parallel)
-    if str(args.parallel).strip().lower() == "auto" and getattr(family.package, "CUDA_ADAPTIVE_SESSIONS", False):
+    parallel_auto = str(args.parallel).strip().lower() == "auto"
+    streams = 1 if parallel_auto else _parallel(args.parallel)
+    adaptive_sessions = getattr(family.package, "CUDA_ADAPTIVE_SESSIONS", False)
+    if parallel_auto and adaptive_sessions:
         options["parallel_auto"] = True
-    if streams > 1 or (getattr(family.package, "CUDA_ADAPTIVE_SESSIONS", False)
-                       and str(args.parallel).strip().lower() != "auto"):
+    deepseek_full_windows = family.model_type == "deepseek_v41" and options.get("kv_full_windows") == "auto"
+    if streams > 1 or (not parallel_auto and (adaptive_sessions or deepseek_full_windows)):
         options["parallel"] = streams
     if getattr(args, "checkpoint_slots", None) is not None and getattr(family.package, "CUDA_CHECKPOINT_SLOTS", False):
         options["checkpoint_slots"] = int(args.checkpoint_slots)
