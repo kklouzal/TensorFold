@@ -64,6 +64,22 @@ ETP1 and ETP2 use a 3 GiB prompt reserve.
 The KV allocator budgets for decode graphs and uses the available memory on the tightest GPU
 to size the shared pool. `/v1/stats` reports the effective codec, YaRN factor, and KV budget.
 
+### Attention FP8 grouping
+
+DeepSeek applies E4M3 FP8 quantization with one power-of-two UE8M0 scale per
+32 channels at two boundaries. The model-native sliding-window path quantizes
+the full row after RoPE, including the rotary tail. The attention output is
+quantized after inverse RoPE, before the first output projection. These
+boundaries follow the [official 1017 inference reference](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/blob/1bae0e1088993b9b82de08f59de5be5a34e42170/inference/model.py).
+The V100 provider simulates them in FP16 with software conversions. The
+reference uses BF16 around these operations.
+
+H64 cold prefill uses the same grouping when it computes an FP8 window
+operand. The H64 ring and main cache encode the selected RotorQuant format
+directly. Learned index rows and compressed latent encoding retain their
+existing paths. Full-model throughput and quality of the grouping correction
+remain to be verified.
+
 ### Experimental decode graph memory allowance
 
 The integrated candidate reserves 1,536 MiB per GPU for the exact ordered

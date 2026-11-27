@@ -20,6 +20,7 @@ def bits(x):
 
 @pytest.mark.parametrize("d,heads,group,fp4,inverse,compressed", [
     (512, 1, 128, False, False, False), (512, 1, 128, False, False, True), (512, 8, 128, False, True, True),
+    (512, 1, 32, False, False, False), (512, 1, 32, False, False, True), (512, 8, 32, False, True, True),
     (128, 4, 32, True, False, True), (128, 4, 32, True, False, False)])
 def test_rope_qdq_is_the_composition(d, heads, group, fp4, inverse, compressed):
     torch.manual_seed(d + heads)

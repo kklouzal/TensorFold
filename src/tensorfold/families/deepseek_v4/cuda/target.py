@@ -249,10 +249,11 @@ class Target:
                 physical_window = qr_ops.apply_rope(normalized_window, positions, table)
             window = rotor.pack(physical_window, valid, ly.index, decode_ring=h64_ring)
         elif decode_ring is not None and 1 <= tokens <= 64:
-            window = rope_qdq(kv_low, positions, table, decode_ring=decode_ring,
+            window = rope_qdq(kv_low, positions, table, group=qr_ops.ATTENTION_FP8_GROUP, decode_ring=decode_ring,
                               decode_norm=(ly.kv_norm, self.g.eps))
         else:
-            window = rope_qdq(self._norm(kv_low, ly.kv_norm), positions, table, decode_ring=decode_ring)
+            window = rope_qdq(self._norm(kv_low, ly.kv_norm), positions, table,
+                              group=qr_ops.ATTENTION_FP8_GROUP, decode_ring=decode_ring)
         decode_keys = (step.single_token_slots and rotor is not None and cold is None
                        and ly.ratio != 0 and tokens < FUSED_MIN_COMPRESSED)
         if decode_keys and (ly.owns_kv or ly.has_indexer):
@@ -306,8 +307,8 @@ class Target:
             if decode_keys and not reuse:
                 shared["decode_key_selection"] = (ly.source, topk)
         else:
-            # Retain the earlier FP8 window QDQ and E2M1 compact attention operand boundaries.
-            window_operand = rope_qdq(normalized_window, positions, table)
+            # This cold path uses an FP8 window and E2M1 compact attention operands.
+            window_operand = rope_qdq(normalized_window, positions, table, group=qr_ops.ATTENTION_FP8_GROUP)
             torch._assert_async(torch.isfinite(query).all(), f"DeepSeek layer {ly.index}: nonfinite cold attention query")
             output = self._attend(query, step, cold["ring"], window_operand, ly.sink, **extra)
             torch._assert_async(torch.isfinite(output).all(), f"DeepSeek layer {ly.index}: nonfinite cold attention output")
@@ -315,7 +316,8 @@ class Target:
             pk.insert_ring(ring, window, positions, valid, step.token_req, step.qsl, step.req_slot)
         if rotor is not None and cold is None:
             output = rotor.rotate(output, valid, ly.index, inverse=True)
-        output = rope_qdq(output, positions, table, inverse=True)   # TP8: one output group per rank; qdq(rope^-1)
+        # TP8: the heads of each local output group are contiguous and 32-channel aligned.
+        output = rope_qdq(output, positions, table, inverse=True, group=qr_ops.ATTENTION_FP8_GROUP)
         projected = self._linear(output.reshape(tokens, -1), ly.wo_a)
         partial = self._linear(projected, ly.wo_b)
         if shard is not None:

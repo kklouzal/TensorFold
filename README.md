@@ -672,6 +672,11 @@ These read once at startup on Apple Silicon; defaults are the qualified paths.
 
 ## KV cache formats
 
+DeepSeek-V4.1 on V100 uses the official 1017 32-channel FP8 grouping for its
+model-native sliding window and for attention output before projection.
+See the [DeepSeek precision recipe](docs/recipes/deepseek-v41-v100.md#attention-fp8-grouping)
+for FP16 staging, RotorQuant behavior and verification status.
+
 Flash Next's modern CUDA provider supports the following **16 formats**, with independent K/V selection; **BF16 is its default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable on that provider when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations. The GGUF SM70 provider admits `fp16` (its CLI default), `int8`, `rotorquant-signed128-4`, `rotorquant-signed64-norm4`, and the distinct compact `rotorquant-planar4-sm70-v1` / `rotorquant-iso4-sm70-v1`, with supported independent sides. Its unique-history TP8 owner path (the SC117 serving profile) additionally admits `rotorquant8`, `rotorquant8-norm`, `rotorquant-planar4`, `rotorquant-iso4`, `rotorquant-iso64-norm4` and the SM70-only `rotorquant-iso64-norm4-h64`, with the same format on K and V; every RotorQuant format on that path is written by the fused owned KV writer and read by the native sparse attention kernels, including captured decode rounds (see [RotorQuant KV on V100](#rotorquant-kv-on-v100-sm70)). Raw FP16 stores 512 bytes per 256-value K or V head, with a distinct storage identity; its indexer/pooled state is FP16. Other formats are refused before weight loading on SM70. Gemma 4 `--tp 8` on eight V100s admits `bf16` (FP16 caches, its CLI default), `rotorquant8-norm` (its Compose default) and `rotorquant-iso64-norm4-h64` for the target's full-attention caches, same format on K and V; sliding-window rings and the drafter stay FP16 (see the [Gemma 4 recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)).
 
 | Family | Exact names | Bytes for one 256-value K **or** V head |

@@ -244,7 +244,8 @@ def test_h64_prefill_decoded_current_matches_packed_reader(start, source, monkey
 @pytest.mark.parametrize("requests,compressed", [([(127, 1)], True),
     ([(127, 1), (128, 1), (16384, 1), (0, 1)], True),
     ([(127, 1), (128, 1), (16384, 1), (0, 1)], False)])
-def test_decode_window_ring_store_matches_post_attention_commit(requests, compressed):
+@pytest.mark.parametrize("fp8_group", [128, 32])
+def test_decode_window_ring_store_matches_post_attention_commit(requests, compressed, fp8_group):
     from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
     from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table
     from tensorfold.families.deepseek_v4.cuda.kernels.rope_qdq import rope_qdq
@@ -262,7 +263,7 @@ def test_decode_window_ring_store_matches_post_attention_commit(requests, compre
 
     def forward(ring, early):
         write = (ring, req_slot, step.valid) if early else None
-        window = rope_qdq(value, positions, table, decode_ring=write)
+        window = rope_qdq(value, positions, table, group=fp8_group, decode_ring=write)
         output = attend((query, positions, step, req_slot, ring, window, sink), kw)
         if not early:
             pk.insert_ring(ring, window, positions, step.valid, step.token_req, step.qsl, req_slot)
@@ -288,9 +289,10 @@ def test_decode_window_ring_store_matches_post_attention_commit(requests, compre
         value.neg_()
 
 
-@pytest.mark.parametrize("rows,compressed,eps",
-    [(1, False, 1e-20), (8, True, 1e-20), (32, True, 1e-20), (64, False, 1e-6)])
-def test_decode_window_rms_matches_separate_launch(rows, compressed, eps):
+@pytest.mark.parametrize("rows,compressed,eps,fp8_group",
+    [(1, False, 1e-20, 128), (8, True, 1e-20, 128), (32, True, 1e-20, 128), (64, False, 1e-6, 128),
+     (1, False, 1e-20, 32), (32, True, 1e-20, 32)])
+def test_decode_window_rms_matches_separate_launch(rows, compressed, eps, fp8_group):
     from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import RING
     from tensorfold.families.deepseek_v4.cuda.kernels.norm import rms_norm
     from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table
@@ -314,7 +316,8 @@ def test_decode_window_rms_matches_separate_launch(rows, compressed, eps):
     old_ring, new_ring = initial.clone(), initial.clone()
 
     def combined():
-        return rope_qdq(value, positions, table, decode_ring=(new_ring, slots, valid), decode_norm=(weight, eps))
+        return rope_qdq(value, positions, table, group=fp8_group,
+                        decode_ring=(new_ring, slots, valid), decode_norm=(weight, eps))
 
     value.zero_()
     stream = torch.cuda.Stream()
@@ -335,7 +338,8 @@ def test_decode_window_rms_matches_separate_launch(rows, compressed, eps):
             value[:, -1] = 1.0
         elif replay > 1:
             value.copy_(torch.randn(value.shape, device=device, generator=rng) * scale)
-        expected = rope_qdq(rms_norm(value, weight, eps), positions, table, decode_ring=(old_ring, slots, valid))
+        expected = rope_qdq(rms_norm(value, weight, eps), positions, table, group=fp8_group,
+                            decode_ring=(old_ring, slots, valid))
         graph.replay()
         assert torch.equal(captured.view(torch.int16), expected.view(torch.int16))
         assert torch.equal(new_ring.view(torch.int16), old_ring.view(torch.int16))

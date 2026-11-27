@@ -46,8 +46,21 @@ def _reference(x, fp4, group, e4m3):
     return (values * scale).half().view_as(x)
 
 
+def test_attention_fp8_scales_do_not_cross_32_channel_groups():
+    # Put the outlier in the neighboring group, including in the rotary tail.
+    # A scale shared across 128 columns rounds each small value to zero.
+    x = torch.zeros((1, 512), dtype=torch.float16)
+    x[0, [0, 448]] = 2**-14
+    x[0, [32, 480]] = 64
+    expected = _reference(x, False, 32, False)
+    actual = attention_qdq(x.cuda(), group=32).cpu()
+    assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
+    assert torch.all(actual[0, [0, 448]] != 0)
+    assert torch.all(_reference(x, False, 128, False)[0, [0, 448]] == 0)
+
+
 @pytest.mark.parametrize(
-    "fp4,group,e4m3", [(False, 128, False), (True, 16, True), (True, 32, False)]
+    "fp4,group,e4m3", [(False, 128, False), (False, 32, False), (True, 16, True), (True, 32, False)]
 )
 @pytest.mark.parametrize("magnitude", [0.0, 2**-20, 0.03125, 1.37, 100.0])
 def test_software_attention_qdq_preserves_exact_fp16_values(
@@ -62,7 +75,7 @@ def test_software_attention_qdq_preserves_exact_fp16_values(
 
 
 @pytest.mark.parametrize(
-    "fp4,group,e4m3", [(False, 128, False), (True, 16, True), (True, 32, False)]
+    "fp4,group,e4m3", [(False, 128, False), (False, 32, False), (True, 16, True), (True, 32, False)]
 )
 def test_attention_qdq_ties_signed_zero_and_graph_replay(fp4, group, e4m3):
     values = (

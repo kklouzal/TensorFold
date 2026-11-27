@@ -13,7 +13,7 @@ The H64 short-window specialization stops at the rounded RoPE row for the native
 
 import torch
 
-from .quant_rope import _ceil_power_two, _fp4_value
+from .quant_rope import ATTENTION_FP8_GROUP, _ceil_power_two, _fp4_value
 from .fp8_software import fp8_e4m3fn_bits_to_fp32_bitcast, fp32_to_fp8_e4m3fn_bits
 from .triton_utils import jit, on_triton_device, tl
 
@@ -103,7 +103,7 @@ def rope_qdq(x, positions, table, *, inverse=False, fp4=False, group=128, e4m3_s
         or positions.dtype not in (torch.int32, torch.int64)
         or table.ndim != 2 or table.shape[1] != 64 or table.dtype != torch.float32
         or (fp4 and (group, e4m3_scale) not in ((16, True), (32, False)))
-        or (not fp4 and (group != 128 or e4m3_scale))
+        or (not fp4 and (group not in (ATTENTION_FP8_GROUP, 128) or e4m3_scale))
     ):
         raise ValueError("Unsupported V4.1 fused RoPE + QDQ geometry")
     ring = req_slot = valid = None
