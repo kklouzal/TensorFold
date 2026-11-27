@@ -524,7 +524,7 @@ class DS41Engine:
         # Prompt chunks split at most prompt_rows apart (no point kept there) and where prefix points are kept
         # (prefix.chunk_splits: the prompt's first and last message boundary), independent of load.
         self.prompt_rows = max_tokens
-        self.part = None                    # a paused prompt forward (state, logits rows), identical on every rank
+        self.part = None                    # a paused prompt forward (state, logits rows, slots), same on all ranks
         self.layer_marks = None             # rank 0: per-unit CUDA events of the prompt forward being timed
         from .graphs import DecodeGraphs, SlotPages
         self.slot_pages = SlotPages(self.slots, -(-self.target.hash_state.max_context // BLOCK), device)
@@ -862,7 +862,7 @@ class DS41Engine:
         if 0 < stop < self.units:
             if self.part is not None:
                 raise RuntimeError("a DeepSeek-V4.1 prompt forward began while another one is paused")
-            self.part = (state, rows)
+            self.part = (state, rows, tuple(slot for slot, _, _ in entries) if self._draft_verify is not None else ())
             self._advance_layers(state, stop, marks)
             return None
         self._advance_layers(state, self.units, marks)
@@ -887,7 +887,7 @@ class DS41Engine:
         if stop < 0:
             self.part = None
             return None
-        state, rows = self.part
+        state, rows, _ = self.part
         self._advance_layers(state, stop, self.layer_marks)
         if stop < self.units:
             return None
@@ -978,7 +978,12 @@ class DS41Engine:
                 or c or d or len(ids) != count * width):
             raise ValueError("invalid DeepSeek DSpark control frame")
         if op == OP_DRAFT_VERIFY_BATCH and self.part is not None:
-            raise RuntimeError("DeepSeek DSpark verification requires a completed prefill")
+            paused_slots = self.part[2]
+            # A paused forward owns its activations and the KV/history
+            # of these slots. The other slots' verify and commit may run
+            # between groups on the same stream, as ordinary decode does.
+            if any(ids[i] in paused_slots for i in range(0, len(ids), width)):
+                raise RuntimeError("DeepSeek DSpark verification overlaps a paused prompt slot")
         return verifier, width
 
     def _run_draft_vector(self, op, sequence, count, c, d, ids):
@@ -1747,12 +1752,15 @@ class Decoder(PrefixOwner):
             planned = sum(sum(cost[first:first + len(events) - 1]) for first, events in done)
             if planned > 0:
                 cost = [c * spent / planned for c in cost]
-        round_ms = self.rounds.estimate(self._bucket(len(self.streams)))
+        round_ms = self._prefill_round_ms()
         stop = at + layer_groups(cost[at:], group_target(self.GAP_MS, round_ms))[0]
         if TRACE:
             print(f"[ds41 sched] rows {rows} units {at}-{stop} predicted {sum(cost[at:stop]):.1f} ms round "
                   f"{round_ms:.1f} ms streams {len(self.streams)}", flush=True)
         return stop
+
+    def _prefill_round_ms(self):
+        return self.rounds.estimate(self._bucket(len(self.streams)))
 
     def _timed(self) -> None:
         """The chunk in flight was launched to its end: its marks wait for ``_absorb`` (never waits on the GPU)
@@ -1933,6 +1941,7 @@ class FixedDraftDecoder(Decoder):
     def __init__(self, engine):
         super().__init__(engine)
         self.verify_rounds_by_active = [0] * (engine._draft_verify.bucket + 1)
+        self._draft_round_ms = None
 
     def _admitted(self, s):
         from .dspark_head import WINDOW
@@ -1983,12 +1992,12 @@ class FixedDraftDecoder(Decoder):
 
     def round(self):
         self._check()
-        if self.inflight is not None or self.split is not None:
+        if self.inflight is not None:
             return super().round()
         live = [s for s in self.streams.values() if not s.done]
-        # A whole prefill group's completed result is safe to retire before
-        # verification. A paused forward (including any long newcomer after
-        # its first group) goes through the unchanged ordinary round instead.
+        # Consume a completed chunk before choosing the live width. For an
+        # unfinished prompt, verify and settle the other slots before its
+        # next bounded layer group. Never wait for a filling lane to join.
         filling = self.filling
         finishing = self.finishing
         if (len(live) + len(filling) > self.e._draft_verify.bucket
@@ -2008,7 +2017,10 @@ class FixedDraftDecoder(Decoder):
                         live = [s for s in self.streams.values() if not s.done]
                 entries = self._fixed_entries(live)
                 if entries:
+                    start = time.perf_counter() if self.filling else None
                     done += self._fixed_round(live, entries)
+                    if start is not None:
+                        self._draft_round_ms = (time.perf_counter() - start) * 1000
                 elif live:
                     self._launch(live, {})
                 if self.filling:
@@ -2017,6 +2029,13 @@ class FixedDraftDecoder(Decoder):
         except BaseException as error:
             self.broken = error
             raise
+        finally:
+            self._draft_round_ms = None
+
+    def _prefill_round_ms(self):
+        if self._draft_round_ms is not None:
+            return self._draft_round_ms
+        return super()._prefill_round_ms()
 
     def _fixed_round(self, live, entries):
         from .dspark_serving import decide

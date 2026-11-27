@@ -494,7 +494,7 @@ def test_fixed_scheduler_cancels_a_lane_and_publishes_only_after_commit():
     assert decoder.verify_rounds_by_active == [0, 0, 1, 0]
 
 
-def test_fixed_scheduler_promotes_complete_short_prefill_and_never_waits_for_paused_newcomer(monkeypatch):
+def test_fixed_scheduler_verifies_disjoint_lanes_through_a_paused_prompt(monkeypatch):
     from tensorfold.families.deepseek_v4.cuda.engine import Decoder, FixedDraftDecoder
 
     calls = []
@@ -515,6 +515,10 @@ def test_fixed_scheduler_promotes_complete_short_prefill_and_never_waits_for_pau
     def fill():
         stream = decoder.filling[0]
         calls.append(("one-prompt-group", stream.sid))
+        if stream is second and decoder.split is None:
+            decoder.split = (second, (), 6)
+            return []
+        decoder.split = None
         decoder.finishing = (stream, ())
         return []
 
@@ -529,14 +533,29 @@ def test_fixed_scheduler_promotes_complete_short_prefill_and_never_waits_for_pau
     decoder._fixed_round = fixed
     monkeypatch.setattr(Decoder, "round", lambda _self: calls.append("ordinary") or [])
 
-    for _ in range(3):
+    for _ in range(4):
         assert decoder.round() == []
     assert calls == [("publish-first", first.sid), ("verify-and-commit", 1), ("one-prompt-group", second.sid),
+                     ("verify-and-commit", 1), ("one-prompt-group", second.sid),
                      ("publish-first", second.sid), ("verify-and-commit", 2), ("one-prompt-group", third.sid),
                      ("publish-first", third.sid), ("verify-and-commit", 3)]
-    # No next output waits for another unit of a long partially run prompt.
-    decoder.split = (third, (), 6)
+    # A fourth request uses the unmodified ordinary cadence.
+    decoder.filling.append(SimpleNamespace(sid=3, draft_seed=True, done=False))
     assert decoder.round() == [] and calls[-1] == "ordinary"
+
+
+def test_paused_prefill_disjointness_is_checked_before_vector_transport():
+    from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine, OP_DRAFT_VERIFY_BATCH
+
+    engine = DS41Engine.__new__(DS41Engine)
+    engine.part = (object(), object(), (4, 8))
+    engine._draft_verify = SimpleNamespace(bucket=3, pending=None)
+    engine.pipes = SimpleNamespace(send=lambda _frame: pytest.fail("overlapping verify reached followers"))
+    assert engine._check_draft_vector(OP_DRAFT_VERIFY_BATCH, 0, 2, 0, 0, (3, 14, 5, 7, 9, 2)) == (
+        engine._draft_verify, 3,
+    )
+    with pytest.raises(RuntimeError, match="overlaps a paused prompt slot"):
+        engine.announce(OP_DRAFT_VERIFY_BATCH, 0, 2, ids=(3, 14, 5, 8, 9, 2))
 
 
 def test_engine_ordinary_announce_keeps_its_existing_wire(monkeypatch):
