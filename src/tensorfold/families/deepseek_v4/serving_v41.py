@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -127,16 +127,24 @@ def _blocks(text: str, finished: bool, positions=None):
             start = token - 1
             if start < end or not text.startswith(OPENER, start):
                 continue
-            if start and not text.endswith("\n\n", 0, start):
-                # Keep existing unquoted inline calls. Only the official
-                # line framing can override an unmatched prose quote/fence.
+            opaque = False
+            if start:
                 if unquoted is None:
                     unquoted = {region.start for region in _blocks(text, finished)}
-                if start not in unquoted:
+                opaque = start not in unquoted
+                if opaque and not text.endswith("\n\n", 0, start):
                     continue
             frame = _call_end(text, start, OPENER, CLOSER, False, repeated=False, finished=finished)
             if frame.complete and frame.payload_end + 2 not in positions:
                 continue
+            if opaque:
+                # A closed quoted example may contain authentic tokens. Wait
+                # for native finality before overriding the prose lexer and
+                # require the block to end the reply, as the official parser does.
+                if not finished:
+                    frame = replace(frame, end=len(text), complete=False)
+                elif frame.complete and text[frame.end:].strip():
+                    continue
             yield frame
             end = frame.end
         return
@@ -191,7 +199,7 @@ def hide(text: str, *, finished: bool, positions=None) -> str:
     return "".join((*parts, tail))
 
 
-def reply_parts(text, *, thinking, finished, controls):
+def reply_parts(text, *, thinking, finished, controls, normal_end=False):
     """Split generated control tokens and return DSML offsets in the answer."""
     from tensorfold.server.text import _partial_tag
 
@@ -205,7 +213,7 @@ def reply_parts(text, *, thinking, finished, controls):
             reasoning = text[:close]
             start = close + len(native.thinking_end_token)
         else:
-            frame = next(_blocks(text, finished, dsml), None)
+            frame = next(_blocks(text, normal_end, dsml), None)
             if frame is None or (finished and not frame.complete):
                 held = 0 if finished else _partial_tag(text, OPENER)
                 return text[:len(text) - held], "", ()
@@ -218,8 +226,8 @@ def reply_parts(text, *, thinking, finished, controls):
     return reasoning, text[start:], tuple(p - start for p in dsml if start <= p < len(text))
 
 
-def complete(text, positions):
-    return all(frame.complete for frame in _blocks(text, True, positions))
+def complete(text, positions, *, finished):
+    return all(frame.complete for frame in _blocks(text, finished, positions))
 
 
 class CallStreamer:

@@ -520,6 +520,32 @@ def test_ordinary_spelling_of_dsml_closer_cannot_complete_a_call(model_dir):
     assert not result["calls"] and result["finish"] == "stop"
     assert not reassemble(seen)
 
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_completed_fenced_example_with_real_token_ids_remains_text(model_dir, stream):
+    example = "Example:\n```text\n\n" + BLOCK + "\n```"
+    app = app_for(model_dir, example, step=1)
+    assert app.tok.token_to_id(native.dsml_token) in app.tok.encode(example, add_special_tokens=False).ids
+    deltas = []
+    result = app.run({"messages": [{"role": "user", "content": "Show a DSML example."}], "tools": TOOLS,
+                      "max_tokens": 4096, "stream": stream}, True, lambda d: deltas.append(d) or True)
+    assert (result["content"], result["calls"], result["finish"]) == (example, None, "stop")
+    assert not reassemble(deltas)
+    if stream:
+        assert "".join(d.get("content", "") for d in [*deltas, result["final"]] if d) == example
+
+
+def test_prose_recovery_waits_for_normal_end(model_dir):
+    reply = 'Unclosed quote: ".\n\n' + BLOCK
+    app = app_for(model_dir, reply, step=1, default_thinking=True)
+    app.engine.eos = ()
+    deltas = []
+    result = app.run({"messages": [{"role": "user", "content": "Check the closer."}], "tools": TOOLS,
+                      "max_tokens": len(app.tok.encode(reply, add_special_tokens=False).ids), "stream": True},
+                     True, lambda d: deltas.append(d) or True)
+    assert not result["calls"] and result["finish"] == "length"
+    assert not reassemble(deltas)
+
 def strict_tools():
     weather, files = TOOLS
     function = weather["function"]

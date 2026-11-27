@@ -1674,7 +1674,8 @@ class App:
                         reasoning = ""
                 elif controls:
                     reasoning, answer, answer_positions[0] = family_calls.reply_parts(
-                        raw, thinking=split_reasoning, finished=finished, controls=stream.control_offsets)
+                        raw, thinking=split_reasoning, finished=finished, controls=stream.control_offsets,
+                        normal_end=finished and normal_tool_end())
                 elif split_reasoning:
                     reasoning, answer = split_thinking(raw, finished=finished, markers=markers)
                     if finished and tools and not gemma and not answer:
@@ -2084,7 +2085,8 @@ class App:
                     elif tools and controls:
                         content, calls = family_calls.parse(answer_raw[0], tools, max_calls=policy.max_calls,
                                                             finished=normal_tool_end(), positions=answer_positions[0])
-                        calls_complete = family_calls.complete(answer_raw[0], answer_positions[0])
+                        calls_complete = family_calls.complete(answer_raw[0], answer_positions[0],
+                                                               finished=normal_tool_end())
                     elif tools and prepared.grammar is None:
                         if not gemma:
                             text = normalize_qwen_tool_markup(text, finished=normal_tool_end())
