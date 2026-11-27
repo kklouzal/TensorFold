@@ -1685,7 +1685,9 @@ streaming checks. [Native-context profile](docs/recipes/deepseek-v41-v100.md#exp
 
 The same full-window profile supports the TP8 vision tower. The planner
 sizes the pool after loading the tower and drafter. Experimental D3 DSpark
-remains available for eligible text requests. [Launch and validation scope](docs/recipes/deepseek-v41-v100.md#experimental-dspark-d3-at-native-context)
+remains available for eligible text requests. The eight-V100 vision deployment
+funded seven native-context lanes and passed a ten-image API smoke test.
+[Launch and validation scope](docs/recipes/deepseek-v41-v100.md#image-input---vision)
 
 The expert-balancing development branch accepts an explicit per-layer placement
 for ETP1, ETP2, and ETP4 before startup graph capture. Native quality and

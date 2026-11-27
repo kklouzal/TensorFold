@@ -408,6 +408,17 @@ messages and tool results. The model directory's `config.json` names the mmproj 
 
 ### TP8 serving qualification
 
+On eight 32 GiB V100s at 185 W, source `dc9f220a` on image `67b43e682057`
+served the 1017 checkpoint with TP8/ETP4, RotorQuant Q4, native 1,048,576-token
+context, `--kv-full-windows auto`, DSpark D3, `--vision` and `--vision-max-images 0`.
+Startup funded seven full windows in a pool of 122,977 64-token pages.
+A ten-image request expanded to 3,850 prompt tokens and correctly identified
+its last image. A twelve-image request above 4,096 visual tokens was refused.
+Single- and two-image cases and short concurrent text and extreme-aspect-ratio
+image requests completed. The greedy text smoke matched the preceding
+text-only deployment and logged nine DSpark verify rounds. Sustained mixed
+traffic at full context and paired throughput remain unmeasured.
+
 The corrected source `aef6e42a` passed the seven image checks, the 456-token image-cache repeat, and both extreme
 image orientations. It retained 7,697,600 shared KV tokens and a 235 MiB worst-rank tower warm-up transient.
 The first 16K prefill while 23 other requests were decoding had a 211.6 ms p99 gap across 903 visible text gaps.
