@@ -182,6 +182,15 @@ rotate through the draft vector without losing their seeded history.
 Background decoding stays ordinary so a yielded request can replay the
 tokens it already delivered.
 
+On the eight-V100 native-context profile, three matched foreground strict-tool
+requests overlapping a 640-token background reply drafted zero proposals at
+`57794eac` and 165–168 each at `a81495cf`. The foreground median rose from
+53.85 to 82.20 tok/s with identical tool names and argument strings. The
+background median fell from 47.79 to 43.67 tok/s, and the time from submitting
+the foreground request until both finished rose from 13.37 to 14.59 s. The
+solo smoke test was about 131–132 tok/s in both arms. All four requests in
+a concurrent foreground test drafted. These are scoped mixed-workload checks.
+
 Set `TENSORFOLD_DS41_DRAFT_TRACE=1` to include DSpark admission reasons in
 completed-request logs, including on a target-only deployment. The trace
 records eligibility labels without recording prompt or tool content.
