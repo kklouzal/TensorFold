@@ -1667,6 +1667,11 @@ All scoped candidate, source, build, native, packaging and fresh API gates are c
 
 #### DeepSeek-V4.1-Flash on eight V100s (2026-11-21)
 
+The SM70 target follows the checkpoint's hierarchical decoder indexer.
+Layer 20 publishes candidate blocks for later reindexing layers. Native
+graph, quality, and performance qualification for this change is pending.
+[Decoder indexing](docs/recipes/deepseek-v41-v100.md#decoder-indexing)
+
 The expert-balancing development branch accepts an explicit per-layer placement
 for ETP1, ETP2, and ETP4 before startup graph capture. Native quality and
 performance qualification is pending. [Expert placement recipe](docs/recipes/deepseek-v41-v100.md#routed-expert-placement)

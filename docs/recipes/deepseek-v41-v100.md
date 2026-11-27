@@ -15,6 +15,32 @@ Status: development lane, qualified on one host only (SC117: 8x V100 32 GB, 180 
   `gguf_file` (first backbone shard) and `engram_file`, with `tokenizer.json`, `tokenizer_config.json` and
   `chat_template.jinja` copied (not symlinked) into the directory. Paths outside the model root are refused.
 
+## Decoder indexing
+
+For the 1017 checkpoint, layer 20 keeps its ordinary Top-512 and also selects
+up to 2,048 blocks of eight compressed positions. Each block is ranked by its
+maximum causally visible score, and the block containing the last visible
+position is included. Layers 24, 28, 32, and 36 choose their Top-512 from this
+pool. TensorFold retains ascending position order and its lower-position
+tie-break. Every visible block fits in the pool through query position 16,383
+inclusive.
+
+The candidate pool belongs to one forward. A paused prefill retains it with
+the forward state. Cancellation discards that state, and prefix snapshots
+store only the existing persistent cache state. Every replay computes a
+new pool from the live device positions. The existing
+score kernels still read the full visible range before reindexing. Prefill can
+skip this sorting work when its known extent fits the pool. A decode graph
+with a wider index class captures the extra work even when a particular
+replay uses a shorter history.
+
+The pool stores 8 KiB per row, or 256 KiB at decode bucket 32 and 64 MiB at an
+8,192-row prefill. A row-split source also gathers candidate IDs. The receive
+buffer is 64 MiB per rank for that prefill, plus 8 MiB for the local stripe.
+Ranking also uses temporary score tiles. Native graph capture and replay,
+128K and full-context memory and timing, and quality qualification are
+pending. The change introduces no KV format or graph-catalogue change.
+
 ## Launch
 
 ```sh

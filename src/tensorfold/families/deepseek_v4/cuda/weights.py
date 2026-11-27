@@ -135,6 +135,10 @@ class Geometry:
                 or g.engram_layers != (1, 14) or g.swiglu_limit != 10.0 or len(g.compress_ratios) != 40):
             raise ValueError("DeepSeek-V4.1 CUDA lane admits the V4.1 Flash geometry only (the ported 1Cat kernels' "
                              f"contract); this checkpoint has {actual}")
+        if (g.candidate_source, g.candidate_blocks, g.candidate_block) not in ((-1, 0, 0), (20, 2048, 8)):
+            raise ValueError("DeepSeek-V4.1 CUDA requires the released hierarchical index geometry")
+        if g.candidate_source == 20 and any(g.compress_ratios[i] != 1 for i in g.index_sources if i >= 20):
+            raise ValueError("DeepSeek-V4.1 decoder candidate blocks require ratio-one index sources")
         return g
 
     def rope_parameters(self, yarn_factor: float | None = None) -> RopeParameters:

@@ -612,7 +612,7 @@ def gather_attention(
 # ---------------------------------------------------------------- attention
 def select_positions(
     query, weights, positions, step, cache, block_table, *, layout, source, ratio, width,
-    all_reduce, score_dtype=torch.float16, row_split=None,
+    all_reduce, score_dtype=torch.float16, row_split=None, hierarchy=None,
 ):
     """Patch 87's _select without its vLLM glue: top-512 compressed positions [T, 512] int32 (-1 padded).
 
@@ -638,11 +638,24 @@ def select_positions(
             layout=layout, layer=source, out=scores,
         )
         scores = all_reduce(scores).to(torch.float16)
-        if rows is None:
-            _topk(result, scores, positions, step.valid, ratio, 512)
+        picked = result if rows is None else torch.empty(q_d.shape[0], 512, dtype=torch.int32, device=query.device)
+        if hierarchy is not None and width > hierarchy[0].shape[1] * hierarchy[1]:
+            from .mu_reindex import select_ranked
+
+            candidates, block, publish = hierarchy
+            if rows is None:
+                selected_candidates = candidates
+            elif publish:
+                selected_candidates = candidates.new_empty((q_d.shape[0], candidates.shape[1]))
+            else:
+                selected_candidates = pick(candidates)
+            select_ranked(picked, scores, pos_d, valid_d, ratio, _topk,
+                          candidates=selected_candidates, block=block, publish=publish)
+            if rows is not None and publish:
+                candidates.index_copy_(0, rows, selected_candidates)
         else:
-            picked = torch.empty(q_d.shape[0], 512, dtype=torch.int32, device=query.device)
             _topk(picked, scores, pos_d, valid_d, ratio, 512)
+        if rows is not None:
             result.index_copy_(0, rows, picked)
     for r, s0, s1, last in step.prefill:
         # Single-sequence packed prefill: unpack the live keys once, then the
@@ -652,16 +665,20 @@ def select_positions(
         keys = unpack_request_index(
             cache, block_table[r], end, max(end, 512), layout=layout, layer=source
         )
+        policy = None
+        if hierarchy is not None and end > hierarchy[0].shape[1] * hierarchy[1]:
+            candidates, block, publish = hierarchy
+            policy = candidates[s0:s1], block, publish
         if row_split is not None and s1 - s0 >= ROW_SPLIT_MIN:
             rank, world, gather = row_split        # patch 180: rows split over the ranks, all heads per row
             result[s0:s1] = select_rows_split(
                 query[s0:s1], weights[s0:s1], keys, positions[s0:s1], step.valid[s0:s1], ratio,
-                first_position=last - (s1 - s0 - 1), rank=rank, world=world, all_gather=gather,
+                first_position=last - (s1 - s0 - 1), rank=rank, world=world, all_gather=gather, hierarchy=policy,
             )
             continue
         result[s0:s1] = select_compressed_positions(
             query[s0:s1], weights[s0:s1], keys, positions[s0:s1], step.valid[s0:s1],
-            ratio, all_reduce,
+            ratio, all_reduce, hierarchy=policy,
         )
     return result
 

@@ -79,7 +79,7 @@ def eligible(heads: int, world: int, width: int) -> bool:
 
 
 def select_decode(query, weights, positions, valid, token_req, cache, block_table, *, layout, source, ratio, width,
-                  rank, comm, out=None, k=512):
+                  rank, comm, out=None, k=512, hierarchy=None):
     """Top-k compressed positions [T, k] int32 (ascending, -1 padded) of decode rows from this rank's indexer
     heads query [T, 4, 128] FP16 (after RoPE + FP4 QDQ) and weights [T, 4] FP16; ``comm.all_gather`` is the
     8-rank gather (every rank calls this with the same shapes)."""
@@ -105,12 +105,18 @@ def select_decode(query, weights, positions, valid, token_req, cache, block_tabl
     # 3. every rank: the whole rows (rank-major blocks -> position order), then the head-sharded path's selection
     rows = torch.empty((WORLD, tokens, part), dtype=torch.float16, device=device)
     comm.all_gather(shard, rows)
-    return select_gathered(rows, positions, valid, ratio, out=out, k=k)
+    return select_gathered(rows, positions, valid, ratio, out=out, k=k, hierarchy=hierarchy)
 
 
-def select_gathered(rows, positions, valid, ratio, *, out=None, k=512):
+def select_gathered(rows, positions, valid, ratio, *, out=None, k=512, hierarchy=None):
     """Top-k [T, k] of the all-gathered shards rows [WORLD, T, width / WORLD] (rank-major key blocks)."""
     _, tokens, part = rows.shape
     scores = rows.view(WORLD, tokens, part // BN, BN).permute(1, 2, 0, 3).reshape(tokens, WORLD * part)
     result = out if out is not None else torch.empty(tokens, k, dtype=torch.int32, device=rows.device)
+    if hierarchy is not None:
+        from .mu_reindex import select_ranked
+
+        candidates, block, publish = hierarchy
+        return select_ranked(result, scores, positions, valid, ratio, mu_topk.topk,
+                             candidates=candidates, block=block, publish=publish)
     return mu_topk.topk(result, scores, positions, valid, ratio, k)

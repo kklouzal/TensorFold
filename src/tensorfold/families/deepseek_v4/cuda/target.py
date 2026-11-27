@@ -282,7 +282,7 @@ class Target:
                 pk.insert_rows(pool.cache, compact, positions, valid, step.token_req, step.block_table,
                                layout=pool.layout, layer=ly.index, compressed=True)
             if ly.has_indexer:
-                shared["topk"] = self._select(ly, x, qr, step, table)
+                shared["topk"] = self._select(ly, x, qr, step, table, shared)
             if cold is None:
                 extra = dict(cache=pool.cache, block_table=step.block_table, layout=pool.layout, layer=ly.source,
                              topk=shared["topk"])
@@ -336,8 +336,8 @@ class Target:
             state.commit_all(values, scores, step.positions, step.qsl, step.req_slot, step.num_reqs, step.token_req)
         return latent
 
-    def _select(self, ly, x, qr, step, table):
-        """top-512 compressed positions per token (patch 87 ``_select``: Full layers, segmented top-k)."""
+    def _select(self, ly, x, qr, step, table, shared):
+        """Top-512 compressed positions per token, with the checkpoint's decoder candidate pool."""
         from .kernels import index_shard
         from .kernels import mu_packed as pk
         from .kernels.rope_qdq import rope_qdq
@@ -347,6 +347,25 @@ class Target:
         query = rope_qdq(query, step.positions, table, fp4=True, group=32)
         weights = self._linear(x, ly.idx_proj) * (1.0 / 64.0)
         width = self.index_context // ly.ratio
+        hierarchy = None
+        block = self.g.candidate_block
+        blocks = self.g.candidate_blocks
+        candidate_source = self.g.candidate_source
+        if 0 <= candidate_source <= ly.index:
+            # Prefill uses the host-known extent. Decode uses its fixed
+            # graph width because per-replay positions remain device-owned.
+            prefill_rows = sum(s1 - s0 for _, s0, s1, _ in step.prefill)
+            extent = max((last + 1 for _, _, _, last in step.prefill), default=0) // ly.ratio
+            if prefill_rows < tokens:
+                extent = max(extent, width)
+            if extent > blocks * block:
+                publish = ly.index == candidate_source
+                if publish:
+                    shared["index_candidates"] = torch.empty((tokens, blocks), dtype=torch.int32, device=query.device)
+                candidates = shared["index_candidates"]
+                if ly.index == self.g.index_sources[-1]:
+                    del shared["index_candidates"]
+                hierarchy = candidates, block, publish
         if (tokens > 1 and not step.prefill and step.decode_index is None
                 and index_shard.eligible(query.shape[1], WORLD, width)):
             # decode rows: every rank scores all 32 heads over its 1/8 of the key blocks (K4, index_shard; one row
@@ -354,11 +373,12 @@ class Target:
             return index_shard.select_decode(query, weights, step.positions, step.valid, step.token_req,
                                              self.pool.cache, step.block_table, layout=self.pool.layout,
                                              source=ly.source, ratio=ly.ratio, width=width, rank=self.w.rank,
-                                             comm=self.c.world)
+                                             comm=self.c.world, hierarchy=hierarchy)
         return pk.select_positions(query, weights, step.positions, step, self.pool.cache, step.block_table,
                                    layout=self.pool.layout, source=ly.source, ratio=ly.ratio,
-                                   width=self.index_context // ly.ratio, all_reduce=self._sum_half,
-                                   score_dtype=torch.float32, row_split=(self.w.rank, 8, self.c.world.all_gather))
+                                   width=width, all_reduce=self._sum_half,
+                                   score_dtype=torch.float32, row_split=(self.w.rank, 8, self.c.world.all_gather),
+                                   hierarchy=hierarchy)
 
     def _sum_half(self, scores):
         """The indexer's TP sum: FP32 (decode) or FP16 (prefill tiles) per-rank scores, one FP16 rounding."""
