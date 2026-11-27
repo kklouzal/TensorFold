@@ -146,8 +146,17 @@ room in the same pool.
 Check the effective lane count in `limits.lanes` and the budget in
 `capacity_plan` from `/v1/stats`. The option leaves the context unchanged.
 Without it, the existing shared-pool serving and diagnostic behavior applies.
-Full-window admission at the native context, mixed traffic, and live
-recapture still need physical qualification for each degree.
+
+The tested ETP4 profile uses `--context 1048576 --parallel 32` with
+`--kv-full-windows auto`, `--temperature 0`, `--no-drafts`, and RotorQuant Q4. On eight 32 GiB V100s
+at 185 W per GPU, source `20862048` selected nine lanes and reported
+9,843,328 shared KV tokens. A private engine test reserved nine full windows,
+materialized one history through the last context position, and verified
+that eight peers advanced during a late prefill pause. The live API advertised
+1,048,576 tokens, tokenized a 140,004-token prompt, and passed short greedy
+generation and streaming checks. Full-length HTTP generation, live graph
+recapture at 1M, and long-context quality and throughput remain unmeasured.
+
 Long prefill bounds the per-head index score allocation by splitting the key
 range. The combined score plane still covers the whole range so hierarchical
 candidate selection and Top-K ordering use the same inputs.

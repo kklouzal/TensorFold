@@ -1678,6 +1678,11 @@ regression. The complete 8K throughput comparison was deferred.
 
 The development profiler `tools/ds41_profile.py` takes its text input from `--corpus TEXT_FILE`.
 
+The optional native-context RotorQuant profile at `20862048` funded nine
+1,048,576-token windows on eight V100s at 185 W with TP8/ETP4. The native
+engine completed a full history and the live API passed context and short
+streaming checks. [Native-context profile](docs/recipes/deepseek-v41-v100.md#experimental-native-context-window-funding)
+
 The expert-balancing development branch accepts an explicit per-layer placement
 for ETP1, ETP2, and ETP4 before startup graph capture. Native quality and
 performance qualification is pending. [Expert placement recipe](docs/recipes/deepseek-v41-v100.md#routed-expert-placement)
