@@ -126,7 +126,10 @@ def test_position_sharded_reindex_uses_globally_gathered_scores():
     assert torch.equal(got.cpu(), picks)
 
 
-def test_row_split_prefill_restores_candidate_rows_in_request_order():
+@pytest.mark.parametrize("key_tiled", [False, True])
+def test_row_split_prefill_restores_candidate_rows_in_request_order(monkeypatch, key_tiled):
+    if key_tiled:
+        monkeypatch.setattr(attention_ops, "_ROW_TILE_BYTES", 1 << 18)
     blocks, block, width = 128, 8, 1056
     tokens, first, world = 33, 1023, 2
     positions = torch.arange(first, first + tokens, device=DEVICE)
