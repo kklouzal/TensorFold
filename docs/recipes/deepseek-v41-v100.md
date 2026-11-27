@@ -174,8 +174,13 @@ streams. Check the funded lane count and configured depth in `/v1/stats`.
 The `dspark.verify_rounds_by_active` counters count committed verification
 rounds by the number of active requests in the vector. Image requests use target-only decoding.
 When a mixed batch cannot use the draft verifier, it uses the ordinary decode path.
-Draft residency and graph captures consume VRAM. Native 1M validation and
-paired quality and throughput measurements are pending for this mode.
+
+On eight V100s at 185 W, a controlled short-prompt run verified D3 work at
+one, two and three active requests and ordinary decode at four. Draft
+residency and graph captures reduced funded 1,048,576-token lanes from nine
+to seven. A fixed-prefix comparison found that the four-row verifier and
+ordinary decode could select different greedy tokens. Full-length D3
+validation and paired perplexity and 8K throughput measurements are pending.
 
 ### Experimental decode graph memory allowance
 
