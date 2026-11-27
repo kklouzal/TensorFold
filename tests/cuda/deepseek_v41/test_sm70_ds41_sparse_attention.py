@@ -83,6 +83,269 @@ def fused(args, kw, **extra):
     return sa.attend(*args, **kw, **extra)
 
 
+def encode_rotor_rows(rows):
+    from tensorfold.cuda.sm70 import rotorquant_q4_native as codec
+
+    matrix = rows.reshape(-1, 1, 512)
+    n = matrix.shape[0]
+    codes = torch.empty(n, 1, 256, dtype=torch.uint8, device=rows.device)
+    scales = torch.empty(n, 1, 4, dtype=torch.float32, device=rows.device)
+    codec.encode(matrix, codes, scales, codec=11)
+    decoded = torch.empty_like(matrix)
+    codec.decode(codes, scales, decoded, codec=11)
+    wire = torch.cat((codes.view(n, 256), scales.view(torch.uint8).view(n, 16)), dim=1)
+    return wire.reshape(*rows.shape[:-1], 272), decoded.view_as(rows)
+
+
+def test_fused_rotor_window_matches_explicit_decode_on_replay():
+    args, kw = build([(129, 4), (0, 3)], compressed=False, seed=52)
+    query, positions, step, req_slot, ring, window, sink = args
+    packed_ring, _ = encode_rotor_rows(ring)
+    packed_window, _ = encode_rotor_rows(window)
+    operands = (query, positions, step, req_slot, packed_ring, packed_window, sink)
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        fused(operands, kw)
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        actual = fused(operands, kw)
+
+    for scale in (1, -2):
+        ring_bytes, ring_half = encode_rotor_rows(ring * scale)
+        window_bytes, window_half = encode_rotor_rows(window * scale)
+        packed_ring.copy_(ring_bytes)
+        packed_window.copy_(window_bytes)
+        want = fused((query, positions, step, req_slot, ring_half, window_half, sink), kw)
+        graph.replay()
+        assert torch.equal(actual.view(torch.int16), want.view(torch.int16))
+
+    with pytest.raises(RuntimeError, match="values must match the window-ring format"):
+        fused((query, positions, step, req_slot, packed_ring, window, sink), kw)
+
+
+@pytest.mark.parametrize("source", [2, 20])
+def test_fused_rotor_paged_latent_matches_single_selected_key(source):
+    from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import PackedLayout
+
+    args, legacy = build([(62, 4), (126, 4), (0, 2)], source=source, seed=81)
+    query, positions, step, req_slot, ring, window, sink = args
+    query.zero_()
+    sink.zero_()
+    layout = PackedLayout(SOURCES, BLOCK, rotorquant=True)
+    ratio, per, offset, _ = layout.regions[source]
+    table = legacy["block_table"].clone()
+    table[1, 1] = -1
+    pages = legacy["cache"].shape[0]
+    cache = torch.full((pages, layout.page_bytes), 255, dtype=torch.uint8, device=query.device)
+    rng = torch.Generator(device=query.device).manual_seed(34)
+    latents = (0.7 + torch.rand((pages, per, 512), generator=rng, device=query.device)).half()
+    wire, decoded = encode_rotor_rows(latents)
+    cache[:, offset:offset + per * 272].copy_(wire.flatten(1))
+    # A zero code and zero scale represent a zero row. Its sign has no impact on the one-term PV result.
+    packed_ring = torch.zeros((*ring.shape[:-1], 272), dtype=torch.uint8, device=query.device)
+    packed_window = torch.zeros((len(window), 272), dtype=torch.uint8, device=query.device)
+    topk = torch.full_like(legacy["topk"], -1)
+    newest = (positions + 1) // ratio - 1
+    topk[:, 0] = newest.int()
+    topk[:, 1] = newest.int() + 1  # a causally future key must be masked
+    kw = dict(cache=cache, block_table=table, layout=layout, source=source, topk=topk)
+    actual = fused((query, positions, step, req_slot, packed_ring, packed_window, sink), kw)
+
+    expected = torch.zeros_like(actual)
+    requests = step.token_req.tolist()
+    live = step.valid.tolist()
+    page_ids = table.tolist()
+    for row, (pos, req, valid, index) in enumerate(zip(positions.tolist(), requests, live, newest.tolist())):
+        if not valid or index < 0:
+            continue
+        page = page_ids[req][index // per]
+        if page >= 0:
+            probability = torch.tensor(1 / (min(pos + 1, 128) + 2), device=query.device).half()
+            expected[row] = (decoded[page, index % per].float() * probability.float()).half()
+    assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
+
+    with pytest.raises(ValueError, match="compressed row format must match"):
+        fused((query, positions, step, req_slot, packed_ring, packed_window, sink), legacy)
+    with pytest.raises(ValueError, match="compressed row format must match"):
+        fused(args, kw)
+
+
+@pytest.mark.parametrize("start", [0, 193])
+@pytest.mark.parametrize("source", [None, 2, 20])
+def test_h64_prefill_decoded_current_matches_packed_reader(start, source, monkeypatch):
+    from tensorfold.cuda.sm70 import ds41_sparse_attention as sa
+    from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import PackedLayout
+    from tensorfold.families.deepseek_v4.cuda.target import Target
+
+    tokens = 1024
+    args, kw = build([(start, tokens)], source=source or 2, compressed=source is not None, seed=93)
+    query, positions, step, req_slot, ring, window, sink = args
+    window[:, 64:128] *= 5
+    window[::3, 128:192] = -0.0
+    packed_ring, _ = encode_rotor_rows(ring)
+    packed_window, _ = encode_rotor_rows(window)
+    operands = (query, positions, step, req_slot, packed_ring, packed_window, sink)
+    step.positions, step.req_slot = positions, req_slot
+    step.image, step.num_reqs = None, 1
+    step.prefill = [(0, 0, tokens, start + tokens - 1)]
+    if source is not None:
+        layout = PackedLayout(SOURCES, BLOCK, rotorquant=True)
+        _ratio, per_page, offset, _ = layout.regions[source]
+        pages = kw["cache"].shape[0]
+        generator = torch.Generator(device=query.device).manual_seed(27)
+        latents = (torch.randn((pages, per_page, 512), device=query.device, generator=generator) * 0.45).half()
+        packed_latents, _ = encode_rotor_rows(latents)
+        cache = torch.zeros((pages, layout.page_bytes), device=query.device, dtype=torch.uint8)
+        cache[:, offset:offset + per_page * 272].copy_(packed_latents.flatten(1))
+        kw.update(cache=cache, layout=layout)
+
+    want = fused(operands, kw)
+    attend = sa.attend
+    selected = []
+
+    def record(*args, **kwargs):
+        selected.append(kwargs["decode_window"])
+        return attend(*args, **kwargs)
+
+    monkeypatch.setattr(sa, "attend", record)
+    target = Target.__new__(Target)
+    kwargs = dict(kw)
+    if source is not None:
+        kwargs["layer"] = kwargs.pop("source")
+    got = target._attend(query, step, packed_ring, packed_window, sink, **kwargs)
+    expand_in_serving = source is not None and start == 0
+    assert selected == [expand_in_serving]
+    assert torch.equal(got.view(torch.int16), want.view(torch.int16))
+    assert not torch.count_nonzero(got[tokens // 3])   # inactive query inside the current chunk
+    if not expand_in_serving:
+        expanded = attend(*operands, **kw, decode_window=True)
+        assert torch.equal(expanded.view(torch.int16), want.view(torch.int16))
+
+    if start and source is None:
+        # The last old age is visible at local row 126 and absent at 127.
+        # A changed historical row must affect exactly that side of the seam.
+        changed = packed_ring.clone()
+        changed[1, (start - 1) % 128].copy_(packed_window[0])
+        changed_args = (query, positions, step, req_slot, changed, packed_window, sink)
+        reference = attend(*changed_args)
+        candidate = attend(*changed_args, decode_window=True)
+        assert torch.equal(candidate.view(torch.int16), reference.view(torch.int16))
+        assert not torch.equal(candidate[126].view(torch.int16), got[126].view(torch.int16))
+        assert torch.equal(candidate[127:].view(torch.int16), got[127:].view(torch.int16))
+        with pytest.raises(RuntimeError, match="single memory location"):
+            attend(*operands, out=query, decode_window=True)
+        with pytest.raises(RuntimeError, match="single-request H64 step"):
+            attend(*args, decode_window=True)
+
+
+@pytest.mark.parametrize("requests,compressed", [([(127, 1)], True),
+    ([(127, 1), (128, 1), (16384, 1), (0, 1)], True),
+    ([(127, 1), (128, 1), (16384, 1), (0, 1)], False)])
+@pytest.mark.parametrize("fp8_group", [128, 32])
+def test_decode_window_ring_store_matches_post_attention_commit(requests, compressed, fp8_group):
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
+    from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table
+    from tensorfold.families.deepseek_v4.cuda.kernels.rope_qdq import rope_qdq
+
+    args, kw = build(requests, compressed=compressed, seed=120)
+    query, positions, step, req_slot, initial, value, sink = args
+    rows = len(requests)
+    live_rows = rows
+    if rows > 1:
+        req_slot[-1] = initial.shape[0] - 1
+        live_rows -= 1  # graph padding keeps the scratch slot at position zero
+    table = rope_table(compressed=compressed)
+    old_ring, new_ring = initial.clone(), initial.clone()
+    attend = fused if rows > 1 and not compressed else reference
+
+    def forward(ring, early):
+        write = (ring, req_slot, step.valid) if early else None
+        window = rope_qdq(value, positions, table, group=fp8_group, decode_ring=write)
+        output = attend((query, positions, step, req_slot, ring, window, sink), kw)
+        if not early:
+            pk.insert_ring(ring, window, positions, step.valid, step.token_req, step.qsl, req_slot)
+        return window, output
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        forward(new_ring, True)
+        new_ring.copy_(initial)
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        actual = forward(new_ring, True)
+
+    for _ in range(3):
+        expected = forward(old_ring, False)
+        graph.replay()
+        assert all(torch.equal(x.view(torch.int16), y.view(torch.int16)) for x, y in zip(actual, expected, strict=True))
+        assert torch.equal(old_ring.view(torch.int16), new_ring.view(torch.int16))
+        assert torch.equal(new_ring[-1], initial[-1])
+        positions[:live_rows].add_(1)
+        value.neg_()
+
+
+@pytest.mark.parametrize("rows,compressed,eps,fp8_group",
+    [(1, False, 1e-20, 128), (8, True, 1e-20, 128), (32, True, 1e-20, 128), (64, False, 1e-6, 128),
+     (1, False, 1e-20, 32), (32, True, 1e-20, 32)])
+def test_decode_window_rms_matches_separate_launch(rows, compressed, eps, fp8_group):
+    from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import RING
+    from tensorfold.families.deepseek_v4.cuda.kernels.norm import rms_norm
+    from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table
+    from tensorfold.families.deepseek_v4.cuda.kernels.rope_qdq import rope_qdq
+
+    device = "cuda"
+    rng = torch.Generator(device=device).manual_seed(407)
+    scale = torch.logspace(-3, 1, 512, device=device)
+    value = torch.empty((rows, 512), device=device, dtype=torch.float16)
+    weight = torch.rand(512, device=device, dtype=torch.float32, generator=rng).add_(0.5)
+    positions = torch.tensor([127, 128, 4095, 16383, 16384], device=device).repeat((rows + 4) // 5)[:rows]
+    slots = torch.arange(rows, device=device, dtype=torch.int32)
+    valid = torch.ones(rows, device=device, dtype=torch.bool)
+    if rows > 1:
+        valid[-2] = False
+        slots[-1] = rows  # scratch
+        positions[-1] = 0
+    live_rows = rows if rows == 1 else rows - 1
+    table = rope_table(compressed=compressed)
+    initial = torch.randn((rows + 1, RING, 512), device=device, generator=rng).half()
+    old_ring, new_ring = initial.clone(), initial.clone()
+
+    def combined():
+        return rope_qdq(value, positions, table, group=fp8_group,
+                        decode_ring=(new_ring, slots, valid), decode_norm=(weight, eps))
+
+    value.zero_()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        combined()
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        captured = combined()
+    new_ring.copy_(initial)
+
+    for replay in range(5):
+        if replay == 1:
+            # Exercise unequal rotary partners, including signed zero and small half values.
+            value[:, -64::2] = 2.0**-14
+            value[:, -63::2] = -0.0
+            value[:, -1] = 1.0
+        elif replay > 1:
+            value.copy_(torch.randn(value.shape, device=device, generator=rng) * scale)
+        expected = rope_qdq(rms_norm(value, weight, eps), positions, table, group=fp8_group,
+                            decode_ring=(old_ring, slots, valid))
+        graph.replay()
+        assert torch.equal(captured.view(torch.int16), expected.view(torch.int16))
+        assert torch.equal(new_ring.view(torch.int16), old_ring.view(torch.int16))
+        positions[:live_rows].add_(1)
+
+
 def oracle(args, kw, rows):
     """FP64 attention of token ``rows`` over the reference's gathered FP16 keys (exact decodes of the pages)."""
     from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk

@@ -41,6 +41,7 @@ def model_dir(tmp_path):
     tok.add_tokens([AddedToken(token, special=False) for token in CONTROLS])    # as the checkpoint marks them
     tok.save(str(tmp_path / "tokenizer.json"))
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "deepseek_v41", "eos_token_id": 1,
+                                                      "vocab_size": tok.get_vocab_size(),
                                                       "text_config": {"max_position_embeddings": 65536}}))
     (tmp_path / "chat_template.jinja").write_text("JINJA MUST NOT RENDER {{ messages }}")
     return tmp_path
@@ -55,7 +56,8 @@ class Scripted:
 
     def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True):
         self.prompts.append(list(prompt))
-        ids = [*self.tok.encode(self.reply, add_special_tokens=False).ids, *self.eos][:max_tokens]
+        ids = self.tok.encode(self.reply, add_special_tokens=False).ids if isinstance(self.reply, str) else self.reply
+        ids = [*ids, *self.eos][:max_tokens]
         for at in range(0, len(ids), self.step):
             if on_tokens(ids[at:at + self.step]):
                 break
@@ -101,6 +103,183 @@ def test_the_server_renders_v41_prompts_with_deepseeks_encoder(model_dir):
         with pytest.raises(RequestError, match="integer 1-100"):
             prompt_text(app, {"messages": chat, "chat_template_kwargs": {"reasoning_effort": bad}})
     assert prompt_text(app_for(model_dir), {"messages": chat}) == head + tail + "</think>"   # --no-thinking
+
+
+def test_native_segment_cache_preserves_tokens_and_request_origin(model_dir):
+    from copy import deepcopy
+    from importlib.metadata import version
+    from tokenizers import AddedToken, normalizers, processors
+    from tensorfold.server.prompt_literals import RenderedPrompt
+    from tensorfold.server.prompt_origin import OriginText, trusted
+    from tensorfold.token_metadata import load_tokenizer
+
+    tok = load_tokenizer(model_dir)
+    tok.normalizer = normalizers.Sequence([])
+    tok.post_processor = processors.ByteLevel(trim_offsets=False)
+    path = str(model_dir / "tokenizer.json")
+    tok.save(path)
+    app = app_for(model_dir, default_thinking=True)
+    if version("tokenizers") != "0.23.3":
+        assert app.segments is None
+        return
+
+    opener = native.USER_SP_TOKEN
+    assert app.segments is not None and app.segments.opener == opener
+    prompt = f" \t日本語é{opener}{opener}🙂\n"
+    protection = app.template.literals
+    expected = []
+    for value in (trusted(prompt), OriginText(prompt), trusted(prompt)):
+        text = RenderedPrompt(value, protection.literals)
+        whole = app.template.encode(app.tok, text)
+        assert app.template.encode(app.tok, text, segments=app.segments) == whole
+        expected.append(whole)
+    assert expected[0] == expected[2] != expected[1]
+
+    body = {"messages": [{"role": "system", "content": "Read the excerpt."},
+                         {"role": "user", "content": f"Literal text {opener} and a line break.\n"}],
+            "tools": strict_tools(), "max_tokens": 8}
+    prepared = app.prepare_for_count(body, True)
+    try:
+        text = app.template.render(body["messages"], tools=body["tools"], enable_thinking=True)
+        assert prepared.prompt == app.template.encode(app.tok, text)
+    finally:
+        prepared.close()
+
+    for crossing in (AddedToken("User", normalized=False), AddedToken(opener + "tail", normalized=True)):
+        alternate = deepcopy(tok)
+        alternate.add_tokens([crossing])
+        alternate.save(path)
+        assert app_for(model_dir).segments is None
+
+    alternate = deepcopy(tok)
+    alternate.add_special_tokens([AddedToken(opener, special=True, normalized=False)])
+    alternate.save(path)
+    raw = app_for(model_dir)
+    assert raw.segments is not None and raw.segments.opener == opener
+
+    tok.model.dropout = 0.25
+    tok.save(path)
+    assert app_for(model_dir).segments is None
+
+
+def test_native_cuda_tokenize_exposes_exact_count_and_deepseek_render_metadata(model_dir):
+    from http.client import HTTPConnection
+    from threading import Thread
+
+    from tensorfold.cuda.http import make_handler
+    from tensorfold.server.http import Server
+
+    app = app_for(model_dir, default_thinking=True, aliases=("alias",))
+    body = {"model": "alias", "messages": [{"role": "user", "content": "Paris weather?"}],
+            "chat_template_kwargs": {"enable_thinking": False}}
+    prepared = app.prepare_for_count(body, True)
+    try:
+        result = app.tokenize({**body, "return_prompt": True})
+        assert (result["count"], result["tokens"]) == (len(prepared.prompt), prepared.prompt)
+        assert result["prompt"] == app.tok.decode(prepared.prompt, skip_special_tokens=False)
+    finally:
+        prepared.close()
+    assert result["model"] == "alias"
+    assert result["context_length"] == result["max_model_len"] == 65536
+    assert result["harness_tokenizer_version"] == 1
+    assert result["chat_template_sha256"] == app.template.provenance()["sha256"]
+    assert result["capabilities"]["thinking_control"]["keyword"] == "enable_thinking"
+    assert result["capabilities"]["reasoning_replay_field"] == "reasoning_content"
+    assert result["capabilities"]["preserve_reasoning"] is True
+    count = app.tokenize({**body, "return_tokens": False})
+    assert count["count"] == result["count"] and "tokens" not in count and "prompt" not in count
+    raw = app.tokenize({"prompt": "Paris"})
+    assert set(raw) == {"count", "tokens", "max_model_len"}
+    for flag in ("return_tokens", "return_prompt"):
+        with pytest.raises(RequestError, match=f"{flag} must be a boolean"):
+            app.tokenize({**body, flag: 1})
+    with Server(("127.0.0.1", 0), make_handler(app)) as listener:
+        server = Thread(target=listener.serve_forever)
+        server.start()
+        client = HTTPConnection(*listener.server_address, timeout=2)
+        try:
+            payload = json.dumps({**body, "return_tokens": False})
+            client.request("POST", "/v1/tokenize", payload, {"Content-Type": "application/json"})
+            response = client.getresponse()
+            assert response.status == 200 and json.load(response) == count
+        finally:
+            client.close()
+            listener.shutdown()
+            server.join()
+    assert not app.engine.prompts
+
+
+def test_v41_sampling_defaults_apply_to_plain_tools_and_raw_requests(model_dir):
+    from tensorfold.engine.exact_sampling import Sampling
+
+    app = app_for(model_dir)
+    body = {"messages": [{"role": "user", "content": "Paris weather?"}], "seed": 7}
+    for fields in ({}, {"tools": []}, {"tools": TOOLS}, {"tools": TOOLS, "tool_choice": "none"},
+                   {"tools": TOOLS, "temperature": None, "top_p": None}):
+        prepared = app.prepare_for_count({**body, **fields}, True)
+        try:
+            assert prepared.sampling == Sampling(7, 1.0, 0, 1.0)
+        finally:
+            prepared.close()
+    prepared = app.prepare_for_count({"prompt": "Paris weather?", "seed": 7}, False)
+    try:
+        assert prepared.sampling == Sampling(7, 1.0, 0, 1.0)
+    finally:
+        prepared.close()
+
+
+def test_v41_sampling_preserves_checkpoint_launch_and_request_priority(model_dir):
+    from tensorfold.cli import _sampling_defaults, build_parser
+    from tensorfold.engine.exact_sampling import Sampling
+
+    body = {"messages": [{"role": "user", "content": "Paris weather?"}], "tools": TOOLS, "seed": 7}
+
+    def configured(config, *flags):
+        (model_dir / "generation_config.json").write_text(json.dumps(config))
+        args = build_parser().parse_args(["serve", str(model_dir), *flags])
+        return app_for(model_dir, sampling=_sampling_defaults(args, model_dir))
+
+    def sampling(app, **overrides):
+        prepared = app.prepare_for_count({**body, **overrides}, True)
+        try:
+            return prepared.sampling
+        finally:
+            prepared.close()
+
+    assert sampling(configured({"temperature": 0.7})) == Sampling(7, 0.7, 0, 1.0)
+    assert sampling(configured({"top_p": 0.82})) == Sampling(7, 1.0, 0, 0.82)
+    assert sampling(configured({"do_sample": False, "temperature": 1.0, "top_p": 0.82})) is None
+    launch = configured({"do_sample": False, "top_p": 0.82, "top_k": 17},
+                        "--temperature", "0.6", "--top-p", "0.89")
+    assert sampling(launch) == Sampling(7, 0.6, 17, 0.89)
+    assert sampling(launch, temperature=0.3, top_p=1.0, top_k=0) == Sampling(7, 0.3, 0, 1.0)
+    assert sampling(launch, temperature=0) is None
+    assert sampling(launch, top_p=0) is None
+
+
+def test_v41_replay_metadata_retains_both_routes_without_changing_official_prompts(model_dir):
+    app = app_for(model_dir, default_thinking=True)
+    older, current = "reasoning from the first turn", "reasoning for the current tool call"
+    messages = [
+        {"role": "user", "content": "First question."},
+        {"role": "assistant", "content": "First answer.", "reasoning_content": older},
+        {"role": "user", "content": "What is the weather in Paris?"},
+        {"role": "assistant", "content": "", "tool_calls": [CALL], "reasoning_content": current},
+        {"role": "tool", "content": "sunny", "tool_call_id": "c1"},
+    ]
+    for advertised in (False, True):
+        body = {"messages": messages, "return_prompt": True, "return_tokens": False}
+        reference = messages
+        if advertised:
+            body["tools"] = TOOLS
+            reference = [{"role": "system", "content": "", "tools": TOOLS}, *messages]
+        expected = native.encode_messages(reference, thinking_mode="thinking")
+        results = app.tokenize(body)
+        assert results["prompt"] == expected
+        assert current in expected and (older in expected) is advertised
+        assert results["capabilities"]["reasoning_replay_field"] == "reasoning_content"
+        assert results["capabilities"]["preserve_reasoning"] is True
+    assert not app.engine.prompts
 
 
 @pytest.mark.parametrize("thinking", [False, True])
@@ -196,6 +375,336 @@ def test_a_cut_or_malformed_block_is_no_call(model_dir):
     app = app_for(model_dir, bad, 2)
     result = app.run(body, True, lambda d: True)
     assert not result["calls"] and result["finish"] == "stop" and "invoke" in result["content"]
+
+
+def test_multipart_tool_results_match_official_prompt_and_do_not_mutate_history(model_dir):
+    from copy import deepcopy
+
+    app = app_for(model_dir, default_thinking=True)
+    second = {**CALL, "id": "c2"}
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "First"}, {"type": "text", "text": "Second"}]},
+        {"role": "assistant", "content": "", "tool_calls": [CALL, second], "reasoning_content": "Check both."},
+        {"role": "tool", "tool_call_id": "c2", "content": "Gamma"},
+        {"role": "tool", "tool_call_id": "c1", "content": [
+            {"type": "text", "text": "Alpha"}, {"type": "text", "text": "Beta"}]},
+    ]
+    original = deepcopy(messages)
+    expected = native.encode_messages([{"role": "system", "content": "", "tools": TOOLS}, *messages],
+                                      thinking_mode="thinking")
+    assert "First\n\nSecond" in expected
+    assert "<tool_result>Alpha\n\nBeta</tool_result>\n\n<tool_result>Gamma</tool_result>" in expected
+    assert prompt_text(app, {"messages": messages, "tools": TOOLS}) == expected
+    assert messages == original
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+@pytest.mark.parametrize("prefix", ['Unclosed quote: ".', "Unclosed fence:\n```text\nexample"])
+@pytest.mark.parametrize("step", [1, 19, 1000])
+def test_generated_dsml_controls_survive_unmatched_prose(model_dir, thinking, prefix, step):
+    reply = prefix + ("</think>" if thinking else "") + "\n\n" + BLOCK
+    official = native.parse_message_from_completion_text(reply + native.eos_token, "thinking" if thinking else "chat")
+    assert len(official["tool_calls"]) == len(EXPECTED)
+    body = {"messages": [{"role": "user", "content": "Weather?"}], "tools": TOOLS, "max_tokens": 4096}
+    for stream in (False, True):
+        app = app_for(model_dir, reply, step, default_thinking=thinking)
+        deltas = []
+        result = app.run({**body, "stream": stream}, True, lambda d: deltas.append(d) or True)
+        assert result["finish"] == "tool_calls"
+        assert result["reasoning"] == official["reasoning_content"]
+        assert result["content"] == official["content"]
+        if stream:
+            assert reassemble(deltas) == EXPECTED
+            actual = [*deltas, result["final"]]
+            assert "".join(d.get("reasoning_content", "") for d in actual if d) == official["reasoning_content"]
+            assert "".join(d.get("content", "") for d in actual if d).strip() == official["content"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_plain_token_spelling_cannot_become_thinking_or_dsml_control(model_dir, stream):
+    from tensorfold.server.prompt_literals import RenderedPrompt
+    from tensorfold.server.prompt_origin import OriginText
+
+    app = app_for(model_dir, step=1, default_thinking=True)
+    literal = 'The text says </think>, and this is literal:\n\n' + BLOCK
+    ids = app.template.encode(app.tok, RenderedPrompt(OriginText(literal), app.template.literals.literals))
+    assert app.tok.decode(ids, skip_special_tokens=False) == literal
+    assert not set(ids).intersection(app.tok.token_to_id(text) for text in ("</think>", native.dsml_token))
+    app.engine.reply = [*ids, *app.tok.encode("</think>Finished.", add_special_tokens=False).ids]
+    deltas = []
+    result = app.run({"messages": [{"role": "user", "content": "Show literal text."}], "tools": TOOLS,
+                      "max_tokens": 4096, "stream": stream}, True, lambda d: deltas.append(d) or True)
+    assert (result["reasoning"], result["content"], result["calls"], result["finish"]) == (literal, "Finished.", None, "stop")
+    assert not reassemble(deltas)
+
+
+@pytest.mark.parametrize("explicit", ["tool", "function"])
+def test_explicit_namespaces_keep_offered_identity_and_replay(model_dir, explicit):
+    from copy import deepcopy
+
+    tool = {"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}
+    (tool if explicit == "tool" else tool["function"])["namespace"] = "files"
+    block = ('<｜DSML｜ calls>\n<｜DSML｜ invoke name="files::read">\n\n'
+             '</｜DSML｜ invoke>\n</｜DSML｜ calls>')
+    reference = native.parse_message_from_completion_text("\n\n" + block + native.eos_token, "chat")
+    [expected] = reference["tool_calls"]
+    body = {"messages": [{"role": "user", "content": "Read."}], "tools": [tool], "max_tokens": 4096}
+    for stream in (False, True):
+        app = app_for(model_dir, block, step=1)
+        counted = app.prepare_for_count({**body, "tool_choice": {
+            "type": "function", "function": {"name": "files::read"}}}, True)
+        try:
+            assert counted.tools == [tool]
+        finally:
+            counted.close()
+        deltas = []
+        result = app.run({**body, "stream": stream}, True, lambda d: deltas.append(d) or True)
+        [call] = result["calls"]
+        assert call["namespace"] == expected["namespace"] and call["function"]["name"] == expected["function"]["name"]
+        assert json.loads(call["function"]["arguments"]) == json.loads(expected["function"]["arguments"])
+        if stream:
+            [head] = [part for delta in deltas if delta for part in delta.get("tool_calls", ()) if "id" in part]
+            assert (head["namespace"], head["function"]["name"]) == ("files", "read")
+        history = [*body["messages"], {"role": "assistant", "content": "", "tool_calls": [call]},
+                   {"role": "tool", "tool_call_id": call["id"], "content": "Found."}]
+        assert block in prompt_text(app, {**body, "messages": history})
+    wrong = deepcopy(tool)
+    (wrong if explicit == "tool" else wrong["function"])["namespace"] = "other"
+    assert serving_v41.parse(block, [wrong]) == (block, None)
+
+
+def test_strict_tool_plan_compiles_and_reads_qualified_invocations():
+    from tensorfold.families.deepseek_v4.strict_tools_v41 import Plan
+
+    tool = {"type": "function", "namespace": {"name": "files"}, "function": {"name": "read", "strict": True,
+            "parameters": {"type": "object", "additionalProperties": False}}}
+    plan = Plan([tool], required=True, parallel=False)
+    assert any('name="files::read"' in head for head in plan.thinking_headers)
+    block = ('<｜DSML｜ calls>\n<｜DSML｜ invoke name="files::read">\n\n'
+             '</｜DSML｜ invoke>\n</｜DSML｜ calls>')
+    _, calls, complete = plan.parse_finished(block)
+    assert complete and len(calls) == 1
+    assert calls[0]["namespace"] == "files" and calls[0]["function"]["name"] == "read"
+    [head] = [part for delta in plan.reader().feed(block) for part in delta["tool_calls"] if "id" in part]
+    assert (head["namespace"], head["function"]["name"]) == ("files", "read")
+
+
+def test_plain_dsml_spelling_is_visible_and_never_calls_tools(model_dir):
+    from tensorfold.server.prompt_literals import RenderedPrompt
+    from tensorfold.server.prompt_origin import OriginText
+
+    app = app_for(model_dir, step=1)
+    literal = "Here is the notation.\n\n" + BLOCK
+    app.engine.reply = app.template.encode(app.tok, RenderedPrompt(OriginText(literal), app.template.literals.literals))
+    assert app.tok.token_to_id(native.dsml_token) not in app.engine.reply
+    streamed = []
+    result = app.run({"messages": [{"role": "user", "content": "Show literal text."}], "tools": TOOLS,
+                      "max_tokens": 4096, "stream": True}, True, lambda d: streamed.append(d) or True)
+    assert (result["content"], result["calls"], result["finish"]) == (literal, None, "stop")
+    assert "".join(d.get("content", "") for d in [*streamed, result["final"]] if d) == literal
+    assert not reassemble(streamed)
+
+
+def test_ordinary_spelling_of_dsml_closer_cannot_complete_a_call(model_dir):
+    from tensorfold.server.prompt_literals import RenderedPrompt
+    from tensorfold.server.prompt_origin import OriginText
+
+    app = app_for(model_dir, step=1)
+    head = app.tok.encode(BLOCK[:-len(serving_v41.CLOSER)], add_special_tokens=False).ids
+    close = app.template.encode(app.tok, RenderedPrompt(OriginText(serving_v41.CLOSER), app.template.literals.literals))
+    assert app.tok.token_to_id(native.dsml_token) in head and app.tok.token_to_id(native.dsml_token) not in close
+    app.engine.reply = [*head, *close]
+    seen = []
+    result = app.run({"messages": [{"role": "user", "content": "Check the closer."}], "tools": TOOLS,
+                      "max_tokens": 4096, "stream": True}, True, lambda d: seen.append(d) or True)
+    assert not result["calls"] and result["finish"] == "stop"
+    assert not reassemble(seen)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("index", [1, 2, 3, 6])
+def test_dsml_inner_delimiters_require_generated_tokens(model_dir, stream, index):
+    from tensorfold.server.prompt_literals import RenderedPrompt
+    from tensorfold.server.prompt_origin import OriginText
+
+    app = app_for(model_dir, step=1)
+    marker = native.dsml_token
+    parts = BLOCK.split(marker)
+    prefix, suffix = marker.join(parts[:index + 1]), marker.join(parts[index + 1:])
+    literal = app.template.encode(app.tok, RenderedPrompt(OriginText(marker), app.template.literals.literals))
+    ids = [*app.tok.encode(prefix, add_special_tokens=False).ids, *literal,
+           *app.tok.encode(suffix, add_special_tokens=False).ids]
+    assert app.tok.decode(ids, skip_special_tokens=False) == BLOCK
+    marker_id = app.tok.token_to_id(marker)
+    assert marker_id not in literal and ids.count(marker_id) == BLOCK.count(marker) - 1
+    app.engine.reply = ids
+    seen = []
+    result = app.run({"messages": [{"role": "user", "content": "Show the tool notation."}], "tools": TOOLS,
+                      "max_tokens": 4096, "stream": stream}, True, lambda d: seen.append(d) or True)
+    assert (result["content"], result["calls"], result["finish"]) == (BLOCK, None, "stop")
+    assert not reassemble(seen)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_plain_inner_delimiter_spellings_remain_exact_argument_data(model_dir, stream):
+    from tensorfold.server.prompt_literals import RenderedPrompt
+    from tensorfold.server.prompt_origin import OriginText
+
+    value = "Literal </｜DSML｜ parameter> and <｜DSML｜ invoke> examples."
+    app = app_for(model_dir, step=1)
+    prefix, suffix = BLOCK.split('Paris "<b>"')
+    literal = app.template.encode(app.tok, RenderedPrompt(OriginText(value), app.template.literals.literals))
+    assert app.tok.token_to_id(native.dsml_token) not in literal
+    app.engine.reply = [*app.tok.encode(prefix, add_special_tokens=False).ids, *literal,
+                        *app.tok.encode(suffix, add_special_tokens=False).ids]
+    seen = []
+    result = app.run({"messages": [{"role": "user", "content": "Look up a literal."}], "tools": TOOLS,
+                      "max_tokens": 4096, "stream": stream}, True, lambda d: seen.append(d) or True)
+    expected = [("weather", {"city": value, "days": 3}), EXPECTED[1]]
+    assert result["finish"] == "tool_calls"
+    assert [(call["function"]["name"], json.loads(call["function"]["arguments"])) for call in result["calls"]] == expected
+    if stream:
+        assert reassemble(seen) == expected
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_completed_fenced_example_with_real_token_ids_remains_text(model_dir, stream):
+    example = "Example:\n```text\n\n" + BLOCK + "\n```"
+    app = app_for(model_dir, example, step=1)
+    assert app.tok.token_to_id(native.dsml_token) in app.tok.encode(example, add_special_tokens=False).ids
+    deltas = []
+    result = app.run({"messages": [{"role": "user", "content": "Show a DSML example."}], "tools": TOOLS,
+                      "max_tokens": 4096, "stream": stream}, True, lambda d: deltas.append(d) or True)
+    assert (result["content"], result["calls"], result["finish"]) == (example, None, "stop")
+    assert not reassemble(deltas)
+    if stream:
+        assert "".join(d.get("content", "") for d in [*deltas, result["final"]] if d) == example
+
+
+def test_prose_recovery_waits_for_normal_end(model_dir):
+    reply = 'Unclosed quote: ".\n\n' + BLOCK
+    app = app_for(model_dir, reply, step=1, default_thinking=True)
+    app.engine.eos = ()
+    deltas = []
+    result = app.run({"messages": [{"role": "user", "content": "Check the closer."}], "tools": TOOLS,
+                      "max_tokens": len(app.tok.encode(reply, add_special_tokens=False).ids), "stream": True},
+                     True, lambda d: deltas.append(d) or True)
+    assert not result["calls"] and result["finish"] == "length"
+    assert not reassemble(deltas)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_thinking_without_tools_does_not_recover_dsml_as_answer(model_dir, stream):
+    thought = 'An unmatched quote: ".\n\n' + BLOCK
+    app = app_for(model_dir, thought, step=1, default_thinking=True)
+    assert app.tok.token_to_id(native.dsml_token) in app.tok.encode(thought, add_special_tokens=False).ids
+    seen = []
+    result = app.run({"messages": [{"role": "user", "content": "Think about the example."}],
+                      "max_tokens": 4096, "stream": stream}, True, lambda d: seen.append(d) or True)
+    assert (result["reasoning"], result["content"], result["calls"]) == (thought, "", None)
+    assert not reassemble(seen)
+    if stream:
+        assert "".join(d.get("reasoning_content", "") for d in [*seen, result["final"]] if d) == thought
+
+def strict_tools():
+    weather, files = TOOLS
+    function = weather["function"]
+    parameters = {**function["parameters"], "required": ["city", "days"], "additionalProperties": False}
+    return [{**weather, "function": {**function, "strict": True, "parameters": parameters}}, files]
+
+
+def test_strict_dsml_grammar_keeps_parameter_types_and_call_choice():
+    pytest.importorskip("xgrammar")
+    from xgrammar import Grammar
+    from xgrammar.testing import _is_grammar_accept_string
+
+    from tensorfold.families.deepseek_v4.strict_tools_v41 import Plan
+
+    def accepts(plan, text):
+        return _is_grammar_accept_string(Grammar.from_structural_tag(plan.spec.text), text)
+
+    tools = strict_tools()
+    block = BLOCK[:BLOCK.index('<｜DSML｜ invoke name="files::read">')] + serving_v41.CLOSER
+    plan = Plan(tools, required=True, parallel=False)
+    assert accepts(plan, block)
+    assert not accepts(plan, BLOCK)
+    assert not accepts(plan, "A normal answer")
+    assert not accepts(plan, block.replace('string="false">3', 'string="true">3'))
+    assert not accepts(plan, block.replace('name="days"', 'name="unknown"'))
+    assert not accepts(plan, block.replace('name="weather"', 'name="unoffered"'))
+    assert not accepts(plan, "\n".join(line for line in block.splitlines() if 'name="days"' not in line))
+    auto = Plan(tools, required=False, parallel=True)
+    assert accepts(auto, "A normal answer")
+    assert accepts(auto, "Checking.\n\n" + BLOCK)
+    assert not accepts(Plan(tools, required=False, parallel=False), BLOCK + "\n" + block)
+
+
+def test_strict_dsml_reader_preserves_json_source_and_holds_a_partial_block():
+    pytest.importorskip("xgrammar")
+    from xgrammar import Grammar
+    from xgrammar.testing import _is_grammar_accept_string
+
+    from tensorfold.families.deepseek_v4.strict_tools_v41 import Plan
+
+    tools = strict_tools()
+    loose = tools[1]["function"]["name"]
+    value = '{"number":1.000000000000000000001,"huge":1e309,"marker":"</｜DSML｜ parameter>"}'
+    block = BLOCK.replace('string="true">/tmp/a b.txt', 'string="false">' + value)
+    plan = Plan(tools, required=False, parallel=True)
+    assert _is_grammar_accept_string(Grammar.from_structural_tag(plan.spec.text), block)
+    reader = plan.reader()
+    prefix = block.removesuffix(serving_v41.CLOSER)
+    for end in range(len(prefix) + 1):
+        assert not reader.feed(prefix[:end])
+    assert plan.parse_finished(prefix) == (prefix.strip(), None, False)
+    deltas = reader.feed(block)
+    assert [d["tool_calls"][0]["index"] for d in deltas] == [0, 0, 1, 1]
+    assert reader.index == 1 and reader.streamed and reader.feed(block) == []
+    content, calls, complete = plan.parse_finished(block)
+    assert complete and content == ""
+    assert calls[1]["function"] == {"name": loose, "arguments": '{"path":' + value + "}"}
+    assert deltas[-1]["tool_calls"][0]["function"]["arguments"] == calls[1]["function"]["arguments"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_strict_dsml_token_count_and_completion_use_same_native_prompt(model_dir, stream):
+    pytest.importorskip("xgrammar")
+    from http.client import HTTPConnection
+
+    from tests.test_cuda_admission import http_server, post
+    from tests.test_strict_tools import _reply
+
+    class ConstrainedScripted(Scripted):
+        def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True, constraint=None):
+            assert constraint.spec.kind == "tools"
+
+            def send(tokens):
+                constraint.advance(tokens)
+                return on_tokens(tokens)
+
+            return super().generate(prompt, max_tokens, sampling, send, draft)
+
+    app = app_for(model_dir, default_thinking=True)
+    app.engine = ConstrainedScripted(app.tok, "check</think>Checking.\n\n" + BLOCK, step=3)
+    tools = strict_tools()
+    body = {"model": "ds41", "messages": [{"role": "user", "content": "Weather?"}],
+            "tools": tools, "stream": stream, "max_tokens": 1024}
+    with http_server(app) as port:
+        conn = HTTPConnection("127.0.0.1", port, timeout=3)
+        try:
+            conn.request("POST", "/v1/tokenize", json.dumps(body), {"Content-Type": "application/json"})
+            reply = conn.getresponse()
+            counted = json.load(reply)
+            assert reply.status == 200, counted
+            assert not app.engine.prompts
+        finally:
+            conn.close()
+        status, text = post(port, body, True)
+    assert status == 200, text
+    assert counted["count"] == len(app.engine.prompts[0])
+    content, calls, finish = _reply(stream, text)
+    assert content.strip() == "Checking." and finish == "tool_calls"
+    assert [(name, json.loads(args)) for name, args in calls] == EXPECTED
 
 
 def test_image_parts_expand_through_the_vision_frontend(model_dir, monkeypatch):

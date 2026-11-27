@@ -17,6 +17,10 @@ from .fp8_software import fp8_e4m3fn_bits_to_fp32_bitcast, fp32_to_fp8_e4m3fn_bi
 from .triton_utils import jit, on_triton_device, tl, triton
 
 
+# Official DeepSeek-V4.1-Flash-1017: one UE8M0 scale per 32 window or attention-output channels.
+ATTENTION_FP8_GROUP = 32
+
+
 @jit
 def _ceil_power_two(x):
     bits = x.to(tl.uint32, bitcast=True)
@@ -76,7 +80,7 @@ def attention_qdq(x, *, fp4=False, group=128, e4m3_scale=False, inplace=False):
         or x.ndim < 2
         or x.shape[-1] % group
         or (fp4 and (group, e4m3_scale) not in ((16, True), (32, False)))
-        or (not fp4 and (group != 128 or e4m3_scale))
+        or (not fp4 and (group not in (ATTENTION_FP8_GROUP, 128) or e4m3_scale))
     ):
         raise ValueError("Unsupported V4.1 FP16 attention QDQ geometry")
     result = x if inplace else torch.empty_like(x)
@@ -92,12 +96,16 @@ def attention_qdq(x, *, fp4=False, group=128, e4m3_scale=False, inplace=False):
     return result
 
 
-def rope_table(max_length=16384, *, compressed=False, device="cuda"):
+def rope_table(max_length=16384, *, compressed=False, device="cuda", rope=None):
     """Checkpoint YaRN applies to compressed layers even below 16K tokens."""
-    dim, base = 64, 160000.0 if compressed else 10000.0
+    if rope is None:
+        from ..weights import Geometry
+
+        rope = Geometry().rope_parameters()
+    dim, base = 64, rope.compressed_theta if compressed else rope.window_theta
     frequencies = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
     if compressed:
-        original, factor = 65536, 16.0
+        original, factor = rope.original_context, rope.factor
 
         def corrected(rotations):
             return (
@@ -107,8 +115,8 @@ def rope_table(max_length=16384, *, compressed=False, device="cuda"):
             )
 
         low, high = (
-            max(math.floor(corrected(32)), 0),
-            min(math.ceil(corrected(1)), dim - 1),
+            max(math.floor(corrected(rope.beta_fast)), 0),
+            min(math.ceil(corrected(rope.beta_slow)), dim - 1),
         )
         ramp = (
             (torch.arange(dim // 2, dtype=torch.float32) - low) / max(high - low, 1e-3)

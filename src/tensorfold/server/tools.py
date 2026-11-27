@@ -58,7 +58,7 @@ def tool_choice_requires_call(tool_choice: Any) -> bool:
     return False
 
 
-def validate_tool_choice(tools: list[dict[str, Any]], tool_choice: Any) -> None:
+def validate_tool_choice(tools: list[dict[str, Any]], tool_choice: Any, *, tool_name=tool_spec_name) -> None:
     if not isinstance(tool_choice, dict):
         return
     if str(tool_choice.get("type") or "").lower() != "function":
@@ -66,15 +66,15 @@ def validate_tool_choice(tools: list[dict[str, Any]], tool_choice: Any) -> None:
     function = tool_choice.get("function")
     if not isinstance(function, dict):
         raise ValueError("tool_choice function must include a function object")
-    requested = str(function.get("name") or "").strip()
+    requested = tool_name(tool_choice)
     if not requested:
         raise ValueError("tool_choice function must include a name")
-    known = {tool_spec_name(tool) for tool in tools}
+    known = {tool_name(tool) for tool in tools}
     if requested not in known:
         raise ValueError(f"tool_choice requested unknown tool '{requested}'")
 
 
-def active_tool_specs(tools: Any, tool_choice: Any) -> list[dict[str, Any]]:
+def active_tool_specs(tools: Any, tool_choice: Any, *, tool_name=tool_spec_name) -> list[dict[str, Any]]:
     """The tools the template offers: none for "none", only the named one for a named function."""
 
     specs = normalize_tool_specs(tools)
@@ -84,10 +84,10 @@ def active_tool_specs(tools: Any, tool_choice: Any) -> list[dict[str, Any]]:
         if tool_choice_requires_call(tool_choice):
             raise ValueError("tool_choice requires a tool call, but the request offers no tools")
         return []
-    validate_tool_choice(specs, tool_choice)
+    validate_tool_choice(specs, tool_choice, tool_name=tool_name)
     if isinstance(tool_choice, dict) and str(tool_choice.get("type") or "").lower() == "function":
-        named = str(tool_choice["function"].get("name") or "").strip()
-        return [tool for tool in specs if tool_spec_name(tool) == named]
+        named = tool_name(tool_choice)
+        return [tool for tool in specs if tool_name(tool) == named]
     return specs
 
 
@@ -426,6 +426,7 @@ def stream_tool_call_deltas(tool_calls: list[dict[str, Any]]) -> list[dict[str, 
                         "index": index,
                         "id": str(tool_call.get("id") or f"call_{index}"),
                         "type": str(tool_call.get("type") or "function"),
+                        **({"namespace": tool_call["namespace"]} if "namespace" in tool_call else {}),
                         "function": {
                             "name": str(function.get("name") or ""),
                             "arguments": "",

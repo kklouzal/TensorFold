@@ -6,9 +6,9 @@ gate, HC 4 x 5120, mHC fn [24, 20480]).
 Exactness (bitwise, ``torch.equal``):
   * band.route_local == route_topk + Target.moe's former torch EP mapping (both EP groups, M 1..64 and 8192);
   * band.add_halves == a.float() + b.float();
-  * batch invariance of the patch-89 band: short_rms_norm / fp32_projection (gate, mHC) / hc_transition over M
+  * batch invariance of the patch-89 band: rms_norm / fp32_projection (gate, mHC) / hc_transition over M
     rows == the same rows computed one at a time (M 7..64);
-Bands: short_rms_norm M <= 64, the gate projection M <= 12, the HC transition M <= 16 (band.py).
+This probe samples RMS through M64, the gate row projection through M12 and the HC row transition through M16.
 Numerics: max relative error vs FP64 of the band kernels and of the former M > 6 paths (torch norm, F.linear FP32,
 windowed per-token HC transition).
 Timings: us per call inside a CUDA graph of 40 calls (distinct weights per call for the gate), M 1..32: former vs
@@ -89,8 +89,8 @@ for width in (128, 512, 1280, 5120):
     good = True
     for m in (7, 8, 16, 24, 32, 64):
         x = (torch.randn(m, width, device=dev) * 2).half()
-        y = norm.short_rms_norm(x, w, 1e-20)
-        good &= all(torch.equal(y[i:i + 1], norm.short_rms_norm(x[i:i + 1], w, 1e-20)) for i in range(m))
+        y = norm.rms_norm(x, w, 1e-20)
+        good &= all(torch.equal(y[i:i + 1], norm.rms_norm(x[i:i + 1], w, 1e-20)) for i in range(m))
     inv[f"rms{width}"] = bool(good)
 gate = (torch.randn(E, H, device=dev) * 0.02).bfloat16()
 fn = torch.randn(24, 4 * H, device=dev) * 0.01
@@ -139,7 +139,7 @@ x = (torch.randn(m, 1280, device=dev) * 2).half()
 w = torch.rand(1280, device=dev) + 0.5
 ref = x.double() * torch.rsqrt(x.double().square().mean(-1, keepdim=True) + 1e-20) * w.double()
 old = (x.float() * torch.rsqrt(x.float().square().mean(-1, keepdim=True) + 1e-20) * w).half()
-out["error"]["rms1280_M32"] = {"band": rel(norm.short_rms_norm(x, w, 1e-20), ref), "former": rel(old, ref)}
+out["error"]["rms1280_M32"] = {"band": rel(norm.rms_norm(x, w, 1e-20), ref), "former": rel(old, ref)}
 x = torch.randn(m, H, device=dev).half()
 ref = x.double() @ gate.double().t()
 out["error"]["gate_M32"] = {"band": rel(fp32_projection(x, gate), ref),
@@ -172,7 +172,7 @@ for m in (1, 2, 4, 6, 7, 8, 12, 16, 24, 32, 48, 64):
     wn = torch.rand(1280, device=dev) + 0.5
     row["rms1280_former"] = graph_us(
         lambda i: (xn.float() * torch.rsqrt(xn.float().square().mean(-1, keepdim=True) + 1e-20) * wn).half())
-    row["rms1280_band"] = graph_us(lambda i: norm.short_rms_norm(xn, wn, 1e-20))
+    row["rms1280_band"] = graph_us(lambda i: norm.rms_norm(xn, wn, 1e-20))
     residual, y, post, comb, pre, nw, scale, base = hc_inputs(m)
     row["hc_band"] = graph_us(lambda i: hc_transition(residual, y, post, comb, pre, nw, fn, scale, base))
     mhc_fused.HC_ROWS = 8

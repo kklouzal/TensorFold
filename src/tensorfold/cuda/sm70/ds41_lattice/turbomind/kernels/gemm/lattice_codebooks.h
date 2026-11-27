@@ -777,6 +777,7 @@ static __device__ __align__(16) const uint8_t lattice_grid_19[] = {
 template<> struct LatticeCodebook<19> {
   static constexpr int kBytes = 16384;
   static constexpr int kWidth = 8;
+  __device__ static const uint8_t* data() { return lattice_grid_19; }
   __device__ static uint8_t value(int index) { return lattice_grid_19[index]; }
   __device__ static uint32_t word(int index) {
     return reinterpret_cast<const uint32_t*>(lattice_grid_19)[index];

@@ -7,6 +7,7 @@ new ones are encoded together with the GIL released.
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 from array import array
@@ -30,14 +31,18 @@ class _Segment:
         return iter(self.ids)
 
 
+class UnsupportedSegmentOpener(ValueError):
+    """The current tokenizer cannot preserve encoding at this split."""
+
+
 class SegmentEncoder:
     """``tok.encode(text, add_special_tokens=False).ids`` for chat text, a segment (from one ``opener`` to the next) at
-    a time. Exact when ``opener`` is an added token the tokenizer splits its input at before normalizing and
-    pre-tokenizing (``qualifies``): no merge, normalization or other added token crosses it. Thread-safe."""
+    a time. Exact when the opener isolates the two sides before pre-tokenizing. The default requires a raw
+    AddedToken. An explicit identity-normalizer route may qualify a normalized one. Thread-safe."""
 
-    def __init__(self, tok: Any, opener: str, limit: int = LIMIT) -> None:
-        if not self.qualifies(tok, opener):
-            raise ValueError(f"{opener!r} is not an added token the tokenizer splits on exactly")
+    def __init__(self, tok: Any, opener: str, limit: int = LIMIT, *, identity_normalized: bool = False) -> None:
+        if not self.qualifies(tok, opener, identity_normalized=identity_normalized):
+            raise UnsupportedSegmentOpener(f"{opener!r} is not an added token the tokenizer splits on exactly")
         self.tok, self.opener, self.limit = tok, opener, int(limit)
         self.cache: OrderedDict[str, _Segment] = OrderedDict()
         self.held = 0
@@ -45,21 +50,56 @@ class SegmentEncoder:
         self._controls = frozenset()
 
     @staticmethod
-    def qualifies(tok: Any, opener: str) -> bool:
-        """``opener`` is an added token matched on the raw text (no strip, single-word or normalized flags; special
-        tokens split, as ``encode_special_tokens`` off leaves them); no other added token can match across its start
-        (none ends with a prefix of it or holds it past its own first character, which leftmost-longest matching
-        would prefer to it); and no truncation or padding acts on each segment's encoding apart."""
+    def qualifies(tok: Any, opener: str, *, identity_normalized: bool = False) -> bool:
+        """Check that an added token isolates the text on either side before pre-tokenizing.
+
+        No token can overlap its start, where leftmost-longest matching would prefer the earlier one.
+        Strip flags, padding and truncation would make separately encoded segments differ.
+        """
 
         added = list(tok.get_added_tokens_decoder().values())
         token = next((t for t in added if t.content == opener), None)
-        if token is None or token.lstrip or token.rstrip or token.normalized or token.single_word:
+        if token is None or token.lstrip or token.rstrip or token.single_word:
             return False
         if token.special and tok.encode_special_tokens or tok.truncation is not None or tok.padding is not None:
             return False
-        return not any(opener in t.content[1:] or any(opener.startswith(t.content[i:])
-                                                      for i in range(1, len(t.content)))
-                       for t in added if t.content != opener)
+        others = [t for t in added if t.content != opener]
+        if any(opener in t.content[1:] or any(opener.startswith(t.content[i:]) for i in range(1, len(t.content)))
+               for t in others):
+            return False
+        if identity_normalized:
+            return token.normalized and SegmentEncoder._identity_normalized_opener(tok, opener, others)
+        return not token.normalized
+
+    @staticmethod
+    def _identity_normalized_opener(tok, opener, others):
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            if version("tokenizers") != "0.23.3":
+                return False
+        except PackageNotFoundError:
+            return False
+        data = json.loads(tok.to_str())
+        if data.get("normalizer") != {"type": "Sequence", "normalizers": []}:
+            return False
+        model = data.get("model", {})
+        if model.get("type") != "BPE" or model.get("dropout") is not None:
+            return False
+        if data.get("post_processor") != {"type": "ByteLevel", "add_prefix_space": True,
+                                          "trim_offsets": False, "use_regex": True}:
+            return False
+        # The raw AddedToken pass precedes the normalized pass. It cannot
+        # consume any part of this opener, and matching at its start must
+        # have no longer alternative or neighbor-dependent whitespace.
+        for token in others:
+            text = token.content
+            if token.single_word or token.lstrip or token.rstrip or text.startswith(opener):
+                return False
+            if not token.normalized and (text in opener or any(
+                    opener.endswith(text[:i]) for i in range(1, min(len(text), len(opener)) + 1))):
+                return False
+        return True
 
     def encode(self, text: str, *, ids_credit=None, cache_credit=None) -> list[int]:
         return self._encode(text, ids_credit=ids_credit, cache_credit=cache_credit)

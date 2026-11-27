@@ -10,7 +10,11 @@ MODEL_TYPES = ("deepseek_v4", "deepseek_v41")
 V41 = "deepseek_v41"
 TITLE = "DeepSeek-V4-Flash"
 LANES = True
-CUDA_TP8 = True              # DeepSeek-V4.1 GGUF: TP8 attention/dense + ETP4 x EP2 experts on eight V100s
+CUDA_TP8 = True              # DeepSeek-V4.1 GGUF on eight V100s with TP8 attention and dense layers
+ROTOR_KV_DTYPE = "rotorquant-iso64-norm4-h64"
+NATIVE_KV_DTYPE = "fp8-window+fp4-compressed"
+CUDA_KV_DTYPES = (NATIVE_KV_DTYPE, "bf16", ROTOR_KV_DTYPE)
+ROPE_BACKENDS = ("cuda",)
 # affine 4-bit groups of 64, routed experts in mxfp4 (DeepSeek's own FP4 bytes)
 MODELS = ("mlx-community/DeepSeek-V4-Flash-4bit",)
 # DeepSeek's DSpark blocks converted (MIT); TensorFold/DeepSeek-V4-Flash-MTP-MLX holds the MTP layer the same way
@@ -128,9 +132,19 @@ def cuda_chat_template(model_dir: str | Path, *, template_file=None, template_na
     return chat_template(model_dir, template_file=template_file, template_name=template_name)
 
 
+def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
+    from tensorfold.families import read_config
+    from .cuda.weights import Geometry
+
+    config = read_config(model_dir)
+    if config.get("model_type") != V41:
+        raise ValueError("DeepSeek --yarn-factor requires DeepSeek-V4.1-Flash on CUDA")
+    return Geometry.from_config(config).rope_parameters(yarn_factor)
+
+
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0, master: str = "",
                 master_port: int = 29551, no_drafts: bool = False, context: int | None = None, **options: Any):
-    """DeepSeek-V4.1-Flash GGUF on eight V100s: TP8 attention/dense, ETP4 x EP2 routed experts."""
+    """DeepSeek-V4.1-Flash GGUF on eight V100s with selectable routed-expert tensor parallelism."""
     from tensorfold.families import read_config
 
     if read_config(model_dir).get("model_type") != V41:

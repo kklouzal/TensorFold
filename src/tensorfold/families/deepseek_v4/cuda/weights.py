@@ -1,39 +1,63 @@
-"""DeepSeek-V4.1-Flash GGUF weights for one rank of the SM70 TP4 x EP2 lane.
+"""DeepSeek-V4.1-Flash GGUF weights for one rank of the eight-GPU SM70 engine.
 
 TP8 attention/dense (the Flash Next / Gemma 4 lane layout): rank r owns slice r of every sharded projection (8
 query heads, one output group, 4 indexer heads, 288 shared-expert rows, 1/8 of the Engram value projection and
-the vocabulary); the routed experts are ETP4 x EP2: expert group g = r // 4 ([192 g, 192 g + 192)) at expert TP
-slice e = r % 4, the 1Cat-vLLM DS41 TP4 expert carriers unchanged. Routed and shared partials meet in one 8-rank sum.
+the vocabulary). Routed experts use one, two or four tensor-parallel lanes per group. Expert group g = r // ETP owns
+an equal, contiguous range of expert IDs, and lane r % ETP owns its contiguous intermediate slice.
+Routed and shared partials meet in one eight-rank sum.
 
 Names follow the ISTA-branch GGUF layout the 1Cat adapter (gguf_adapters/deepseek_v41.py at 1Cat-vLLM 4d57473d)
 was qualified on; the uncensored AtomicChat backbone uses it unchanged. The Engram table is the llama.cpp file
 (one ``per_layer_token_embd.weight``), split by the backbone's per-layer bucket sums (the friend's patch 221).
 
 Projections are decoded once to FP16 on the GPU (the upstream "original dense storage" restore that its prefill
-GEMMs use); routed experts keep their original IQ1_M/IQ2_XXS/IQ2_XS bytes for the 1Cat dp4a kernels, in the
-upstream TP4 carriers: gate/up rows [576 t, +576), down columns of the three 256-blocks covering [576 t, +576)
-starting at ``left`` = 576 e mod 256.
+GEMMs use). Routed experts keep their original IQ1_M/IQ2_XXS/IQ2_XS bytes.
+Each down row retains the complete 256-column blocks covering its assigned slice and its in-block offset.
 """
 
 from __future__ import annotations
 
 import math
+import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
+from functools import partial
 
 import numpy as np
 
+from tensorfold.cleanup import finish, raise_failures
 from tensorfold.gguf_file import FORMATS, GGUFCheckpoint, PackedTensor, _shard
 
 TP = 8                                   # attention/dense ranks
-ETP = 4                                  # expert tensor-parallel ranks per expert group
-EP = 2                                   # expert groups
+ETP = 4                                  # default expert tensor-parallel ranks per expert group
+EXPERT_TP_SIZES = (1, 2, ETP)
 WORLD = TP
 EXPERT_TYPES = (16, 17, 29)              # IQ2_XXS, IQ2_XS, IQ1_M
 DENSE_TYPES = (8, 13)                    # Q8_0, Q5_K
 IQ4_NL = 20
 ENGRAM_TABLE = "per_layer_token_embd.weight"
 ENGRAM_ROW_BYTES = 144                   # 256 IQ4_NL values
+
+
+def checked_etp(degree: int | None) -> int:
+    if degree is None:
+        return ETP
+    if type(degree) is not int or degree not in EXPERT_TP_SIZES:
+        raise ValueError("DeepSeek-V4.1 CUDA expert tensor parallelism requires degree 1, 2 or 4")
+    return degree
+
+
+@dataclass(frozen=True)
+class RopeParameters:
+    factor: float
+    context_limit: int
+    original_context: int
+    beta_fast: float
+    beta_slow: float
+    window_theta: float
+    compressed_theta: float
+    rope_type = "yarn"
 
 
 @dataclass(frozen=True)
@@ -111,7 +135,39 @@ class Geometry:
                 or g.engram_layers != (1, 14) or g.swiglu_limit != 10.0 or len(g.compress_ratios) != 40):
             raise ValueError("DeepSeek-V4.1 CUDA lane admits the V4.1 Flash geometry only (the ported 1Cat kernels' "
                              f"contract); this checkpoint has {actual}")
+        if (g.candidate_source, g.candidate_blocks, g.candidate_block) not in ((-1, 0, 0), (20, 2048, 8)):
+            raise ValueError("DeepSeek-V4.1 CUDA requires the released hierarchical index geometry")
+        if g.candidate_source == 20 and any(g.compress_ratios[i] != 1 for i in g.index_sources if i >= 20):
+            raise ValueError("DeepSeek-V4.1 decoder candidate blocks require ratio-one index sources")
         return g
+
+    def rope_parameters(self, yarn_factor: float | None = None) -> RopeParameters:
+        """YaRN scales the compressed layers. The window-only layers keep plain RoPE."""
+        scaling = self.rope_scaling
+        kind = scaling.get("rope_type", scaling.get("type", "yarn"))
+        if kind != "yarn" or scaling.get("type", kind) != kind:
+            raise ValueError("DeepSeek-V4.1 compressed layers require static YaRN")
+        original = scaling.get("original_max_position_embeddings", 65_536)
+        if type(original) is not int or not 0 < original <= self.max_positions:
+            raise ValueError("DeepSeek-V4.1 YaRN original context must be within the checkpoint's context")
+        native = scaling.get("factor", 16.0)
+        factor = native if yarn_factor is None else yarn_factor
+        fast, slow = scaling.get("beta_fast", 32), scaling.get("beta_slow", 1)
+        floats = np.finfo(np.float32)
+        least, most = float(floats.smallest_subnormal), float(floats.max)
+        for value, name in ((factor, "YaRN factor"), (fast, "beta_fast"), (slow, "beta_slow"),
+                            (self.rope_theta, "rope_theta"), (self.compress_rope_theta, "compress_rope_theta")):
+            if type(value) not in (int, float) or not least <= value <= most:
+                raise ValueError(f"DeepSeek-V4.1 {name} must be positive in the finite FP32 range")
+        if factor < 1:
+            raise ValueError("DeepSeek-V4.1 requires YaRN factor >= 1")
+        if np.float32(min(self.rope_theta, self.compress_rope_theta)) <= 1:
+            raise ValueError("DeepSeek-V4.1 RoPE bases must exceed 1 in FP32")
+        if slow > fast:
+            raise ValueError("DeepSeek-V4.1 YaRN beta_slow cannot exceed beta_fast")
+        context = self.max_positions if factor >= self.max_positions / original else math.floor(original * factor)
+        return RopeParameters(float(factor), context, original, float(fast), float(slow), self.rope_theta,
+                              self.compress_rope_theta)
 
     def source_of(self, layer: int) -> int:
         """The KV source layer a compressed layer reads (the last source at or below it)."""
@@ -122,25 +178,96 @@ class Geometry:
 class Shards:
     """Read-only maps of the checkpoint files; slices are copied out (never retained views of the map)."""
 
-    def __init__(self, entry: Path, engram: Path):
-        self.ck = GGUFCheckpoint.open(entry)
+    def __init__(self, entry: Path, engram: Path, *, bind_files=False):
+        self._files = {} if bind_files else None
+        self._maps: dict[Path, np.memmap] = {}
+        try:
+            self._inventory(entry, engram)
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                raise_failures(primary, [cleanup])
+            raise
+
+    def _inventory(self, entry: Path, engram: Path):
+        opener = self._open_inventory if self._files is not None else None
+        self.ck = GGUFCheckpoint.open(entry, opener=opener) if opener else GGUFCheckpoint.open(entry)
         self.tensors = dict(self.ck.tensors)
         if ENGRAM_TABLE in self.tensors:
             raise ValueError("this backbone carries the Engram table as a shard; pass the backbone only")
         # the llama.cpp file is shard 6 of ISTA's 6-shard set (its split metadata counts that set's tensors), read
         # here as one standalone shard
-        _, entries = _shard(Path(engram).resolve(strict=True))
+        path = Path(engram).resolve(strict=True)
+        _, entries = _shard(path, opener=opener) if opener else _shard(path)
         if [t.name for t in entries] != [ENGRAM_TABLE]:
             raise ValueError(f"{engram}: the llama.cpp Engram file holds exactly {ENGRAM_TABLE}")
         self.engram = entries[0]
         if self.engram.ggml_type != IQ4_NL or self.engram.shape[-1] != 256:
             raise ValueError("the Engram table must be IQ4_NL rows of 256 values")
-        self._maps: dict[Path, np.memmap] = {}
+
+    @staticmethod
+    def _file_stamp(fd):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("DeepSeek checkpoint data must be a regular file")
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def _open_inventory(self, path):
+        if path in self._files:
+            raise ValueError(f"{path}: duplicate DeepSeek checkpoint file")
+        resolved = path.resolve(strict=True)
+        fd = os.open(resolved, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+        try:
+            self._files[path] = fd, str(resolved), self._file_stamp(fd)
+        except BaseException as primary:
+            try:
+                os.close(fd)
+            except BaseException as cleanup:
+                raise_failures(primary, [cleanup])
+            raise
+        return self._file_stream(path)
+
+    def _file_stream(self, path):
+        fd = self.duplicate_file(path)
+        try:
+            return os.fdopen(fd, "rb")
+        except BaseException as primary:
+            try:
+                os.close(fd)
+            except BaseException as cleanup:
+                raise_failures(primary, [cleanup])
+            raise
+
+    @property
+    def bound_files(self) -> bool:
+        return self._files is not None
+
+    def duplicate_file(self, path):
+        """Give a consumer its own descriptor for the already parsed inode."""
+        fd, _, stamp = self._files[path]
+        if self._file_stamp(fd) != stamp:
+            raise ValueError(f"{path}: the bound DeepSeek checkpoint changed during startup")
+        return os.dup(fd)
+
+    def verify_placement_files(self):
+        for path, (fd, _, stamp) in self._files.items():
+            if self._file_stamp(fd) != stamp:
+                raise ValueError(f"{path}: the bound DeepSeek checkpoint changed during startup")
+
+    def placement_files(self):
+        self.verify_placement_files()
+        return tuple((resolved, *stamp) for _, resolved, stamp in self._files.values())
 
     def _map(self, path: Path) -> np.memmap:
         found = self._maps.get(path)
         if found is None:
-            found = self._maps[path] = np.memmap(path, dtype=np.uint8, mode="r")
+            if self._files is None:
+                found = np.memmap(path, dtype=np.uint8, mode="r")
+            else:
+                with self._file_stream(path) as stream:
+                    found = np.memmap(stream, dtype=np.uint8, mode="r")
+            self._maps[path] = found
         return found
 
     def raw(self, name: str) -> tuple[PackedTensor, np.ndarray]:
@@ -154,6 +281,10 @@ class Shards:
 
     def close(self) -> None:
         self._maps.clear()
+        if self._files:
+            descriptors = [fd for fd, _, _ in self._files.values()]
+            self._files.clear()
+            finish(partial(os.close, fd) for fd in descriptors)
 
 
 def _check_finite(name, tensor, limit=65504.0):
@@ -163,15 +294,29 @@ def _check_finite(name, tensor, limit=65504.0):
         raise ValueError(f"{name}: decoded values exceed FP16")
 
 
+def _expert_runs(experts):
+    """Consecutive source runs in the requested physical-slot order."""
+    start = previous = experts[0]
+    for current in experts[1:]:
+        if current != previous + 1:
+            yield start, previous - start + 1
+            start = current
+        previous = current
+    yield start, previous - start + 1
+
+
 class Loader:
     """Per-rank device tensors from the shards (every projection decoded once, in bounded row chunks)."""
 
     CHUNK_BYTES = 64 << 20
 
-    def __init__(self, shards: Shards, rank: int, device, staging):
+    def __init__(self, shards: Shards, rank: int, device, staging, *,
+                 expert_tensor_parallel_size: int | None = None, compact_expert_down: bool = False):
         import torch
         self.s, self.rank, self.device = shards, rank, device
-        self.t, self.e, self.g = rank, rank % ETP, rank // ETP
+        self.etp = checked_etp(expert_tensor_parallel_size)
+        self.compact_expert_down = compact_expert_down and self.etp == ETP
+        self.t, self.e, self.g = rank, rank % self.etp, rank // self.etp
         self.torch = torch
         self.staging = staging          # staging.Staging: pinned-buffer uploads of the large byte ranges
 
@@ -281,35 +426,67 @@ class Loader:
         return self.dense(name, cols=(self.t * n, n))
 
     # --- routed experts
-    def expert_bank(self, name, down: bool):
-        """Original bytes of this rank's experts: gate/up [192, 576, rb], down [192, 5120, 3 blocks]."""
+    def expert_bank(self, name, geometry: Geometry, *, down: bool, expert_ids=None):
+        """Original bytes of this rank's gate/up rows and the whole down blocks covering its input columns."""
         torch = self.torch
         t = self.s.tensors[name]
         kind = t.ggml_type
         if kind not in EXPERT_TYPES:
             raise ValueError(f"{name}: routed experts must be IQ2_XXS, IQ2_XS or IQ1_M, found {FORMATS[kind][0]}")
         _, block, size = FORMATS[kind]
+        rows = (geometry.hidden, geometry.moe_inter) if down else (geometry.moe_inter, geometry.hidden)
+        if t.shape != (geometry.experts, *rows):
+            raise ValueError(f"{name}: expert tensor shape {t.shape} does not match {(geometry.experts, *rows)}")
         experts, out_rows, k = t.shape
-        local = experts // EP
+        local = experts // (TP // self.etp)
         first = self.g * local
         row = k // block * size                     # bytes of one output row of one expert
         if down:
             inter = k
-            share = inter // ETP
+            share = inter // self.etp
             b0 = self.e * share // block
             left = self.e * share - b0 * block
-            if left + share > 3 * block or (b0 + 3) * block > inter:
-                raise ValueError("down carrier does not cover the rank's 576 columns")
-            # the group's experts are one contiguous byte range; the rank's three blocks per row are cut on the GPU
-            whole = torch.empty((local, out_rows, row), dtype=torch.uint8, device=self.device)
-            self.staging.copy(t.path, [(t.offset + first * out_rows * row, local * out_rows * row)], whole)
-            out = whole[:, :, b0 * size:(b0 + 3) * size].contiguous()
-            del whole
+            blocks = -(-(left + share) // block)
+            if (b0 + blocks) * block > inter:
+                raise ValueError("down carrier does not cover the rank's input columns")
+            expert_bytes = out_rows * row
+            runs = ((first, local),) if expert_ids is None else _expert_runs(expert_ids)
+            if self.compact_expert_down:
+                from tensorfold.cuda.sm70 import ds41_decode_moe
+
+                if (inter, block, share) != (2304, 256, 576):
+                    raise ValueError("compact ETP4 down rows require nine source blocks and a 576-column slice")
+                ext = ds41_decode_moe.extension()
+                width = ext.compact_down_row_bytes(kind)
+                start_group = self.e * share // 32
+                out = torch.empty((local, out_rows, width), dtype=torch.uint8, device=self.device)
+
+                def pack(source, destination):
+                    ext.pack_down_fragments(source, destination, kind, start_group)
+
+                if expert_ids is None:
+                    self.staging.copy_packed_rows(t.path, t.offset + first * expert_bytes, row, out, pack)
+                else:
+                    slot = 0
+                    for source, count in runs:
+                        self.staging.copy_packed_rows(t.path, t.offset + source * expert_bytes, row,
+                                                      out[slot:slot + count], pack)
+                        slot += count
+            else:
+                whole = torch.empty((local, out_rows, row), dtype=torch.uint8, device=self.device)
+                spans = [(t.offset + source * expert_bytes, count * expert_bytes) for source, count in runs]
+                self.staging.copy(t.path, spans, whole)
+                out = whole[:, :, b0 * size:(b0 + blocks) * size].contiguous()
         else:
-            share = out_rows // ETP
+            share = out_rows // self.etp
             out = torch.empty((local, share, row), dtype=torch.uint8, device=self.device)
-            self.staging.copy(t.path, [(t.offset + ((first + e) * out_rows + self.e * share) * row, share * row)
-                                       for e in range(local)], out)
+            if share == out_rows:
+                runs = ((first, local),) if expert_ids is None else _expert_runs(expert_ids)
+                spans = [(t.offset + source * out_rows * row, count * out_rows * row) for source, count in runs]
+            else:
+                experts = range(first, first + local) if expert_ids is None else expert_ids
+                spans = [(t.offset + (e * out_rows + self.e * share) * row, share * row) for e in experts]
+            self.staging.copy(t.path, spans, out)
             left = 0
         return out, kind, left
 
@@ -355,6 +532,8 @@ class Layer:
     source: int = -1
     owns_kv: bool = False
     has_indexer: bool = False
+    expert_to_local: object = None   # optional int32[E], -1 for a global expert owned by another group
+    expert_groups_changed: bool = False   # cohort-wide canonical ownership, independent of this rank's slot order
 
 
 @dataclass
@@ -372,28 +551,52 @@ class Weights:
     engram_offsets: object
     engram_multipliers: object
     dense_scratch: object = None   # ds41_dense.Scratch shared by every dmv13 group of this rank
+    expert_tensor_parallel_size: int = ETP
+    compact_expert_down: bool = False
 
     @property
     def group(self):
-        return self.rank // ETP
+        return self.rank // self.expert_tensor_parallel_size
+
+    @property
+    def local_experts(self) -> range:
+        count = self.geometry.experts // (TP // self.expert_tensor_parallel_size)
+        first = self.group * count
+        return range(first, first + count)
 
 
-def load(shards: Shards, geometry: Geometry, rank: int, device, layers: range | None = None) -> Weights:
+def load(shards: Shards, geometry: Geometry, rank: int, device, layers: range | None = None, *,
+         expert_tensor_parallel_size: int | None = None, compact_expert_down: bool = False,
+         expert_placement: tuple[tuple[int, ...], ...] | None = None) -> Weights:
     from .staging import Staging
-    staging = Staging()
+
+    if expert_placement is not None:
+        expected = list(range(geometry.experts))
+        if (type(expert_placement) is not tuple or len(expert_placement) != geometry.layers
+                or any(type(row) is not tuple or len(row) != geometry.experts
+                       or any(type(e) is not int for e in row) or sorted(row) != expected
+                       for row in expert_placement)):
+            raise ValueError("DeepSeek expert placement requires one global expert permutation per layer")
+    staging = Staging(open_fd=shards.duplicate_file) if shards.bound_files else Staging()
     try:
-        return _load(Loader(shards, rank, device, staging), shards, geometry, rank, device, layers)
+        loader = Loader(shards, rank, device, staging, expert_tensor_parallel_size=expert_tensor_parallel_size,
+                        compact_expert_down=compact_expert_down)
+        return _load(loader, shards, geometry, rank, device, layers, expert_placement)
     finally:
         staging.close()
 
 
-def _load(L, shards, geometry, rank, device, layers):
+def _load(L, shards, geometry, rank, device, layers, expert_placement=None):
     import torch
     from tensorfold.cuda.sm70 import ds41_dense as dense
     g = geometry
     f32 = torch.float32
     scratch = dense.Scratch(device)
     group = lambda *members: dense.Group(members, scratch)   # noqa: E731
+    if expert_placement is not None:
+        from .expert_transfer import expert_groups_changed, local_expert_layout
+
+        group_slots = g.experts // (TP // L.etp)
     out = []
     for i in (layers if layers is not None else range(g.layers)):
         p = f"blk.{i}."
@@ -429,11 +632,19 @@ def _load(L, shards, geometry, rank, device, layers):
             ly.idx_proj = L.column(p + "indexer.proj.weight")
         ly.gate = L.router_gate(p + "ffn_gate_inp.weight")
         ly.gate_bias = L.floating(p + "exp_probs_b.bias", f32)
-        ly.exp_gate, ly.gate_up_type, _ = L.expert_bank(p + "ffn_gate_exps.weight", down=False)
-        ly.exp_up, up_type, _ = L.expert_bank(p + "ffn_up_exps.weight", down=False)
+        placement = {}
+        if expert_placement is not None:
+            row = expert_placement[i]
+            ly.expert_groups_changed = expert_groups_changed(row, group_slots=group_slots)
+            layout = local_expert_layout(row, owner=L.g, group_slots=group_slots)
+            if layout is not None:
+                placement["expert_ids"], local = layout
+                ly.expert_to_local = torch.tensor(local, dtype=torch.int32, device=device)
+        ly.exp_gate, ly.gate_up_type, _ = L.expert_bank(p + "ffn_gate_exps.weight", g, down=False, **placement)
+        ly.exp_up, up_type, _ = L.expert_bank(p + "ffn_up_exps.weight", g, down=False, **placement)
         if up_type != ly.gate_up_type:
             raise ValueError(f"{p}: gate/up expert formats differ")
-        ly.exp_down, ly.down_type, ly.down_left = L.expert_bank(p + "ffn_down_exps.weight", down=True)
+        ly.exp_down, ly.down_type, ly.down_left = L.expert_bank(p + "ffn_down_exps.weight", g, down=True, **placement)
         sh_gate, sh_up = L.column_planes(p + "ffn_gate_shexp.weight"), L.column_planes(p + "ffn_up_shexp.weight")
         ly.sh_gate, ly.sh_up, ly.sh_gu = group(sh_gate), group(sh_up), group(sh_gate, sh_up)
         ly.sh_down = group(L.row_planes(p + "ffn_down_shexp.weight"))
@@ -450,6 +661,7 @@ def _load(L, shards, geometry, rank, device, layers):
     embed, embed_type = _embedding_shard(shards, L.t * vocab, vocab, device)
     head = group(L.planes("output.weight", rows=(L.t * vocab, vocab)))
     return Weights(geometry=g, rank=rank, layers=out, embed=embed, embed_type=embed_type,
+                   expert_tensor_parallel_size=L.etp, compact_expert_down=L.compact_expert_down,
                    embed_first=L.t * vocab, head=head, dense_scratch=scratch,
                    norm=L.floating("output_norm.weight", f32),
                    engram_token_map=L.integers("engram_token_map.weight", torch.int32),

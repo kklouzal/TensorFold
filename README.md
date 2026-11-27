@@ -379,7 +379,7 @@ The table describes supported integration paths. It is not a promise that every 
 | Gemma 4 E4B | `DavidAU/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking` | CUDA BF16 candidate; [recipe](docs/recipes/gemma-4-e4b.md) | Native Google assistant and EAGLE3 candidates; comparison pending, neither is DFlash |
 | Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4; ModelOpt NVFP4 ([recipe](docs/recipes/gemma-4-26b-modelopt.md)) | MLX; initial CUDA trial; AEON-7 NVFP4 on eight V100s with `--tp 8` ([recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)) | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; BF16 companion or prepared FP8 in the qualified GB10 CT profile, one stream |
 | DeepSeek-V4-Flash | `mlx-community/DeepSeek-V4-Flash-4bit` | MLX on a 256 GB Mac | `Vontra/DeepSeek-V4-Flash-DSpark-MLX` or `Vontra/DeepSeek-V4-Flash-MTP-MLX` |
-| DeepSeek-V4.1-Flash-1017 GGUF | GSQ-RCO IQ2_XXS backbone + IQ4_NL Engram (host RAM) | CUDA SM70 on eight V100s, TP8/ETP4 x EP2, up to 32 streams, image input with `--vision` ([recipe](docs/recipes/deepseek-v41-v100.md)) | None yet (DSpark port pending) |
+| DeepSeek-V4.1-Flash-1017 GGUF | GSQ-RCO IQ2_XXS backbone + IQ4_NL Engram (host RAM) | CUDA SM70 on eight V100s, TP8/ETP4 x EP2, up to 32 streams, 128K H64 text with a 2.5 GiB prompt reserve per GPU, image input with `--vision` ([recipe](docs/recipes/deepseek-v41-v100.md)) | None yet (DSpark port pending) |
 | Qwen3.8-27B NVFP4 | `nvidia/Qwen3.8-27B-NVFP4`; `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` ([recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)) | CUDA, one GPU | DFlash2 and context copies |
 | Qwen3.8-27B EXL3, experimental | `turboderp/Qwen3.8-27B-exl3`, branches `3.00bpw` / `4.00bpw` | CUDA | DFlash2 and context copies |
 | Flash Next EXL3, experimental | `turboderp/Qwen3.8-Flash-Next-exl3`, branch `3.05bpw_h5_ng5` | CUDA | Included MTP and context copies |
@@ -464,7 +464,7 @@ sequence, and generation rejects prompts that exceed the served context.
 | `--eos-token-id ID` | Omitted: reconcile model/generation/tokenizer reply EOS. Repeat to replace the reply EOS set; PLE training EOS is unchanged. |
 | `--chat-template FILE`, `--chat-template-name NAME` | Omitted: checkpoint template, with automatic `default`/`tool_use` selection for named templates. Mutually exclusive explicit source/name overrides. |
 | `--tokenizer FILE` | CUDA only; omitted: the checkpoint's `tokenizer.json`. Encodes and decodes with FILE instead, admitted only when its vocabulary, merges and added tokens equal the checkpoint's (text handling such as the pre-tokenizer may differ); the startup log names the file, its SHA-256 and what differs. Read once at startup. Refused with `--vision` (its image prompts keep the checkpoint's tokenizer) and with several ranks (`--tp`, `--expert-ranks`). For a fine-tune that ships an altered pre-tokenizer, e.g. the AEON Qwen3.8-27B export (see the [27B recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)). |
-| `--temperature`, `--top-p`, `--top-k`, `--min-p` | Checkpoint `generation_config.json`; on both backends temperature falls back to 0, top-k to 0 (off), top-p to 1 (off), min-p to 0. Temperature 0 or top-p 0 is greedy; top-p and min-p outside 0 to 1 are refused at startup. |
+| `--temperature`, `--top-p`, `--top-k`, `--min-p` | Checkpoint `generation_config.json`; temperature usually falls back to 0, top-k to 0 (off), top-p to 1 (off), min-p to 0. Native CUDA DeepSeek-V4.1 defaults to temperature 1 and top-p 1. Temperature 0 or top-p 0 is greedy; top-p and min-p outside 0 to 1 are refused at startup. |
 | `--presence-penalty`, `--frequency-penalty`, `--repetition-penalty` | 0, 0 and the checkpoint's `generation_config.json` `repetition_penalty`, else 1 (off). OpenAI/vLLM penalties applied by the CUDA Gemma 4, Qwen dense and Qwen3.6 MoE CT NVFP4 engines on one GPU ([API](docs/api.md#penalties)); presence/frequency outside -2 to 2 or repetition at or below 0 are refused at startup; other engines and the Metal backend name defaults they do not apply and refuse requests asking for them. |
 | `--thinking`, `--no-thinking` | Thinking enabled by default when the template supports it. |
 | `--reasoning-effort low\|medium\|high\|xhigh` | Template default when unset; unnamed levels map to the nearest named level, ties upward. |
@@ -513,9 +513,9 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 | `--prefix-host-bytes BYTES` | Flash Next concurrent SM70 unique TP8 GPU histories with MTP (the V100 production path): pinned host RAM, all ranks together, each rank's share rounded down to a power of two (PyTorch pins power-of-two blocks) (on by default: 64 GiB across the ranks, at most a quarter of MemAvailable, agreed by every rank; `0` disables; a default slab that cannot be pinned starts without the tier, an explicit one is a startup error; refused elsewhere; under a stream of unique prompts its spills cost about 1-2% of prefill/decode throughput on the production benchmark), charged as a fixed host obligation before the HTTP payload pool. Prompt points the GPU prefix cache drops by value are copied there and restored into a free slot with the same history-page ownership on a hit (bit-identical to the GPU-resident point); never written to disk. A spill copies only the history rows past those the tier already holds for that slot's conversation (shared, reference-counted row extents), so each row is stored once per conversation rather than once per spilled point. `/stats` `prefix_cache.host` and Prometheus `prefix_host_*` report it. Gemma 4 on eight V100s (`--tp 8`) enables it by default (64 GiB across the ranks, at most a quarter of MemAvailable, agreed by every rank; `0` disables): evicted kept points (full-cache rows and ring snapshots) are copied to one pinned slab per rank allocated at startup and restored byte-exactly into a free slot; its full-cache rows are shared across a conversation's spills the same way. |
 | `--ssd-experts GIB` | Unset. Supported MLX families stream checkpoint experts into a GPU pool; distinct from RAM-backed CUDA experts and unsupported with CUDA `--vram-experts`. See the [Flash Next recipe](docs/recipes/qwen3.8-flash-next.md). |
 | `--ple-on-ssd` | Off. Supported Flash Next affine, BF16, FP8 and NVFP4 n-gram layouts use bounded demand SSD reads with their original decoding/scale semantics. EXL3 retains its native mapped table and rejects this flag. |
-| `--kv-dtype FORMAT` | Flash Next CUDA `bf16` (GGUF or `--family-manifest` without an explicit format: `fp16`); shorthand selects both K and V formats. Gemma 4 `--tp 8` on V100s: `bf16` (FP16 caches, the CLI default), `rotorquant8-norm` (Q8, the Compose default) or `rotorquant-iso64-norm4-h64` (Q4), same format on K and V; see the [Gemma 4 recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4). |
+| `--kv-dtype FORMAT` | Flash Next CUDA `bf16` (GGUF or `--family-manifest` without an explicit format: `fp16`); shorthand selects both K and V formats. Gemma 4 `--tp 8` on V100s: `bf16` (FP16 caches, the CLI default), `rotorquant8-norm` (Q8, the Compose default) or `rotorquant-iso64-norm4-h64` (Q4), same format on K and V; see the [Gemma 4 recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4). DeepSeek-V4.1 supports RotorQuant Q4 and its native `fp8-window+fp4-compressed` format, also selected by the historical `bf16` spelling. |
 | `--kv-key-dtype FORMAT`, `--kv-value-dtype FORMAT` | Unset; independently override their side of `--kv-dtype`. |
-| `--yarn-factor FACTOR` | Flash Next, Qwen3.8 dense and Qwen3.6 on CUDA: checkpoint factor unless overridden; finite factor ≥1. `--context` still governs admission. Qwen3.8 dense and Qwen3.6 extended-window qualification is pending ([27B](docs/recipes/qwen3.8-27b.md#context-and-yarn) and [Qwen3.6](docs/recipes/qwen3.6-moe.md#context-and-yarn) recipes). |
+| `--yarn-factor FACTOR` | Flash Next, Qwen3.8 dense, Qwen3.6 and DeepSeek-V4.1 on CUDA use the checkpoint factor unless overridden. DeepSeek scales compressed layers. A finite factor ≥1 is required. `--context` governs admission. Qwen3.8 dense and Qwen3.6 extended-window qualification is pending ([27B](docs/recipes/qwen3.8-27b.md#context-and-yarn) and [Qwen3.6](docs/recipes/qwen3.6-moe.md#context-and-yarn) recipes). |
 
 | `--prefix-cache-bytes N` | Gemma 4 MoE on CUDA: shared prefix-cache byte allowance (`0` disables); default uses the context-derived allowance. Explicit bytes keep the requested or native context and must fit full memory admission; no entry ceiling. See the [shared-prefix cache](#gemma-shared-prefix-cache). |
 
@@ -547,7 +547,7 @@ sections below; `tensorfold serve --help` remains authoritative.
 | `--spark-global-gqa`, `--spark-sampled-q` | Experimental Gemma 4 ModelOpt Sparkulator global GQA (requires explicit `--context` ≤ 131072) and sampled proposals (target sampling unchanged); default off, model gates pending. |
 | `--no-graphs` | Flash Next CUDA: execute whole forwards eagerly; required by the initial SM70 media profile. |
 | `--indexer-history gpu\|ram` | Flash Next GGUF/SM70: `gpu` (default) keeps full raw indexer history on the GPU; `ram` uses a bounded GPU ring with a NUMA-local RAM archive. See [eight V100s](#eight-v100s-sm70). |
-| `--expert-tensor-parallel-size 8\|4\|2` | Prepared Flash Next GGUF TP8 routed-expert degree (PP1 only); shared experts stay TP8; V100 qualification pending. |
+| `--expert-tensor-parallel-size 8\|4\|2\|1` | TP8 routed-expert degree. Flash Next GGUF supports 8, 4, or 2 (PP1). DeepSeek-V4.1 GGUF defaults to 4 and has experimental 1 and 2 options. Shared experts stay TP8. |
 | `--media-profile-manifest FILE` | With `--vision`, bounded SM70 TP8 media resources, processor and mmproj; requires `--no-graphs`. |
 | `--position-profile-manifest PATH` | Flash Next SM70 unique TP8 GPU histories: immutable target/MTP/draft positions; see [Context, RoPE and YaRN](#context-rope-and-yarn). |
 
@@ -672,6 +672,11 @@ These read once at startup on Apple Silicon; defaults are the qualified paths.
 
 ## KV cache formats
 
+DeepSeek-V4.1 on V100 uses the official 1017 32-channel FP8 grouping for its
+model-native sliding window and for attention output before projection.
+See the [DeepSeek precision recipe](docs/recipes/deepseek-v41-v100.md#attention-fp8-grouping)
+for FP16 staging, RotorQuant behavior and verification status.
+
 Flash Next's modern CUDA provider supports the following **16 formats**, with independent K/V selection; **BF16 is its default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable on that provider when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations. The GGUF SM70 provider admits `fp16` (its CLI default), `int8`, `rotorquant-signed128-4`, `rotorquant-signed64-norm4`, and the distinct compact `rotorquant-planar4-sm70-v1` / `rotorquant-iso4-sm70-v1`, with supported independent sides. Its unique-history TP8 owner path (the SC117 serving profile) additionally admits `rotorquant8`, `rotorquant8-norm`, `rotorquant-planar4`, `rotorquant-iso4`, `rotorquant-iso64-norm4` and the SM70-only `rotorquant-iso64-norm4-h64`, with the same format on K and V; every RotorQuant format on that path is written by the fused owned KV writer and read by the native sparse attention kernels, including captured decode rounds (see [RotorQuant KV on V100](#rotorquant-kv-on-v100-sm70)). Raw FP16 stores 512 bytes per 256-value K or V head, with a distinct storage identity; its indexer/pooled state is FP16. Other formats are refused before weight loading on SM70. Gemma 4 `--tp 8` on eight V100s admits `bf16` (FP16 caches, its CLI default), `rotorquant8-norm` (its Compose default) and `rotorquant-iso64-norm4-h64` for the target's full-attention caches, same format on K and V; sliding-window rings and the drafter stay FP16 (see the [Gemma 4 recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)).
 
 | Family | Exact names | Bytes for one 256-value K **or** V head |
@@ -769,7 +774,10 @@ reasoning and holds incomplete control markers while streaming. Channel controls
 stay out of visible content; native quoted tool arguments retain their literal
 values. CUDA and non-CUDA servers share this channel parser.
 
-Harness connections require the container's compatibility entrypoint, `cuda_entrypoint.py` → `tensorfold_harness.py`, with `--thinking-budget 0`. The native CLI's token-count response lacks Harness's versioned model/context metadata. Gemma count-only image preparation can measure prompts beyond the served context while retaining media safety limits; generation still enforces its context window.
+The Gemma containers supply Harness tokenization through their existing entrypoints. Native CUDA
+also exposes versioned model and context metadata at `/v1/tokenize`. Use `--thinking-budget 0`
+to leave reasoning budgets to individual requests. Count-only image preparation can measure prompts
+beyond the served context while retaining media safety limits.
 
 Required-tool format discovery follows the rendered call envelope, including DSML. A tool-name list after the example call in a custom chat template no longer becomes part of the forced call prefix. Existing HTTP enforcement regressions and the Heretic installed-model strict-tool checks pass.
 
@@ -1660,6 +1668,32 @@ All scoped candidate, source, build, native, packaging and fresh API gates are c
 
 #### DeepSeek-V4.1-Flash on eight V100s (2026-11-21)
 
+The SM70 target follows the checkpoint's hierarchical decoder indexer.
+Layer 20 publishes candidate blocks for later reindexing layers. Source
+`4fc31cf2` passed native startup and cutoff checks for both KV modes on eight
+V100s at 185 W with ETP4 and 128K context. The RotorQuant quality comparison
+had seven equivalent and five inconclusive checks, with no established
+regression. The complete 8K throughput comparison was deferred.
+[Decoder indexing](docs/recipes/deepseek-v41-v100.md#decoder-indexing)
+
+The development profiler `tools/ds41_profile.py` takes its text input from `--corpus TEXT_FILE`.
+
+The expert-balancing development branch accepts an explicit per-layer placement
+for ETP1, ETP2, and ETP4 before startup graph capture. Native quality and
+performance qualification is pending. [Expert placement recipe](docs/recipes/deepseek-v41-v100.md#routed-expert-placement)
+
+Live expert balancing is the DeepSeek TP8 serving default in this
+development branch. It applies eligible placements at an in-service
+maintenance boundary. `--no-expert-balance` disables it. The `dcce7d0c`
+ETP4 transition passed with the generic 2,048 MiB allowance. [Live placement settings](docs/recipes/deepseek-v41-v100.md#routed-expert-placement)
+
+The integrated candidate uses a 1,536 MiB allowance for the exact
+ordered 48-capture catalogue in the 32-lane native-YaRN 128K H64 text profile
+with an explicit 16 GiB host prefix tier. The 2.5 GiB prompt reserve stays
+separate. The standalone `f9606970` test observed 11,554,240 KV tokens.
+Recapture, pressure, quality and serving verification with live balancing
+and this allowance are pending. [Graph expansion and qualification steps](docs/recipes/deepseek-v41-v100.md#experimental-decode-graph-memory-allowance)
+
 New CUDA lane for DeepSeek-V4.1-Flash-1017 GGUF (GSQ-RCO IQ2_XXS backbone; the IQ4_NL Engram table stays in host RAM),
 TP8 attention/dense and ETP4 x EP2 routed experts, up to 32 streams. It uses startup decode graphs, the friend's EM3
 decode experts and TurboMind lattice prefill experts (with an exact weight decode), fused sparse prefill attention,
@@ -1673,6 +1707,27 @@ after correcting sequence-parallel expert routing. On the larger 268-document co
 0.00190 nats/token against the historical `p1` build, with the increase concentrated in prompts of 1,024 tokens
 or more. Overall early-decode NLL met the equivalence criterion. The [recipe](docs/recipes/deepseek-v41-v100.md)
 gives the intervals and measurement scope. DSpark drafts are pending.
+
+The normal CUDA server exposes exact chat token counts, renderer capabilities and request
+statistics to [Harness and other API clients](docs/recipes/deepseek-v41-v100.md#launch).
+Development source also accepts strict function tool schemas in the native DSML format through
+the standard CUDA API. Full-checkpoint serving verification is pending.
+[Strict function tools](docs/api.md#strict-function-tools)
+
+The native DeepSeek-V4.1 renderer tells clients discovering through
+`/v1/tokenize` to retain assistant `reasoning_content` when both replay routes
+verify. Plain thinking requests still prune older reasoning, while requests
+that advertise tools keep it. [CUDA tokenizer discovery](docs/api.md)
+
+The CUDA DeepSeek-V4.1 chat path preserves multipart tool results and explicit
+tool namespaces. Unconstrained replies use the generated token IDs to recognize
+DSML and thinking controls. Ordinary token sequences that spell those controls
+remain text. [Messages and tools](docs/api.md#messages-and-tools)
+
+On the same eight-V100 setup, fixed-order prefill RMS raised geometric mean prefill throughput **1.21%** across
+the ten text cells against `aef6e42a`. Target log probabilities matched bit for bit across all twelve scoring
+checks. The accepted C1/16K median decode tradeoff was **0.13% slower** over eight matched sessions. The C32/16K decode
+comparison remains inconclusive. [Fixed-order RMS measurements](docs/recipes/deepseek-v41-v100.md#fixed-order-prefill-rms)
 
 Image input (`--vision`, the mmproj named in `config.json`) is served through OpenAI `image_url` parts. The TP8
 tower gathers FP16 features so each projection accumulates over its full input dimension in FP32. In repeated

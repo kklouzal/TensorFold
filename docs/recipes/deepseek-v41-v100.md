@@ -1,9 +1,14 @@
-# DeepSeek-V4.1-Flash on eight V100s (TP8/ETP4)
+# DeepSeek-V4.1-Flash on eight V100s (TP8)
 
-TensorFold's CUDA lane for DeepSeek-V4.1-Flash-1017 on eight V100 (SM70) GPUs, without a vLLM runtime: attention and
-dense layers TP8, routed experts ETP4 x EP2. It serves the OpenAI-compatible server of the other V100 lanes.
-Status: development lane, qualified on one host only (SC117: 8x V100 32 GB, 180 W cap). Image
-`tensorfold-v100:py315-app-48c51356-pillow13` (`67b43e682057`).
+TensorFold's CUDA lane for DeepSeek-V4.1-Flash-1017 on eight V100 (SM70) GPUs uses TP8 for attention,
+dense layers, and shared experts. Routed experts default to ETP4 × EP2. It serves the
+OpenAI-compatible server of the other V100 lanes.
+Source `4fc31cf2` was tested on SC117 with eight 32 GiB V100s at 185 W per GPU,
+using image `tensorfold-v100:py315-app-48c51356-pillow13` (`67b43e682057`). Both
+KV modes passed the same-image startup and API checks at TP8/ETP4, 128K context,
+and 32 lanes. The held-out RotorQuant quality comparison returned seven
+equivalent and five inconclusive results. The complete throughput matrix and
+native 1M serving remain unqualified by these checks.
 
 ## The model
 
@@ -14,12 +19,61 @@ Status: development lane, qualified on one host only (SC117: 8x V100 32 GB, 180 
   `gguf_file` (first backbone shard) and `engram_file`, with `tokenizer.json`, `tokenizer_config.json` and
   `chat_template.jinja` copied (not symlinked) into the directory. Paths outside the model root are refused.
 
+## Decoder indexing
+
+For the 1017 checkpoint, layer 20 keeps its ordinary Top-512 and also selects
+up to 2,048 blocks of eight compressed positions. Each block is ranked by its
+maximum causally visible score, and the block containing the last visible
+position is included. Layers 24, 28, 32, and 36 choose their Top-512 from this
+pool. TensorFold retains ascending position order and its lower-position
+tie-break. Every visible block fits in the pool through query position 16,383
+inclusive.
+
+The candidate pool belongs to one forward. A paused prefill retains it with
+the forward state. Cancellation discards that state, and prefix snapshots
+store only the existing persistent cache state. Every replay computes a
+new pool from the live device positions. The existing
+score kernels still read the full visible range before reindexing. Prefill can
+skip this sorting work when its known extent fits the pool. A decode graph
+with a wider index class captures the extra work even when a particular
+replay uses a shorter history.
+
+The pool stores 8 KiB per row, or 256 KiB at decode bucket 32 and 64 MiB at an
+8,192-row prefill. A row-split source also gathers candidate IDs. The receive
+buffer is 64 MiB per rank for that prefill, plus 8 MiB for the local stripe.
+Ranking also uses temporary score tiles. The 128K checks exercised both cold
+prefill and decode beyond the 16K cutoff. They do not measure long-context
+quality or throughput. The held-out quality corpus stays below the cutoff.
+The change introduces no KV format or graph-catalogue change.
+
 ## Launch
 
 ```sh
 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backend cuda \
   --name deepseek-v4.1-flash --parallel 32 --context 65536 --prefix-host-bytes 17179869184 --port 8000
 ```
+
+This launch serves exact chat counting, the active renderer's capabilities, and telemetry through
+the standard [CUDA API](../api.md). Select the **TensorFold** provider in Harness.
+
+Absent request, launch or checkpoint overrides, this lane uses temperature 1.0
+and top-p 1.0 with or without tools. [1017 model card](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/blob/08c8657f02291e11b6f6b63e0e16014f8e748518/README.md)
+
+Set `temperature: 1.0` and `top_p: 0.95` explicitly, or launch with
+`--temperature 1.0 --top-p 0.95`, to use the reported coding-agent settings. [V4.1 technical report](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf)
+
+A shared runtime image can set `TENSORFOLD_DS41_EXPERIMENT_W576_FP32` or
+`TENSORFOLD_DS41_EXPERIMENT_SP_FP32` for the compact 128K RotorQuant profile
+and still launch the native FP8-window/FP4-compressed cache. Those settings
+apply only on RotorQuant, where the existing compact profile checks still run.
+
+Add `--expert-tensor-parallel-size 1` to choose ETP1 × EP8 at startup.
+Each GPU then holds 48 whole routed experts. Use `--expert-tensor-parallel-size 2`
+to choose ETP2 × EP4, with 96 routed experts per GPU sharded across each pair.
+Use `--expert-tensor-parallel-size 4` or omit the option to choose the default.
+All eight ranks must use the same degree. Check the effective value in
+`model.expert_tensor_parallel_size` from `/v1/stats`.
+ETP1 and ETP2 are experimental while native quality, memory, and throughput qualification is in progress.
 
 The container needs `--ipc host --ulimit memlock=-1:-1 --cap-add IPC_LOCK` for the host-mapped Engram table and the
 pinned prefix tier. With warm extension and page caches, the C24/C32 matrix server became ready in about 45 s.
@@ -38,13 +92,122 @@ registered Engram table.
 | `--parallel N` | 1-32 concurrent streams. Requests beyond N wait in the queue. |
 | `--context N` | Admitted context per stream (default: the model's maximum). The text-only matrix at `--context 65536 --parallel 32` reported 7,775,360 tokens in the shared KV pool. |
 | `--prefix-host-bytes B` | Pinned host tier for evicted prefix points, shared across ranks (Gemma 4 SM70 sizing; `0` disables). |
+| `--kv-dtype rotorquant-iso64-norm4-h64` | RotorQuant Q4 for both sliding-window and compressed attention latents. DeepSeek stores one 272-byte row for shared K and V. The learned index rows retain their separate format. |
+| `--kv-dtype fp8-window+fp4-compressed` | DeepSeek's native cache path uses FP8-quantized sliding-window values and packed FP4 compressed attention latents. The historical `bf16` value selects this same path. |
+| `--yarn-factor F` | Overrides the checkpoint's static YaRN factor on compressed layers. Window-only layers retain plain RoPE. |
 | `--queue-timeout-s S` | Bounds the queue wait (503 after). |
 | `--no-graphs` | Eager decode, for A/B checks only. |
 | `--vision` | Image input (needs `mmproj_file` and `vision_bias_file` in `config.json`; see "Image input"). |
 
+The 128K text profile uses `--kv-dtype rotorquant-iso64-norm4-h64 --context 131072` with the
+checkpoint's native YaRN factor. With CUDA graphs enabled and the standard prompt chunk size,
+ETP4 H64 text with an admitted context of at most 128K reserves 2.5 GiB on each GPU for prompt work.
+ETP1 and ETP2 use a 3 GiB prompt reserve.
+The KV allocator budgets for decode graphs and uses the available memory on the tightest GPU
+to size the shared pool. `/v1/stats` reports the effective codec, YaRN factor, and KV budget.
+
+### Attention FP8 grouping
+
+DeepSeek applies E4M3 FP8 quantization with one power-of-two UE8M0 scale per
+32 channels at two boundaries. The model-native sliding-window path quantizes
+the full row after RoPE, including the rotary tail. The attention output is
+quantized after inverse RoPE, before the first output projection. These
+boundaries follow the [official 1017 inference reference](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/blob/1bae0e1088993b9b82de08f59de5be5a34e42170/inference/model.py).
+The V100 provider simulates them in FP16 with software conversions. The
+reference uses BF16 around these operations.
+
+H64 cold prefill uses the same grouping when it computes an FP8 window
+operand. The H64 ring and main cache encode the selected RotorQuant format
+directly. Learned index rows and compressed latent encoding retain their
+existing paths. Full-model throughput and quality of the grouping correction
+remain to be verified.
+
+### Experimental decode graph memory allowance
+
+The integrated candidate reserves 1,536 MiB per GPU for the exact ordered
+48-key catalogue in the full compact ETP4 text profile. It uses 32 lanes,
+128K admission, 8,192-row prompt chunks, native YaRN 16 and default kept
+slots. Request the 16 GiB host prefix tier explicitly so all ranks agree
+on 2 GiB each and any pin refusal aborts startup. The prompt reserve
+stays at 2.5 GiB per GPU.
+
+```sh
+python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backend cuda \
+  --name deepseek-v4.1-flash --parallel 32 --context 131072 --prefix-host-bytes 17179869184 \
+  --kv-dtype rotorquant-iso64-norm4-h64 --expert-tensor-parallel-size 4 \
+  --expert-balance-state /state/expert-balance-etp4.json --port 8000
+```
+
+`shape_keys` in `src/tensorfold/families/deepseek_v4/cuda/graphs.py` owns
+the capture catalogue. Pool sizing deducts the allowance before startup
+and uses it to check actual graph memory after startup capture and live
+recapture. Other captured profiles use `GRAPH_BYTES` plus
+`GRAPH_EACH_BYTES` for each capture. The generic allowance also applies
+when the keys change or move to a different order, including changes that
+keep 48 captures.
+
+The standalone `f9606970` pressure run observed 11,554,240 KV tokens
+with all 48 graphs. The `dcce7d0c` live ETP4 transition passed at the
+generic 2,048 MiB allowance with a measured pool of 10,922,624 tokens.
+The integrated candidate's capacity, live recapture and performance
+remain to be measured.
+
+To expand or replace captures, requalify `H64_128K_GRAPH_KEYS` and
+`H64_128K_GRAPH_BYTES` in `src/tensorfold/families/deepseek_v4/cuda/engine.py`.
+Record CUDA driver free bytes and allocator allocated and reserved bytes
+on all eight ranks through startup, old-graph retirement, bank transfer,
+capture and recapture. Verify the actual KV pool and worst-rank memory
+during late 128K prefill overlapping decode and during full scoring.
+Keep the prompt reserve separate. Recheck paired perplexity and serving
+across C1, C8, C16 and C32 at 4K and 16K before selecting a new allowance.
+
+## Routed expert placement
+
+`--expert-placement PLAN` loads a version 1 JSON placement at startup on TP8
+with ETP1, ETP2, or ETP4. Each layer lists all 384 logical expert IDs exactly
+once in physical slot order. Each consecutive group of 48, 96, or 192 IDs
+belongs to one expert-parallel group for ETP1, ETP2, or ETP4, respectively.
+The ranks in a group keep their original tensor-parallel cuts of those experts.
+
+The plan carries `version`, `checkpoint`, `etp`, and `placement` fields.
+`checkpoint` binds the local GGUF files and model configuration. Rank 0 reads
+the plan once and every rank verifies the same plan before loading weights or
+capturing graphs. Configured placement starts with a fresh worker process and
+fresh KV state. Native qualification is pending for this development option.
+
+Live expert balancing samples executed routed experts in prefill and decode
+separately. The history decays with the number of observed routes. The
+development defaults sample one in 64 forwards on average and use 262,144
+observed routes per phase and layer as the half-life. Use the corresponding
+`--expert-balance-sample-every` and `--expert-balance-half-life` options for
+controlled qualification. Startup warm-up and graph padding are excluded.
+When both phases have enough fresh observations, the scheduler can apply
+eligible proposals in the running server. It stores the committed placement and rolling history in
+`expert-balance-etpN.json` in the model directory, where `N` is the expert
+tensor-parallel degree. A restart loads that placement before the workers
+load the expert weights or capture graphs. For a read-only model mount, use
+`--expert-balance-state FILE` with a writable directory for the sidecar.
+In a container, mount that directory on a persistent volume so atomic file
+replacement and restart recovery use the same storage.
+Use `--expert-placement` to seed a new state file. For later restarts, omit
+that startup option to load the committed sidecar placement. If supplied,
+the explicit plan must agree with the saved placement.
+Use `--no-expert-balance` to disable balancing. This also disables history
+collection and loading of a saved placement.
+
+The scheduler holds new admissions while
+active requests finish. The workers retire the previous placement's cached
+prefixes, move the packed expert banks, and rebuild the enabled decode graph
+catalogue. Admission resumes after all eight ranks confirm the placement and
+the new epoch is saved in the state file. A failed post-mutation transaction
+retires the cohort. ETP4 completed the native transition with the generic
+allowance. Validation with the 1,536 MiB allowance and performance
+qualification remain pending.
+
 ## What runs
 
-- Decode: startup CUDA graphs for batches 1-16, 24 and 32. Capture happens at startup, never lazily. Each batch has
+- Decode: CUDA graphs for batches 1-16, 24 and 32, captured at startup and recaptured at a live placement
+  boundary. Each batch has
   index-score classes 8192 / 32768 / `--context`, sized by the batch's live maximum length. Decode also uses small
   all-gathers and an LL row all-reduce for small sums, a compact device greedy argmax with batched round sampling
   (one host wait per round), and expert-major routed experts (the friend's EM3 kernels, bit-exact with the per-6-row
@@ -88,6 +251,48 @@ uncertainty unresolved.
 
 All admitted TensorFold replies streamed concurrently. Whole-run output rose in all ten cells, while median
 per-user decode was lower in seven. The largest observed TensorFold token gap was 308.5 ms at C24 4K.
+
+### Fixed-order prefill RMS
+
+The fused prefill normalization preserves the FP32 reduction order of ATen `05adb434` and FP16 rounding. Against
+`aef6e42a`, source `3e86f455` had bitwise-identical target log probabilities across all twelve scoring checks,
+including the 268-document cap64 corpus and the 32-document uncapped long-prompt corpus. On the latter, prefill perplexity
+was 5.361628 and full-decode perplexity was 3.849869 in both arms. All 35 native normalization tests passed.
+Fixed-schedule FP32 logits also matched on all 15 tested paths.
+
+Four independent SC117 sessions ran in reference, candidate, candidate, reference order, with four additional
+reference sessions for uncertainty calibration. The load used the frozen ten-cell greedy plan, 512 output tokens
+per request, 180 W per V100, image `67b43e682057`, 32 lanes, a 65,536-token context and a 16 GiB host prefix tier.
+The usable KV pool was 7,775,360 tokens in each run. Each row shows the candidate's change from the reference.
+
+| Cell | Aggregate prefill | Median decode per user |
+| --- | ---: | ---: |
+| C1 4K | +1.11% | −0.03% |
+| C1 16K | +1.33% | −0.13% |
+| C8 4K | +1.39% | +0.15% |
+| C8 16K | +1.28% | +0.35% |
+| C16 4K | +1.20% | +0.40% |
+| C16 16K | +1.19% | +2.49% |
+| C24 4K | +1.45% | +0.43% |
+| C24 16K | +1.25% | +0.56% |
+| C32 4K | +1.27% | +0.57% |
+| C32 16K | +0.63% | −8.33% |
+
+The geometric mean prefill gain was 1.21% (95% interval +0.92% to +1.51%). Six prefill cells and C32/4K
+decode gained under the familywise comparison. The original C32/16K decode estimate had an adjusted interval
+from −22.29% to +8.14%. A fresh six-cell repeat measured −0.23% at C32/16K, with an adjusted two-endpoint
+interval from −18.56% to +22.23%. That result remains uncertain. The largest text-cell p99 gap across the four
+full sessions was 177.64 ms.
+
+The original and fresh sessions shared the same C1 startup prefix and produced identical replies. The fresh C1/16K
+estimate was −0.125% user-visible decode throughput, with an adjusted interval from −0.423% to +0.175%.
+The combined estimate was −0.129%, with an adjusted interval from −0.239% to −0.019%.
+The project accepted this specific tradeoff. In four instrumented repeats, the measured difference was inside
+GPU round events. The trace did not identify a practical RMS-specific correction.
+
+Four separate vision sessions passed all seven image checks, cached image reuse, and both 8192×1 and 1×8192
+inputs. All four retained 7,697,600 usable KV tokens and a maximum rank warm tower peak of 235 MiB. The two
+mixed-load prefill results and their p99 gap comparisons remain inconclusive.
 
 ## Quality gate
 

@@ -12,6 +12,7 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 #include <initializer_list>
+#include <type_traits>
 
 namespace {
 
@@ -58,12 +59,17 @@ __global__ void swiglu_kernel(const float* proj, const float* weights, const int
   }
 }
 
-// out[t] = fp16(sum_j fp32(down[inverse[t * top + j]])), j ascending, positions >= offsets[E] skipped
+// Sum FP32 down[inverse[t * top + j]] in ascending j, skipping positions >= offsets[E].
+// Store half for ordinary lattice calls or keep FP32 in the SP collective send.
 // (patch 140 _pf_combine). Eight columns per thread.
-__global__ void combine_kernel(const half* down, const int32_t* inverse, const int32_t* valid, half* out,
+template <typename Result>
+__global__ void combine_kernel(const half* down, const int32_t* inverse, const int32_t* valid, Result* out,
                                int64_t tokens, int hidden, int top) {
   const int chunks = hidden / 8;
   const int32_t limit = *valid;
+  if constexpr (std::is_same_v<Result, float>) {
+    if (limit < 0 || limit > tokens * top) __trap();
+  }
   for (int64_t at = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; at < tokens * chunks;
        at += int64_t(gridDim.x) * blockDim.x) {
     const int64_t t = at / chunks;
@@ -71,16 +77,25 @@ __global__ void combine_kernel(const half* down, const int32_t* inverse, const i
     float acc[8] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
     for (int j = 0; j < top; ++j) {
       const int32_t p = inverse[t * top + j];
+      if constexpr (std::is_same_v<Result, float>) {
+        if (p < 0 || p >= tokens * top) __trap();
+      }
       if (p >= limit) continue;
       const uint4 raw = *reinterpret_cast<const uint4*>(down + int64_t(p) * hidden + c);
       const half* v = reinterpret_cast<const half*>(&raw);
 #pragma unroll
       for (int i = 0; i < 8; ++i) acc[i] = __fadd_rn(acc[i], __half2float(v[i]));
     }
-    __align__(16) half h[8];
+    if constexpr (std::is_same_v<Result, half>) {
+      __align__(16) half h[8];
 #pragma unroll
-    for (int i = 0; i < 8; ++i) h[i] = __float2half_rn(acc[i]);
-    *reinterpret_cast<uint4*>(out + t * hidden + c) = *reinterpret_cast<const uint4*>(h);
+      for (int i = 0; i < 8; ++i) h[i] = __float2half_rn(acc[i]);
+      *reinterpret_cast<uint4*>(out + t * hidden + c) = *reinterpret_cast<const uint4*>(h);
+    } else {
+      auto* vec = reinterpret_cast<float4*>(out + t * hidden + c);
+      vec[0] = make_float4(acc[0], acc[1], acc[2], acc[3]);
+      vec[1] = make_float4(acc[4], acc[5], acc[6], acc[7]);
+    }
   }
 }
 
@@ -155,9 +170,41 @@ void ds41_lattice_combine(const torch::Tensor& down, const torch::Tensor& invers
   if (!tokens) return;
   const c10::cuda::CUDAGuard guard(down.device());
   const int64_t work = tokens * (hidden / 8);
-  combine_kernel<<<unsigned(std::min<int64_t>((work + 255) / 256, 65535)), 256, 0,
+  combine_kernel<half><<<unsigned(std::min<int64_t>((work + 255) / 256, 65535)), 256, 0,
                    at::cuda::getCurrentCUDAStream()>>>(
       reinterpret_cast<const half*>(down.data_ptr<at::Half>()), inverse.data_ptr<int32_t>(),
       valid.data_ptr<int32_t>(), reinterpret_cast<half*>(out.data_ptr<at::Half>()), tokens, int(hidden), int(top));
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void ds41_lattice_combine_fp32_sp(const torch::Tensor& down, const torch::Tensor& inverse,
+                                  const torch::Tensor& valid, torch::Tensor out) {
+  constexpr int hidden = 5120, top = 6, max_tokens = 8192;
+  for (const torch::Tensor* input : std::initializer_list<const torch::Tensor*>{&inverse, &valid, &out})
+    same_device(down, *input);
+  TORCH_CHECK(out.dim() == 2 && out.size(1) == hidden && out.size(0) >= 1024 && out.size(0) <= max_tokens &&
+                  out.scalar_type() == torch::kFloat && out.is_contiguous(),
+              "ds41 SP lattice FP32 combine needs contiguous [1024..8192, 5120] output");
+  const int64_t tokens = out.size(0), routes = tokens * top;
+  TORCH_CHECK(down.dim() == 2 && down.size(0) == routes && down.size(1) == hidden &&
+                  down.scalar_type() == torch::kHalf && down.is_contiguous() &&
+                  inverse.scalar_type() == torch::kInt && inverse.is_contiguous() && inverse.numel() == routes &&
+                  valid.scalar_type() == torch::kInt && valid.is_contiguous() && valid.numel() == 1,
+              "ds41 SP lattice FP32 combine needs matching half routes and int32 index and valid buffers");
+  const auto destination = reinterpret_cast<uintptr_t>(out.data_ptr());
+  TORCH_CHECK(destination % 16 == 0 && reinterpret_cast<uintptr_t>(down.data_ptr()) % 16 == 0,
+              "ds41 SP lattice FP32 combine needs aligned route rows and output");
+  for (const torch::Tensor* input : std::initializer_list<const torch::Tensor*>{&down, &inverse, &valid}) {
+    const auto source = reinterpret_cast<uintptr_t>(input->data_ptr());
+    TORCH_CHECK(source < destination ? destination - source >= static_cast<uintptr_t>(input->nbytes())
+                                     : source - destination >= static_cast<uintptr_t>(out.nbytes()),
+                "ds41 SP lattice FP32 combine needs disjoint inputs and output");
+  }
+  const c10::cuda::CUDAGuard guard(down.device());
+  const int64_t work = tokens * (hidden / 8);
+  combine_kernel<float><<<unsigned(std::min<int64_t>((work + 255) / 256, 65535)), 256, 0,
+                          at::cuda::getCurrentCUDAStream()>>>(
+      reinterpret_cast<const half*>(down.data_ptr<at::Half>()), inverse.data_ptr<int32_t>(),
+      valid.data_ptr<int32_t>(), out.data_ptr<float>(), tokens, hidden, top);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

@@ -456,6 +456,11 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options.update(expert_ranks=args.expert_ranks, expert_shards=args.expert_shards)
     if getattr(args, "expert_tensor_parallel_size", None) is not None:
         options["expert_tensor_parallel_size"] = args.expert_tensor_parallel_size
+    for name in ("expert_placement", "expert_balance_state", "expert_balance_sample_every", "expert_balance_half_life"):
+        if (value := getattr(args, name, None)) is not None:
+            options[name] = value
+    if getattr(args, "no_expert_balance", False):
+        options["no_expert_balance"] = True
     if getattr(args, "kv_full_windows", None) is not None:
         options["kv_full_windows"] = args.kv_full_windows
     if getattr(args, "kv_short_window", None) is not None:
@@ -584,10 +589,12 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         )
         owners["app"] = app
         _configure_api_records(args, app, owners)
+        model_sampling = getattr(app.template, "default_temperature", None) is not None
+        displayed = app.sampling if model_sampling else sampling
         shown = (
             "greedy"
-            if float(sampling.get("temperature", 1.0)) <= 0
-            else ", ".join(f"{k} {v}" for k, v in sampling.items())
+            if float(displayed.get("temperature", 1.0)) <= 0 or (model_sampling and displayed["top_p"] == 0)
+            else ", ".join(f"{k} {v}" for k, v in displayed.items())
         )
         effective_context = app.effective_context_window
         _show_model_bindings(engine.eos, app.template.provenance(), reply_tokens)
@@ -676,8 +683,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
             )
     settings = families.read_config(config_dir)
     families.require_readable(family, settings, backend)
-    if (families.quant_method(settings) == "gguf" or getattr(args, "family_manifest", None) is not None
-            ) and not getattr(args, "_kv_dtype_explicit", False):
+    if (backend == "cuda" and family.model_type == "qwen4_exp"
+            and (families.quant_method(settings) == "gguf" or getattr(args, "family_manifest", None) is not None)
+            and not getattr(args, "_kv_dtype_explicit", False)):
         args.kv_dtype = "fp16"
     _check_model_overrides(args, config_dir, settings)
     _sampling_defaults(args, config_dir)

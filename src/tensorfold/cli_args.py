@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tensorfold import __version__
 from tensorfold.cuda.prompt_precision import FP8_BY_DEFAULT
+from tensorfold.families.deepseek_v4 import NATIVE_KV_DTYPE as DEEPSEEK_NATIVE_KV_DTYPE
 from tensorfold.families.qwen4_exp.kv_formats import DTYPES as FLASH_NEXT_KV_DTYPES
 
 
@@ -178,10 +179,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             help="prompt plus reply window (default: model config; CUDA default/0: "
                                  "affordable native capacity; Metal 0: remove metadata cap)")
     generation.add_argument("--yarn-factor", type=float, default=None,
-                            help="Flash Next, Qwen3.8 dense and Qwen3.6 on CUDA: static YaRN text RoPE extension (2: "
-                                 "524288 tokens, 4: 1048576 for a 262144-token checkpoint); overrides the checkpoint "
-                                 "factor, requires >=1. Short-context quality may change; --context still controls "
-                                 "admission")
+                            help="Flash Next, Qwen3.8 dense, Qwen3.6 and DeepSeek-V4.1 on CUDA use static YaRN. "
+                                 "Override the checkpoint factor with a value of at least 1. DeepSeek scales only "
+                                 "compressed layers. --context still controls admission")
     generation.add_argument("--position-profile-manifest", type=Path, default=None, metavar="PATH",
                             help="Flash Next SM70 unique TP8 GPU histories: immutable target/MTP/draft positions; positive "
                                  "--context must match, default/0 uses its declared rows. Source candidates need "
@@ -351,8 +351,19 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                       help="auto: MLX on macOS, CUDA elsewhere")
     cuda.add_argument("--tp", type=int, choices=(1, 2, 4, 8), default=1,
                       help="tensor-parallel GPUs (one visible GPU per rank process); run the same model/settings on each")
-    cuda.add_argument("--expert-tensor-parallel-size", type=int, choices=(2, 4, 8), default=None,
-                      help="prepared Flash Next GGUF TP8 routed-expert degree; EP=8/ETP, shared experts stay TP8 (PP1 only; V100 qualification pending); Gemma 4 --tp 8 requires 4")
+    cuda.add_argument("--expert-tensor-parallel-size", type=int, choices=(1, 2, 4, 8), default=None,
+                      help="routed-expert tensor parallel degree on TP8 CUDA: Flash Next GGUF (2, 4, 8; PP1), "
+                           "DeepSeek-V4.1 GGUF (1, 2 or 4; default 4). Shared experts stay TP8. Gemma 4 TP8 uses 4.")
+    cuda.add_argument("--expert-placement", type=Path, metavar="PLAN",
+                      help="load a checkpoint-bound DeepSeek-V4.1 routed expert placement before CUDA graph capture")
+    cuda.add_argument("--expert-balance-state", type=Path, metavar="FILE",
+                      help="override the DeepSeek-V4.1 placement and rolling history JSON sidecar")
+    cuda.add_argument("--no-expert-balance", action="store_true",
+                      help="disable live DeepSeek-V4.1 expert balancing and its persistent history")
+    cuda.add_argument("--expert-balance-sample-every", type=int, metavar="N",
+                      help="sample one in N expert-routing forwards on average (default 64)")
+    cuda.add_argument("--expert-balance-half-life", type=int, metavar="ROUTES",
+                      help="observed routes per phase and layer per load half-life (default 262144)")
     cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,
                       help="Flash Next expert-only NCCL ranks; rank zero owns backbone/state, separate from --tp")
     cuda.add_argument("--expert-shards", default=None, metavar="COUNTS",
@@ -362,12 +373,15 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--master", default="", help="rank 0 rendezvous address; expert ranks require same-host loopback")
     cuda.add_argument("--master-port", type=int, default=29551,
                       help="rank 0 rendezvous port (1 to 65535, the same on every tensor/expert rank)")
-    cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16", action=_KVFormat,
+    cuda.add_argument("--kv-dtype", choices=(*FLASH_NEXT_KV_DTYPES, DEEPSEEK_NATIVE_KV_DTYPE),
+                      default="bf16", action=_KVFormat,
                       help="KV cache: bf16 (default; fp16 for Flash Next GGUF/SM70), fp16, int8, int4, or a RotorQuant format. "
                            "INT8/INT4 use one fp16 scale per 32 values. RotorQuant uses packed Lloyd-Max codes and "
                            "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA). "
                            "Gemma 4 on eight V100s (--tp 8): bf16 (FP16 caches), rotorquant8-norm or "
                            "rotorquant-iso64-norm4-h64 for its target full-attention caches; its sliding rings stay FP16. "
+                           "DeepSeek-V4.1 on eight V100s supports fp8-window+fp4-compressed (the native format, "
+                           "also selected by bf16) and rotorquant-iso64-norm4-h64. "
                            "GGUF/SM70 supports fp16, int8, rotorquant-signed128-4, rotorquant-signed64-norm4, "
                            "rotorquant8(-norm), rotorquant-planar4/iso4/iso64-norm4(-h64) and the compact "
                            "rotorquant-planar4-sm70-v1/iso4-sm70-v1 (the eight-bit and Planar/Iso formats on "

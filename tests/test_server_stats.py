@@ -944,8 +944,19 @@ def test_the_api_reference_documents_every_stats_field_and_no_other(tmp_path, re
     serial = app_for(tmp_path)
     serial.engine.prefix_cache_stats = native.prefix_cache_stats
     gemma = field_paths(stats.snapshot(serial))
+    deepseek = concurrent_app(tmp_path)
+    deepseek.model_dir = tmp_path / "deepseek"
+    deepseek.model_dir.mkdir()
+    (deepseek.model_dir / "config.json").write_text('{"model_type":"deepseek_v41"}')
+    deepseek.engine.kv_pair = None
+    deepseek.engine.model_kv_dtype = "rotorquant-iso64-norm4-h64"
+    deepseek.engine.yarn_factor = 2.0
+    deepseek.engine.expert_tensor_parallel_size = 2
+    deepseek_stats = stats.snapshot(deepseek)
+    assert (deepseek_stats["model"]["kv_dtype"], deepseek_stats["model"]["yarn_factor"]) == ("rotorquant-iso64-norm4-h64", 2.0)
+    assert deepseek_stats["model"]["expert_tensor_parallel_size"] == 2
     documented = documented_fields()
-    observed = set(cuda) | set(mac) | set(adaptive) | set(gemma)
+    observed = set(cuda) | set(mac) | set(adaptive) | set(gemma) | set(field_paths(deepseek_stats))
     assert documented <= observed, documented - observed
     assert "runtime" not in cuda and "runtime" in adaptive
     for path in (*cuda, *mac, *adaptive, *gemma):  # capability sections retain the same documentation oracle

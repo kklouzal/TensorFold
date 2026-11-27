@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 import torch
 
+from test_sm70_ds41_decode_moe import pack_down_fragments
 from test_sm70_onecat_ds41 import LOCAL, Carriers, bank, pytestmark  # noqa: F401
 
 SIZES = (65, 512, 2048, 8192)
@@ -118,6 +119,141 @@ def test_lattice_dropped_routes(ops, kind):
     assert not none.view(torch.int16).any()
 
 
+@pytest.mark.parametrize("kind,paired", [(16, True), (17, True), (29, False)])
+def test_transcode_uses_the_tensor_slice_expert_base(ops, kind, paired):
+    lat, _, _ = ops
+    (gate, up, down), _, down_offset = Carriers(kind).rank(1)
+    source = gate if paired else down
+    second = up if paired else None
+    n, k, left = (1152, 5120, 0) if paired else (5120, 576, down_offset)
+    _, wbytes, sbytes = lat.canonical(kind, n, k)
+    extension = lat.extension()
+    count = torch.ones(1, dtype=torch.int32, device="cuda")
+    error = torch.zeros_like(count)
+
+    def run(start, experts, selected):
+        a = source[start:start + experts]
+        b = second[start:start + experts] if second is not None else None
+        index = torch.tensor([selected], dtype=torch.int32, device="cuda")
+        w = torch.empty((experts, wbytes), dtype=torch.uint8, device="cuda")
+        s = torch.empty((experts, sbytes), dtype=torch.uint8, device="cuda")
+        extension.transcode(w, s, wbytes, sbytes, a, b, index, count, 80, kind, n, k, left, error)
+        return w[selected], s[selected]
+
+    direct = run(0, 3, 2)
+    sliced = run(2, 1, 0)
+    assert all(torch.equal(a, b) for a, b in zip(direct, sliced, strict=True))
+    assert not error.item()
+
+
+def test_transcode_rejects_noncovering_destination_and_unaligned_group(ops):
+    lat, _, _ = ops
+    _, wbytes, sbytes = lat.canonical(16, 32, 256)
+    source = torch.zeros(2, 32, 66, dtype=torch.uint8, device="cuda")
+    w = torch.empty(wbytes, dtype=torch.uint8, device="cuda")
+    s = torch.empty(sbytes * 2, dtype=torch.uint8, device="cuda")
+    ids = torch.tensor([1], dtype=torch.int32, device="cuda")
+    count = torch.ones_like(ids)
+    with pytest.raises(RuntimeError, match="incompatible destination banks"):
+        lat.extension().transcode(w, s, wbytes, sbytes, source, None, ids, count, 80, 16, 32, 256, 0,
+                                  torch.zeros_like(count))
+    source = torch.zeros(2, 32, 132, dtype=torch.uint8, device="cuda")
+    w = torch.empty(2 * wbytes, dtype=torch.uint8, device="cuda")
+    with pytest.raises(RuntimeError, match="invalid packet group width or offset"):
+        lat.extension().transcode(w, s, wbytes, sbytes, source, None, ids, count, 80, 16, 32, 256, 1,
+                                  torch.zeros_like(count))
+
+
+def transcode_down(lat, operation, source, left, kind, selected, poison):
+    _, wbytes, sbytes = lat.canonical(kind, 5120, 576)
+    experts = source.shape[0]
+    weight = torch.full((experts, wbytes), poison, dtype=torch.uint8, device=source.device)
+    stats = torch.full((experts, sbytes), poison, dtype=torch.uint8, device=source.device)
+    count = torch.tensor([len(selected)], dtype=torch.int32, device=source.device)
+    error = torch.zeros_like(count)
+    operation(weight, stats, wbytes, sbytes, source, None, selected, count, 80, kind, 5120, 576, left, error)
+    return (weight, stats), error
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_lattice_down_fragments_exact_banks_and_output(ops, kind):
+    lat, _, workspace = ops
+    extension = lat.extension()
+    carriers = Carriers(kind)
+    generator = torch.Generator().manual_seed(1500 + kind)
+    selected = torch.tensor([LOCAL - 1, 0], dtype=torch.int32, device="cuda")
+    for rank in range(4):
+        banks, _, left = carriers.rank(rank)
+        gate, up, down = banks
+        raw_banks, raw_error = transcode_down(lat, extension.transcode, down, left, kind, selected, 0xE7)
+        assert not raw_error.item()
+        alternatives = [pack_down_fragments(down, kind, left, padded) for padded in (False, True)]
+        for fragment in alternatives:
+            packed, error_word = transcode_down(
+                lat, extension.transcode_down_fragments, fragment, left, kind, selected, 0xA5,
+            )
+            assert not error_word.item()
+            for old, new in zip(raw_banks, packed, strict=True):
+                assert torch.equal(old[selected], new[selected]), (kind, left, fragment.shape[-1])
+                assert (new[1:-1] == 0xA5).all()
+        for m in (128, 1025):
+            x = torch.randn(m, 5120, generator=generator).half().cuda()
+            ids, p = routes(m, LOCAL, generator)
+            ids[0, 0], p[0, 0] = LOCAL - 1, 0.25
+            out = lat.experts(x, ids, p, *banks, kind, kind, left, workspace)
+            assert torch.isfinite(out).all()
+            for fragment in alternatives:
+                got = lat.experts(x, ids, p, gate, up, fragment, kind, kind, left, workspace, fragment_down=True)
+                assert torch.equal(got.view(torch.int16), out.view(torch.int16)), (kind, left, m, fragment.shape[-1])
+    workspace.check()
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_lattice_down_fragments_scale_overflow(ops, kind):
+    lat, _, _ = ops
+    extension = lat.extension()
+    width = {16: 66, 17: 74, 29: 56}[kind]
+    raw = torch.zeros((1, 5120, 3 * width), dtype=torch.uint8, device="cuda")
+    blocks = raw.reshape(1, 5120, 3, width)
+    # Set the shared FP16 scale to 65504. Its finite product with the
+    # largest grid coefficients overflows the existing exact-reader check.
+    if kind == 29:
+        for i in range(4):
+            blocks[..., 49 + 2 * i] = ((0x7BFF >> (4 * i)) & 15) << 4
+    else:
+        blocks[..., 0], blocks[..., 1] = 0xFF, 0x7B
+    selected = torch.zeros(1, dtype=torch.int32, device="cuda")
+    raw_bank, error_word = transcode_down(lat, extension.transcode, raw, 192, kind, selected, 0xE7)
+    assert error_word.item() == 1
+    for padded in (False, True):
+        source = pack_down_fragments(raw, kind, 192, padded)
+        fragment_bank, error_word = transcode_down(
+            lat, extension.transcode_down_fragments, source, 192, kind, selected, 0xA5,
+        )
+        assert error_word.item() == 1
+        for expected, got in zip(raw_bank, fragment_bank, strict=True):
+            assert torch.equal(expected, got)
+
+
+def test_lattice_down_fragments_reject_invalid_spans(ops):
+    lat, _, _ = ops
+    transcode = lat.extension().transcode_down_fragments
+    _, wbytes, sbytes = lat.canonical(16, 5120, 576)
+    source = torch.zeros((1, 5120, 150), dtype=torch.uint8, device="cuda")
+    selected = torch.zeros(1, dtype=torch.int32, device="cuda")
+    count = torch.ones_like(selected)
+    error = torch.zeros_like(selected)
+    weights = torch.empty(wbytes, dtype=torch.uint8, device="cuda")
+    stats = torch.empty(sbytes, dtype=torch.uint8, device="cuda")
+    with pytest.raises(RuntimeError, match="invalid row width"):
+        transcode(weights, stats, wbytes, sbytes, source[..., :-1].contiguous(), None,
+                  selected, count, 80, 16, 5120, 576, 0, error)
+    with pytest.raises(RuntimeError, match="expected .* ETP4 cut"):
+        transcode(weights, stats, wbytes, sbytes, source, None, selected, count, 80, 16, 5120, 576, 32, error)
+    with pytest.raises(RuntimeError, match="expected .* K576"):
+        transcode(weights, stats, wbytes, sbytes, source, None, selected, count, 80, 16, 5120, 544, 0, error)
+
+
 def rank_banks(layer_prefix=None):
     """One real layer's 192-expert rank-1 banks (second EP2 half, ETP slice 1)."""
     from test_sm70_onecat_ds41 import checkpoint
@@ -190,3 +326,93 @@ def test_lattice_decode_crossover(ops):
         b = timed(lambda: decode_loop(dec, x, local, p, banks, gate_type, down_type, left), 5)
         print(f"{prefix} M{m} (MIN_TOKENS {lat.MIN_TOKENS}): lattice exact median {a[len(a) // 2]:.3f} ms | "
               f"decode loop median {b[len(b) // 2]:.3f} ms")
+
+
+def _check_partitioned_lattice(ops, kind, etp):
+    from test_sm70_onecat_ds41 import BYTES, reference, tensor_of
+
+    lat, _, _ = ops
+    tensors = [tensor_of(kind, part) for part in ("gate", "up", "down")]
+    width, block = 2304 // etp, 256
+    groups = 8 // etp
+    local = 384 // groups
+    selected = [0, 1, 2, 3, 4, 5, local - 2, local - 1]
+    selected_ids = torch.tensor(selected, dtype=torch.int32, device="cuda")
+    generator = torch.Generator().manual_seed(932 + kind)
+    workspace = lat.Workspace("cuda", tile=local, intermediate=width)
+    size = BYTES[kind]
+    for shard in range(etp):
+        # Exercise the tail EP groups and every intra-ETP input window.
+        expert_start = (groups - etp + shard) * local
+        first = shard * width
+        first_block, left = divmod(first, block)
+        blocks = -(-(left + width) // block)
+        assert left == (0, 128)[shard] and blocks == (9 if etp == 1 else 5)
+        g, u, d = (bank(t)[expert_start:expert_start + local] for t in tensors)
+        raw = (g[:, first:first + width], u[:, first:first + width],
+               d[:, :, first_block * size:(first_block + blocks) * size])
+        banks = [torch.from_numpy(np.array(a, copy=True, order="C")).cuda() for a in raw]
+        assert [a.shape[:2] for a in banks] == [(local, width), (local, width), (local, 5120)]
+        assert banks[-1].shape[-1] == blocks * size
+        decoded = []
+        for index, item in enumerate(raw):
+            active = np.ascontiguousarray(item[selected])
+            values = reference(active.reshape(-1, active.shape[-1]), kind).reshape(len(selected), active.shape[1], -1)
+            if index == 2:
+                values = values[:, :, left:left + width]
+            decoded.append(torch.from_numpy(values.astype(np.float16)).cuda())
+        rows_cases = (128, 769, 2048) if etp == 1 else (128, 769)
+        for rows in rows_cases:
+            x = torch.randn(rows, 5120, generator=generator).half().cuda()
+            ids, probabilities = routes(rows, len(selected), generator, local_share=0.25)
+            local_ids = selected_ids[ids]
+            expected = oracle(x, ids, probabilities, decoded)
+            emulated = oracle(x, ids, probabilities, decoded, half_projections=True).half()
+            output = lat.experts(x, local_ids, probabilities, *banks, kind, kind, left, workspace)
+            repeated = lat.experts(x, local_ids, probabilities, *banks, kind, kind, left, workspace)
+            assert torch.equal(output.view(torch.int16), repeated.view(torch.int16))
+            assert torch.isfinite(output).all() and error(output, expected)[0] <= error(emulated, expected)[0]
+            dropped = torch.where(probabilities == 0, local - 1, local_ids).contiguous()
+            assert torch.equal(output.view(torch.int16), lat.experts(
+                x, dropped, probabilities, *banks, kind, kind, left, workspace).view(torch.int16))
+        if etp == 1:
+            none = lat.experts(x[:128], local_ids[:128], torch.zeros_like(probabilities[:128]),
+                               *banks, kind, kind, left, workspace)
+            assert not none.view(torch.int16).any()
+        del banks, decoded
+    workspace.check()
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_lattice_etp2_experts_against_fp32(ops, kind):
+    _check_partitioned_lattice(ops, kind, 2)
+
+
+@pytest.mark.parametrize("kind", [16, 17, 29])
+def test_lattice_etp1_experts_against_fp32(ops, kind):
+    _check_partitioned_lattice(ops, kind, 1)
+
+
+def test_lattice_fp32_sp_combine_preserves_order_and_valid_rows(ops):
+    lat, _, _ = ops
+    ext = lat.extension()
+    tokens, hidden, top = 1024, 5120, 6
+    routes = tokens * top
+    down = torch.empty((routes, hidden), device="cuda", dtype=torch.float16)
+    values = (1.0, 0.00048828125, 0.0, 65504.0, 2**-24, -65504.0)
+    for index, value in enumerate(values):
+        down[index].fill_(value)
+    valid = torch.tensor([len(values)], device="cuda", dtype=torch.int32)
+    inverse = torch.arange(routes, device="cuda", dtype=torch.int32)
+    inverse[:12] = torch.tensor([0, 8, 1, 9, 2, 10, 3, 11, 4, 6, 5, 7], device="cuda",
+                                dtype=torch.int32)
+    exact = torch.empty((tokens, hidden), device="cuda", dtype=torch.float32)
+    ordinary = torch.empty((tokens, hidden), device="cuda", dtype=torch.float16)
+    ext.combine_fp32_sp(down, inverse, valid, exact)
+    ext.combine(down, inverse, valid, ordinary, top)
+    assert torch.equal(ordinary, exact.half())
+    assert torch.all(exact[0] == 1.0 + 0.00048828125)
+    assert torch.count_nonzero(exact[1:]) == 0
+    alias = down.view(torch.float32).view(-1, hidden)[:tokens]
+    with pytest.raises(RuntimeError, match="disjoint inputs and output"):
+        ext.combine_fp32_sp(down, inverse, valid, alias)

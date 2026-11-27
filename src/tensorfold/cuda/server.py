@@ -29,7 +29,7 @@ from tensorfold.server.request_options import (
     PENALTY_FIELDS, drop_penalties, fixed_thinking, heard_effort, parse_numbers, thinking_fields, thinking_budget,
 )
 from tensorfold.server.request_limits import RequestLimit, optional_limit
-from tensorfold.server.segments import SegmentEncoder
+from tensorfold.server.segments import SegmentEncoder, UnsupportedSegmentOpener
 from tensorfold.server.stopping import matched_stop, stop_options
 from tensorfold.server import failure_capture
 from tensorfold.server.thinking_notes import ended_thinking, ended_thinking_note, unanswered
@@ -481,6 +481,7 @@ def _accepted_tool_delta(calls, delta):
             if "id" not in part or "name" not in part.get("function", {}):
                 raise RuntimeError("tool stream arguments preceded their call head")
             calls.append({"id": part["id"], "type": "function",
+                          **({"namespace": part["namespace"]} if "namespace" in part else {}),
                           "function": {"name": part["function"]["name"], "arguments": []}})
         function = part.get("function", {})
         fragment = function.get("arguments", "")
@@ -489,7 +490,7 @@ def _accepted_tool_delta(calls, delta):
 
 
 def _finished_wire_calls(calls):
-    return [{"id": call["id"], "type": call["type"], "function": {
+    return [{**call, "function": {
         "name": call["function"]["name"], "arguments": "".join(call["function"]["arguments"])}}
         for call in calls]
 
@@ -522,8 +523,14 @@ def _native_context(model_dir: Path) -> int:
 
 
 def _segment_encoder(tok, template) -> SegmentEncoder | None:
-    """A message-at-a-time encoder when the chat template opens every message with one token the tokenizer splits its
-    input on exactly (Qwen's ``<|im_start|>``), else None."""
+    """Use the template's proved split, or discover a raw opener shared by its messages."""
+
+    opener = getattr(template, "segment_opener", None)
+    if opener is not None:
+        try:
+            return SegmentEncoder(tok, opener, identity_normalized=True)
+        except UnsupportedSegmentOpener:
+            pass
 
     from tensorfold.cuda.markers import TemplateTokens
     from tensorfold.engine.prefill_plan import message_markers
@@ -615,8 +622,9 @@ class App:
         if fixed is not None:
             self.default_thinking = fixed
         self.reasoning_effort, self.thinking_budget = reasoning_effort, int(thinking_budget)   # the Mac's defaults
-        # what generation_config.json and the flags leave unset falls back as on the Mac (README): greedy, filters off
-        self.sampling = {"temperature": 0.0, "top_k": 0, "top_p": 1.0, **(sampling or {})}
+        # Checkpoint and launch defaults arrive together from the CLI.
+        self.sampling = {"temperature": getattr(self.template, "default_temperature", 0.0),
+                         "top_k": 0, "top_p": 1.0, **(sampling or {})}
         unapplied = unapplied_penalties(engine, self.sampling)
         if unapplied:
             print(f"[tensorfold] this engine does not apply penalties; not applying defaults {unapplied}",
@@ -969,7 +977,8 @@ class App:
         ignore_eos, stop = stop_options(body)
         max_tokens = self._requested_tokens(body)
         try:
-            tools = active_tool_specs(body.get("tools"), body.get("tool_choice"))
+            tool_name = getattr(getattr(self.template, "calls", None), "tool_name", tool_spec_name)
+            tools = active_tool_specs(body.get("tools"), body.get("tool_choice"), tool_name=tool_name)
         except ValueError as exc:
             raise RequestError(str(exc)) from None
         kwargs = body.get("chat_template_kwargs")
@@ -1057,7 +1066,7 @@ class App:
                 rendered = prepare_images(self.vision, body["messages"],
                                           lambda messages: render(messages, allow_images=True,
                                                                   allow_audio=bool(getattr(self.vision, 'audio', False))),
-                                          context_limit=self._context_limit(),
+                                          context_limit=self._context_limit() if for_generation else None,
                                           limits=getattr(self, "image_limits", DEFAULT_LIMITS),
                                           max_visual_tokens=getattr(self, "vision_image_tokens", None))
                 try:
@@ -1129,6 +1138,10 @@ class App:
             raise RequestError("this model's engine does not enforce strict function tools: send strict false")
         if for_generation and getattr(self.engine, "refuses_structured_output", None):
             raise RequestError(self.engine.refuses_structured_output)
+        native_plan = getattr(self.template, "strict_tool_plan", None)
+        if native_plan is not None:
+            return native_plan(tools, required=tool_choice_requires_call(body.get("tool_choice")),
+                               parallel=not policy.single, offered=body.get("tools"))
         if getattr(self, "_strict_markup", None) is None:          # (plan factory, why not), read once
             try:
                 rendered = self.template.render(strict_tools.PROBE, tools=strict_tools.PROBE_TOOLS, enable_thinking=False)
@@ -1188,7 +1201,31 @@ class App:
         size = tokenizer_vocab_size(self.tok) if hasattr(self.tok, "get_vocab_size") else None
         return token_ids(value, size, field)
 
-    def tokenize(self, body: dict[str, Any]) -> dict[str, Any]:
+    @functools.cached_property
+    def _tokenizer_capabilities(self):
+        from importlib.util import find_spec
+
+        from tensorfold.chat_capabilities import discover_chat_capabilities
+
+        fixed = tuple(self._fixed_thinking(tools) for tools in (False, True))
+        observed, _ = discover_chat_capabilities(
+            self.template.render, fixed=fixed,
+            reasoning_replay_routes=getattr(self.template, "reasoning_replay_routes", None),
+        )
+        observed.update(
+            structured_output=(find_spec("xgrammar") is not None
+                               and "constraint" in inspect.signature(self.engine.generate).parameters
+                               and not getattr(self.engine, "refuses_structured_output", None)),
+            vision=self.vision is not None,
+            video=bool(getattr(self.vision, "videos", False)),
+        )
+        if "thinking_control" in observed:
+            observed["default_thinking"] = self.default_thinking
+        if bool(getattr(self.vision, "audio", False)):
+            observed["audio"] = True
+        return observed
+
+    def tokenize(self, body: dict[str, Any], *, model: str | None = None) -> dict[str, Any]:
         """vLLM's ``/tokenize`` (``server.token_routes``): a prompt's ids (``add_special_tokens``, default true, as
         vLLM's), or ``messages``' as the chat route renders them (``add_generation_prompt``, default true)."""
 
@@ -1197,10 +1234,13 @@ class App:
         if not isinstance(body, dict):
             raise RequestError("the request body must be a JSON object")
         strings = flag(body, "return_token_strs", False)
+        tokens = flag(body, "return_tokens", True)
+        rendered = flag(body, "return_prompt", False)
         credit = self._host_credits() if getattr(self, "host_payload_pool", None) is not None else None
         if credit is not None:
-            credit.tokenization_reply, credit.lexical_output = True, strings
-        if "messages" in body:
+            credit.tokenization_reply, credit.lexical_output = tokens or strings or rendered, strings or rendered
+        chat = "messages" in body
+        if chat:
             fields = dict(body)
             def release_prepared_media():
                 prepared.release_media()
@@ -1209,6 +1249,7 @@ class App:
                                      add_generation_prompt=flag(body, "add_generation_prompt", True))
             try:
                 ids = prepared.prompt
+                tools = bool(prepared.tools)
             except BaseException as primary:
                 rollback(prepared, primary, release_prepared_media)
             release_prepared_media()
@@ -1223,14 +1264,40 @@ class App:
                 credit.ids(len(encoded))
                 ids = encoded.ids
                 del encoded
+        count = len(ids)
         if credit is not None:
-            credit.ids(len(ids))  # Reply copy/lexical strings are funded before either is built.
+            # Count-only chat can still own expanded media IDs. Pay their
+            # extent and any requested reply copies before publishing.
+            credit.ids(count)
         limit = self._context_limit()
-        reply: dict[str, Any] = {"count": len(ids), "tokens": [int(t) for t in ids],
-                                 "max_model_len": limit if limit is not None else self.native_context_window}
+        context = limit if limit is not None else self.native_context_window
+        reply: dict[str, Any] = {"count": count, "max_model_len": context}
+        if tokens:
+            reply["tokens"] = [int(t) for t in ids]
         if strings:
             unused = getattr(self.tok, "unused_token_ids", ())
-            reply["token_strs"] = ["" if t in unused else self.tok.id_to_token(t) for t in reply["tokens"]]
+            reply["token_strs"] = ["" if t in unused else self.tok.id_to_token(t) for t in ids]
+        if rendered:
+            from tensorfold.server.prompt_literals import MAX_RENDER_BYTES
+
+            prompt = self.tok.decode(ids, skip_special_tokens=False)
+            escaped = 2
+            for start in range(0, len(prompt), 4096):
+                escaped += len(json.dumps(prompt[start:start + 4096], ensure_ascii=True)) - 2
+                if escaped > MAX_RENDER_BYTES:
+                    raise RequestError("rendered prompt exceeds the inspection response budget; request only the count")
+            reply["prompt"] = prompt
+        if chat:
+            from tensorfold.server.http import requested_model
+
+            route = self.template.selected(tools=tools)
+            capabilities = {**self._tokenizer_capabilities, "reasoning_efforts": sorted(route.efforts)}
+            if self.reasoning_effort is not None:
+                effort = heard_effort(None, self.reasoning_effort, route.efforts)
+                if effort in route.efforts:
+                    capabilities["default_reasoning_effort"] = effort
+            reply.update(model=requested_model(self, body) if model is None else model, context_length=context,
+                         harness_tokenizer_version=1, capabilities=capabilities, chat_template_sha256=route.sha256)
         return reply
 
     def detokenize(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -1479,7 +1546,8 @@ class App:
                         chars, parts = wire_chars, wire_parts
                         for call in delta["tool_calls"]:
                             function = call.get("function", {})
-                            chars += len(call.get("id", "")) + len(function.get("name", "")) + len(function.get("arguments", ""))
+                            chars += (len(call.get("id", "")) + len(call.get("namespace", ""))
+                                      + len(function.get("name", "")) + len(function.get("arguments", "")))
                             parts += 8 + len(call) + len(function)
                         credit = canonical_capture.credit
                         bound = (_CanonicalCredits.render_bound(chars, parts) if isinstance(credit, _CanonicalCredits)
@@ -1511,16 +1579,19 @@ class App:
             sent = {"reasoning": 0, "content": 0}
             stopped = {"client": False, "stop": False}
             failed: list[Exception | None] = [None]  # preallocated callback failure cell; no append on exhaustion
-            stream = StreamDecoder(self.tok, ends, literal=gemma and split_reasoning)
             # streamed calls go out as argument deltas while written (as on the Mac); one-call requests keep the end parser
             strict = prepared.calls
             family_calls = getattr(self.template, "calls", None)   # a renderer's own call grammar (DeepSeek-V4.1 DSML)
+            controls = (() if strict is not None or prepared.grammar is not None or not (split_reasoning or tools)
+                        else getattr(family_calls, "controls", ()))
+            stream = StreamDecoder(self.tok, ends, literal=gemma and split_reasoning, controls=controls)
             calls_stream = ((strict.reader() if strict is not None else
                              family_calls.streamer(tools) if family_calls is not None else ToolCallStreamer(tools))
                             if tools and not policy.single and body.get("stream")
                             and (prepared.grammar is None or strict is not None)
                             and (strict is not None or not gemma) else None)
             answer_raw = [""]
+            answer_positions = [()]
             native_starts = tuple(t for t in (self.tok.token_to_id("<|channel>"), self.tok.token_to_id("<|think|>"))
                                   if t is not None) if gemma else ()
             grammar_state = [None]  # request-owned boundary, independent of producer/rank matcher copies
@@ -1601,6 +1672,10 @@ class App:
                             reasoning = prefix
                     else:
                         reasoning = ""
+                elif controls:
+                    reasoning, answer, answer_positions[0] = family_calls.reply_parts(
+                        raw, thinking=split_reasoning, finished=finished, controls=stream.control_offsets,
+                        normal_end=finished and normal_tool_end(), allow_calls=bool(tools))
                 elif split_reasoning:
                     reasoning, answer = split_thinking(raw, finished=finished, markers=markers)
                     if finished and tools and not gemma and not answer:
@@ -1619,7 +1694,8 @@ class App:
 
                     answer = hide_gemma_calls(answer, finished=finished)
                 elif tools and prepared.grammar is None:
-                    answer = (policy.content(answer, finished=finished) if policy.single else
+                    answer = (family_calls.hide(answer, finished=finished, positions=answer_positions[0]) if controls else
+                              policy.content(answer, finished=finished) if policy.single else
                               family_calls.hide(answer, finished=finished) if family_calls is not None
                               else hide_tool_calls(answer, finished=finished))
                 if tools and (prepared.grammar is None or strict is not None):
@@ -1706,7 +1782,9 @@ class App:
                         if not emit(None):
                             stopped["client"] = True
                     if calls_stream is not None and not stopped["client"]:
-                        for call_delta in calls_stream.feed(answer_raw[0]):   # never the reasoning
+                        call_deltas = (calls_stream.feed(answer_raw[0], positions=answer_positions[0]) if controls
+                                       else calls_stream.feed(answer_raw[0]))
+                        for call_delta in call_deltas:   # never the reasoning
                             if not emit(call_delta):
                                 stopped["client"] = True
                                 break
@@ -1986,7 +2064,9 @@ class App:
                         # Only a normal actual terminal resolves malformed-JSON
                         # raw fallback. Never finalize on cancel/error/reply cap
                         # or a user stop that can cut a still-valid call short.
-                        for call_delta in calls_stream.feed(answer_raw[0], finished=True):
+                        call_deltas = (calls_stream.feed(answer_raw[0], finished=True, positions=answer_positions[0])
+                                       if controls else calls_stream.feed(answer_raw[0], finished=True))
+                        for call_delta in call_deltas:
                             if not emit(call_delta):
                                 stopped["client"] = True
                                 raise RequestCancelled("the client left during the terminal tool reply")
@@ -1995,13 +2075,18 @@ class App:
                         final["reasoning_content"] = reasoning[sent["reasoning"]:]
                     from tensorfold.token_metadata import decode_presentation
 
-                    raw_text = (stream.final() if gemma and split_reasoning else
+                    raw_text = (stream.final() if controls or (gemma and split_reasoning) else
                                 decode_presentation(self.tok, [t for t in out if t not in ends]))
                     text = stops.visible(raw_text)
                     calls_complete = True
                     if strict is not None:          # a strict reply's calls follow its grammar exactly: read as written
                         raw_answer = answer_raw[0] if prepared.grammar is not None or (gemma and split_reasoning) else text
                         content, calls, calls_complete = strict.parse_finished(raw_answer, max_calls=policy.max_calls)
+                    elif tools and controls:
+                        content, calls = family_calls.parse(answer_raw[0], tools, max_calls=policy.max_calls,
+                                                            finished=normal_tool_end(), positions=answer_positions[0])
+                        calls_complete = family_calls.complete(answer_raw[0], answer_positions[0],
+                                                               finished=normal_tool_end())
                     elif tools and prepared.grammar is None:
                         if not gemma:
                             text = normalize_qwen_tool_markup(text, finished=normal_tool_end())
@@ -2024,7 +2109,7 @@ class App:
                         content = visible_tool_prose(content, calls=bool(calls))
                     # the calls already sent as deltas; the handler sends the rest (a call the streamer could not follow)
                     streamed = calls_stream.index + 1 if calls_stream is not None and calls_stream.streamed else 0
-                    if streamed > len(calls or ()):
+                    if not controls and streamed > len(calls or ()):
                         hide = family_calls.hide if family_calls is not None else hide_tool_calls
                         content = hide(content, finished=True).strip()   # those calls are the streamed deltas
                     sent_text = answer[:sent["content"]]

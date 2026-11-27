@@ -152,7 +152,7 @@ _INDEX_TILE_BYTES = 32 << 20
 
 
 def select_compressed_positions(
-    q, weights, keys, positions, valid_tokens, ratio, all_reduce, *, top_k=512
+    q, weights, keys, positions, valid_tokens, ratio, all_reduce, *, top_k=512, hierarchy=None
 ):
     """Keep top-512 even below 16K: only candidate-block prefilter is bypassed.
 
@@ -175,6 +175,10 @@ def select_compressed_positions(
     # rows, so launches and TP reductions stay O(chunk / tile).
     budget = _INDEX_TILE_BYTES // max(1, q.shape[1] * keys.shape[0] * 2)
     tile = max(32, min(1024, budget // 32 * 32))
+    if hierarchy is not None:
+        from .mu_reindex import select_ranked
+
+        candidates, block, publish = hierarchy
     for first in range(0, q.shape[0], tile):
         last = min(first + tile, q.shape[0])
         heads = q.shape[1]
@@ -183,6 +187,10 @@ def select_compressed_positions(
         )
         scores.relu_().mul_(weights[first:last, :, None])
         scores = all_reduce(scores.sum(1))
+        if hierarchy is not None:
+            select_ranked(result[first:last], scores, positions[first:last], valid_tokens[first:last],
+                          ratio, index_topk, candidates=candidates[first:last], block=block, publish=publish)
+            continue
         if _FUSED_TOPK and width == top_k and scores.dtype == torch.float16:
             index_topk(
                 result[first:last],
@@ -244,7 +252,7 @@ def _pf_combine(scores, weights, out, L, OUT_STRIDE, GROUPS: tl.constexpr, BLOCK
 
 
 def select_rows_split(q, weights, keys, positions, valid, ratio, *, first_position, rank, world, all_gather,
-                      top_k=512):
+                      top_k=512, hierarchy=None):
     """select_compressed_positions for one prefill request with its rows split over the ``world`` ranks instead
     of its heads (patch 180): each rank receives every rank's 4 index heads for its rows (one all-gather of the
     [rows, 4, 128] queries and [rows, 4] weights), scores all 32 heads for its rows only, trimmed to each tile's
@@ -284,6 +292,14 @@ def select_rows_split(q, weights, keys, positions, valid, ratio, *, first_positi
     val_mine = torch.cat([valid, valid.new_zeros(pad)]).index_select(0, index)
     lengths = [((first_position + r + 1) // ratio) if r < tokens else 0 for r in rows]   # host: no sync
     picked = torch.empty(len(rows), top_k, dtype=torch.int32, device=q.device)
+    if hierarchy is not None:
+        from .mu_reindex import select_ranked
+
+        candidates, block, publish = hierarchy
+        if publish:
+            mine_candidates = candidates.new_empty((len(rows), candidates.shape[1]))
+        else:
+            mine_candidates = candidates.index_select(0, index.clamp_max(tokens - 1))
     all_heads = world * heads
     first = 0
     while first < len(rows):
@@ -299,11 +315,31 @@ def select_rows_split(q, weights, keys, positions, valid, ratio, *, first_positi
         _pf_combine[(n, triton.cdiv(width, 1024))](scores, mine_w[first:last], combined, width, combined.stride(0),
                                                     GROUPS=world, BLOCK=1024, num_warps=4)
         del scores
-        index_topk(picked[first:last], combined, pos_mine[first:last], val_mine[first:last], ratio, top_k)
+        if hierarchy is None:
+            index_topk(picked[first:last], combined, pos_mine[first:last], val_mine[first:last], ratio, top_k)
+        else:
+            select_ranked(picked[first:last], combined, pos_mine[first:last], val_mine[first:last],
+                          ratio, index_topk, candidates=mine_candidates[first:last], block=block, publish=publish)
         first = last
-    full = torch.empty((world,) + tuple(picked.shape), dtype=picked.dtype, device=picked.device)
-    all_gather(picked, full)
-    return full.view(world, groups, _ROW_GROUP, top_k).transpose(0, 1).reshape(padded, top_k)[:tokens]
+    def restore_order(local, out=None):
+        width = local.shape[1]
+        full = local.new_empty((world,) + tuple(local.shape))
+        all_gather(local, full)
+        interleaved = full.view(world, groups, _ROW_GROUP, width).transpose(0, 1)
+        if out is None:
+            return interleaved.reshape(padded, width)[:tokens]
+        # Write complete groups directly into the forward-owned candidate
+        # buffer. Only the final partial group needs a reordered temporary.
+        whole, tail = divmod(tokens, unit)
+        end = whole * unit
+        out[:end].view(whole, world, _ROW_GROUP, width).copy_(interleaved[:whole])
+        if tail:
+            out[end:].copy_(interleaved[whole].reshape(unit, width)[:tail])
+        return out
+
+    if hierarchy is not None and publish:
+        restore_order(mine_candidates, candidates)
+    return restore_order(picked)
 
 
 @jit

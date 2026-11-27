@@ -31,7 +31,10 @@ tensorfold serve /models/gemma4 --backend cuda --drafter /models/gemma4-dflash \
   --host 0.0.0.0 --port 8888 --name gemma4-26b
 ```
 
-For Harness, keep the standard container entrypoint (`cuda_entrypoint.py` → `tensorfold_harness.py`) and add `--thinking-budget 0`; this delegates budgets to individual requests. The CLI otherwise enables thinking by default, subject to a checkpoint-fixed template. Overriding the entrypoint with `python -m tensorfold` omits Harness's required `harness_tokenizer_version`, `model` and `context_length` response fields. Count-only image requests may exceed the context window; normal generation retains its context check and all media limits remain active.
+For Harness, keep the bundled container entrypoint (`cuda_entrypoint.py` → `tensorfold_harness.py`)
+and add `--thinking-budget 0` to delegate budgets to individual requests. The CLI enables thinking
+by default, subject to a checkpoint-fixed template. Count-only image requests may exceed the
+context window; generation enforces the context limit and both paths enforce media limits.
 
 The checkpoint's chat template and generation metadata remain authoritative. The zecanard mixed4/6 template fixes thinking on; an explicit conflicting request is refused. Use a template override to select different behavior. Image/video inputs use the local standard Gemma processor, without executing checkpoint Python. Multiple clips in one request currently require equal sampled frame counts; unequal counts are refused before preprocessing. On GB10, configure `TENSORFOLD_MEMORY_RESERVE_GIB=16`; system `MemAvailable` governs unified-memory admission. Full-model CUDA startup, output and throughput checks for this mixed4/6 path remain pending; the measurements below describe the earlier Apple implementation only. The separate NVFP4 release has its own evidence below.
 

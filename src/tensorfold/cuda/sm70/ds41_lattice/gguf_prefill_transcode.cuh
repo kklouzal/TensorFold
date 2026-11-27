@@ -23,6 +23,7 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 #include <type_traits>
+#include "../ds41_down_fragments.cuh"
 
 namespace vllm::sm70_gguf::transcode {
 
@@ -253,44 +254,98 @@ struct GroupExact;
 
 template <>
 struct GroupExact<16> {
+  __device__ static uint32_t from_fields(const uint8_t* codes, const uint8_t* scale_bits,
+                                        uint16_t (&packets)[4], int* error) {
+    const uint32_t indices = u32(codes);
+    const uint32_t meta = u32(codes + 4);
+#pragma unroll
+    for (int q = 0; q < 4; ++q)
+      packets[q] = iq2_packet((indices >> (8 * q)) & 255, (meta >> (7 * q)) & 127);
+    const uint32_t s = meta >> 28;
+    const float scale = f16(scale_bits) * (0.5f + float(s)) * 0.25f;
+    to_f16(scale, error);
+    to_f16(scale * 43.f, error);
+    return uint32_t(u16(scale_bits)) | (s << 24);
+  }
+
   __device__ static uint32_t decode(const uint8_t* row, int k0,
                                     uint16_t (&packets)[4], int* error) {
-    Group<16>::decode(row, k0, packets, error);  // packets (its flag is implied by ours)
     const uint8_t* b = row + (k0 / 256) * 66;
-    const uint32_t s = u32(b + 6 + ((k0 % 256) / 32) * 8) >> 28;
-    to_f16(f16(b) * (0.5f + float(s)) * 0.25f * 43.f, error);
-    return uint32_t(u16(b)) | (s << 24);
+    return from_fields(b + 2 + ((k0 % 256) / 32) * 8, b, packets, error);
+  }
+
+  __device__ static uint32_t decode_fragment(const uint8_t* row, int column, int left,
+                                             uint16_t (&packets)[4], int* error) {
+    const auto source = tensorfold::ds41_down_fragments::Layout<16>::group(row, column / 32, left / 32);
+    return from_fields(source.codes, source.block_scale, packets, error);
   }
 };
 
 template <>
 struct GroupExact<17> {
+  __device__ static uint32_t from_fields(const uint8_t* codes, const uint8_t* scale_bits,
+                                        int s, uint16_t (&packets)[2], int* error) {
+    uint32_t high = 0;
+#pragma unroll
+    for (int q = 0; q < 2; ++q) {
+      const uint16_t code = u16(codes + 2 * q);
+      packets[q] = iq2_packet(code & 255, code >> 9);
+      high |= uint32_t((code >> 8) & 1) << (2 * q);
+    }
+    const float scale = f16(scale_bits) * (0.5f + float(s)) * 0.25f;
+    to_f16(scale, error);
+    to_f16(scale * 43.f, error);
+    return uint32_t(u16(scale_bits)) | (high << 16) | (uint32_t(s) << 24);
+  }
+
   __device__ static uint32_t decode(const uint8_t* row, int k0,
                                     uint16_t (&packets)[2], int* error) {
-    const uint32_t high = Group<17>::decode(row, k0, packets, error) >> 16;
     const uint8_t* b = row + (k0 / 256) * 74;
     const int sub = (k0 % 256) / 16;
-    const uint32_t s = (b[66 + sub / 2] >> (4 * (sub % 2))) & 15;
-    to_f16(f16(b) * (0.5f + float(s)) * 0.25f * 43.f, error);
-    return uint32_t(u16(b)) | (high << 16) | (s << 24);
+    const int s = (b[66 + sub / 2] >> (4 * (sub % 2))) & 15;
+    return from_fields(b + 2 + 4 * sub, b, s, packets, error);
+  }
+
+  __device__ static uint32_t decode_fragment(const uint8_t* row, int column, int left,
+                                             uint16_t (&packets)[2], int* error) {
+    const auto source = tensorfold::ds41_down_fragments::Layout<17>::group(row, column / 32, left / 32);
+    const int half = column / 16 % 2;
+    const int s = (*source.local_scale >> (4 * half)) & 15;
+    return from_fields(source.codes + 4 * half, source.block_scale, s, packets, error);
   }
 };
 
 template <>
 struct GroupExact<29> {
+  __device__ static uint16_t from_fields(const uint8_t* low_codes, int high_codes,
+                                        const uint8_t* scales, int sub, uint16_t (&packets)[2], int* error) {
+    const uint16_t bits = (u16(scales) >> 12) | ((u16(scales + 2) >> 8) & 0x00f0) |
+                          ((u16(scales + 4) >> 4) & 0x0f00) | (u16(scales + 6) & 0xf000);
+    const int local = (u16(scales + 2 * (sub / 4)) >> (3 * (sub % 4))) & 7;
+#pragma unroll
+    for (int q = 0; q < 2; ++q) {
+      const int high = (high_codes >> (4 * q)) & 15;
+      packets[q] = uint16_t(low_codes[q] | ((high & 7) << 8) | (local << 11) | ((high >> 3) << 15));
+    }
+    const float scale = __half2float(__ushort_as_half(bits)) * float(2 * local + 1);
+    to_f16(scale, error);
+    to_f16(scale * 1.125f, error);
+    return bits;
+  }
+
   __device__ static uint16_t decode(const uint8_t* row, int k0,
                                     uint16_t (&packets)[2], int* error) {
-    Group<29>::decode(row, k0, packets, error);
     const uint8_t* b = row + (k0 / 256) * 56;
     const int sub = (k0 % 256) / 16;
-    const uint16_t bits = (u16(b + 48) >> 12) | ((u16(b + 50) >> 8) & 0x00f0) |
-                          ((u16(b + 52) >> 4) & 0x0f00) |
-                          (u16(b + 54) & 0xf000);
-    const int local = (u16(b + 48 + 2 * (sub / 4)) >> (3 * (sub % 4))) & 7;
-    to_f16(__half2float(__ushort_as_half(bits)) * float(2 * local + 1) * 1.125f, error);
-#pragma unroll
-    for (int q = 0; q < 2; ++q) packets[q] |= uint16_t(local << 11);
-    return bits;
+    return from_fields(b + 2 * sub, b[32 + sub], b + 48, sub, packets, error);
+  }
+
+  __device__ static uint16_t decode_fragment(const uint8_t* row, int column, int left,
+                                             uint16_t (&packets)[2], int* error) {
+    const auto source = tensorfold::ds41_down_fragments::Layout<29>::group(row, column / 32, left / 32);
+    const int half = column / 16 % 2;
+    return from_fields(source.low_codes + 2 * half, source.high_codes[half], source.scale_block,
+                       2 * source.source_subgroup + half, packets, error);
   }
 };
 
@@ -369,36 +424,47 @@ struct Group<42> {  // Q2_0: 64-value blocks, value = code * d - d
 // entries of `experts`; the count stays on the device so a launch can cover
 // a residency-dependent subset (e.g. only cold experts, with few CTAs that
 // stream pinned host memory over PCIe without taking SMs from the GEMM).
-// src0/src1: per expert id, address of the expert's first source row (device
-// or host-mapped); rows are contiguous with `src_stride` bytes. src1 selects
-// gate/up interleaving. Output columns cover source columns
+// src0/src1: contiguous expert banks with a shared `expert_stride` in
+// bytes. Rows have `src_stride` bytes. src1 selects gate/up interleaving.
+// Output columns cover source columns
 // [k_offset, k_offset + k). dst_w/dst_s: stacked canonical banks.
-template <int Type, bool Exact = false>
+template <int Type, bool Exact = false, bool Fragment = false>
 __global__ void __launch_bounds__(kThreads)
     transcode_kernel(uint8_t* __restrict__ dst_w, uint8_t* __restrict__ dst_s,
                      int64_t w_stride, int64_t s_stride,
-                     const int64_t* __restrict__ src0,
-                     const int64_t* __restrict__ src1,
+                     const uint8_t* __restrict__ src0,
+                     const uint8_t* __restrict__ src1, int64_t expert_stride,
+                     int experts_n, int slots,
                      const int32_t* __restrict__ experts,
                      const int32_t* __restrict__ count, int packs, int n_out,
                      int k, int k_offset, int src_stride, int* error) {
   using F = Format<Type>;
+  static_assert(!Fragment || Exact, "down fragments require exact lattice packets");
   using Packet = PacketOf<Type>;
   constexpr int octets = F::kGroup / 8;
   extern __shared__ __align__(16) uint8_t smem[];
-  const bool interleave = src1 != nullptr;
+  const bool interleave = !Fragment && src1 != nullptr;
   const int sources = interleave ? 2 : 1;
   const int rows = kPack / sources;
   const int groups = k / F::kGroup;
-  const int items = __ldg(count) * packs;
+  const int active = __ldg(count);
+  if (active < 0 || active > slots || active > experts_n) {
+    asm volatile("trap;");
+    return;
+  }
+  const int items = active * packs;
   for (int work = blockIdx.x; work < items; work += gridDim.x) {
     const int expert = __ldg(experts + work / packs);
+    if (expert < 0 || expert >= experts_n) {
+      asm volatile("trap;");
+      return;
+    }
     const int pack = work % packs;
     __syncthreads();  // the previous item is done with the staged rows
     // Stage the pack's source rows (contiguous) with 8-byte loads.
     for (int s = 0; s < sources; ++s) {
       const auto* base = reinterpret_cast<const uint64_t*>(
-          reinterpret_cast<const uint8_t*>((s ? src1 : src0)[expert]) +
+          (s ? src1 : src0) + int64_t(expert) * expert_stride +
           int64_t(pack) * rows * src_stride);
       auto* stage = reinterpret_cast<uint64_t*>(smem + s * rows * src_stride);
       const int words = rows * src_stride / 8;
@@ -415,7 +481,9 @@ __global__ void __launch_bounds__(kThreads)
       const uint8_t* row = smem + (source * rows + r) * src_stride;
       Packet packets[octets];
       typename F::Stat stat;
-      if constexpr (Exact)
+      if constexpr (Fragment)
+        stat = GroupExact<Type>::decode_fragment(row, g * F::kGroup, k_offset, packets, error);
+      else if constexpr (Exact)
         stat = GroupExact<Type>::decode(row, k_offset + g * F::kGroup, packets, error);
       else
         stat = Group<Type>::decode(row, k_offset + g * F::kGroup, packets, error);

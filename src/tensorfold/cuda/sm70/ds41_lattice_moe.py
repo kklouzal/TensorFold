@@ -6,14 +6,14 @@ per call the routes are sorted on the device; per tile of experts the routed exp
 IQ1_M rows are transcoded into a canonical lattice bank (``gguf_prefill_transcode_sm70``) and ONE TurboMind sm70
 HMMA grouped GEMM (lattice decode in the main loop, FP32 accumulation, FP16 out; tile variant + swizzle per patch
 340's rule) runs over every route of the tile; then the clamped SwiGLU (FP16 hidden) and the down projection over
-the rank's K window [left, left + 576) the same way; the token output is the FP32 sum of its routes in top-k order,
+the rank's K window [left, left + intermediate) the same way; the token output is the FP32 sum of its routes in top-k order,
 rounded to FP16.
 
 Operands are ``onecat_ds41.v41_experts``'s (one EP/ETP rank's original GGUF expert bytes, FP16 x [M, 5120], int32
 local ids in [0, E) and FP32 probabilities [M, 6]; probability-0 routes (other EP half) contribute nothing); the
 output is the same FP16 [M, 5120] partial. Ids are the caller's invariant (Target.moe), not validated here.
-TensorFold adaptation for EP2 x ETP4: probability-0 routes sort behind a sentinel expert so the GEMMs never see them
-(the friend's TP4 ranks hold all 384 experts). No host synchronization; operands and the workspace must outlive
+TensorFold uses EP2 x ETP4, EP4 x ETP2 or EP8 x ETP1. Probability-0 routes sort behind a sentinel expert and
+never enter the GEMMs. No host synchronization; operands and the workspace must outlive
 current-stream completion.
 
 Numerics (TensorFold's exact decode; the friend's patch 140 FP16 arithmetic was measured at about 2.6x the rel L2
@@ -33,6 +33,7 @@ from pathlib import Path
 import torch
 
 HIDDEN, ROWS, TOP = 5120, 576, 6
+ETP2_ROWS, ETP1_ROWS = 2 * ROWS, 4 * ROWS
 LIMIT = 10.0
 # GGUF type -> (canonical group, stats bytes per group and column) (patch 140 LATTICE).
 LATTICE = {16: (32, 4), 17: (16, 4), 29: (16, 2)}
@@ -75,6 +76,7 @@ def extension():
                                        "gguf_prefill_transcode_sm70.cu")),
                _VENDOR / "turbomind" / "kernels" / "gemm" / "kernel.cu"]
     headers = sorted(p for p in _VENDOR.rglob("*") if p.suffix in (".h", ".cuh"))
+    headers.append(_HERE / "ds41_down_fragments.cuh")
     # The friend's kern340/src/build.sh flags (default FMA contraction, like his build); TurboMind uses the CUDA
     # half/bfloat16 operators that Torch's extension defaults disable.
     flags = ["-O3", "-std=c++20", "--expt-relaxed-constexpr", "--expt-extended-lambda", "-DENABLE_SM70_TURBOMIND=1",
@@ -107,6 +109,12 @@ EXACT = {1152: {6: 0, 7: 1}, 5120: {3: 2, 6: 3, 7: 4}}
 
 
 def pick(decoder, n, k, routes):
+    # Use the corresponding ETP4 exact tile as the initial schedule for wider shards.
+    # Native GEMM receives the actual dimensions and retains its original K order.
+    if k == HIDDEN and n in (2 * ETP2_ROWS, 2 * ETP1_ROWS):
+        n = 2 * ROWS
+    elif n == HIDDEN and k in (ETP2_ROWS, ETP1_ROWS):
+        k = ROWS
     for max_routes, variant, swizzle in RULE[(decoder, n, k)]:
         if routes <= max_routes:
             return EXACT[n][variant], swizzle
@@ -118,10 +126,12 @@ class Workspace:
     construction so the KV pool can be sized after it), their TurboMind (pointer, ld) tables and the transcode
     error word. Owned by its Target; one forward at a time (current stream)."""
 
-    def __init__(self, device, tile=TILE):
-        self.tile = tile
-        gu = max(canonical(t, 2 * ROWS, HIDDEN)[1] + canonical(t, 2 * ROWS, HIDDEN)[2] for t in LATTICE)
-        dn = max(canonical(t, HIDDEN, ROWS)[1] + canonical(t, HIDDEN, ROWS)[2] for t in LATTICE)
+    def __init__(self, device, tile=TILE, *, intermediate=ROWS):
+        if type(intermediate) is not int or intermediate not in (ROWS, ETP2_ROWS, ETP1_ROWS):
+            raise ValueError("lattice prefill workspace requires 576, 1152 or 2304 intermediate columns")
+        self.tile, self.intermediate = tile, intermediate
+        gu = max(sum(canonical(t, 2 * intermediate, HIDDEN)[1:]) for t in LATTICE)
+        dn = max(sum(canonical(t, HIDDEN, intermediate)[1:]) for t in LATTICE)
         self.banks = {"gu": torch.empty(tile * gu, dtype=torch.uint8, device=device),
                       "dn": torch.empty(tile * dn, dtype=torch.uint8, device=device)}
         self.error = torch.zeros(1, dtype=torch.int32, device=device)
@@ -153,21 +163,25 @@ class Workspace:
             raise RuntimeError("DeepSeek-V4.1 lattice prefill transcode: an FP16 block scale overflowed")
 
 
-def _addresses(bank):
-    return bank.data_ptr() + torch.arange(bank.shape[0], dtype=torch.int64, device=bank.device) * bank.stride(0)
-
-
-def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, workspace, *, out=None):
+def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, workspace, *, out=None,
+            fragment_down=False, fp32_sp_rows=None):
     """Routed experts for FP16 x [M, 5120], top-6 local ids/probabilities -> FP16 [M, 5120] (numerics: see the
-    module docstring)."""
+    module docstring). With fragment_down, the ETP4 down bank uses fragments of the original GGUF rows."""
+    tokens = x.shape[0]
+    if fp32_sp_rows is not None and (out is not None or not fragment_down or not 1024 <= tokens <= 8192
+                                     or type(fp32_sp_rows) is not int or fp32_sp_rows != (tokens + 7) // 8 * 8):
+        raise ValueError("a padded FP32 SP output requires the compact ETP4 grouped prefill path")
     if gate_type not in LATTICE or down_type not in LATTICE:
         raise ValueError("V4.1 lattice prefill experts require IQ2_XXS/IQ2_XS/IQ1_M carriers")
-    ext = extension()
     experts_n, inter = gate.shape[0], gate.shape[1]
-    tokens = x.shape[0]
+    if fragment_down and inter != ROWS:
+        raise ValueError("down fragments require ETP4")
     routes = tokens * TOP
-    if inter != ROWS or x.shape[1] != HIDDEN or ids.shape != (tokens, TOP) or down.shape[:2] != (experts_n, HIDDEN):
-        raise ValueError("V4.1 lattice prefill: [E, 576, bytes] gate/up, [E, 5120, bytes] down, top-6 routes")
+    if (inter != workspace.intermediate or x.shape[1] != HIDDEN or ids.shape != (tokens, TOP)
+            or down.shape[:2] != (experts_n, HIDDEN)):
+        raise ValueError("V4.1 lattice prefill: [E, intermediate, bytes] gate/up matching workspace, "
+                         "[E, 5120, bytes] down, top-6 routes")
+    ext = extension()
     device = x.device
     flat = torch.where(probabilities.reshape(-1) != 0, ids.reshape(-1), experts_n).to(torch.int32)
     ordered, order = torch.sort(flat, stable=True)
@@ -185,26 +199,33 @@ def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, w
     lists = lists.view(len(plan), tile)
     weights = probabilities.reshape(-1).contiguous()
 
-    def projection(key, kind, n, k, k_offset, src0, src1, stride, source, indices, result):
+    def projection(key, kind, n, k, k_offset, src0, src1, source, indices, result, transcode):
         group = LATTICE[kind][0]
         bank_w, bank_s, wbytes, sbytes, wt, st = workspace.table(key, kind, n, k)
         variant, swizzle = pick(kind, n, k, routes)
         for index, (first, count) in enumerate(plan):
-            ext.transcode(bank_w, bank_s, wbytes, sbytes, src0[first:first + count],
-                          None if src1 is None else src1[first:first + count], lists[index],
-                          counts[index:index + 1], CTAS, kind, n, k, k_offset, stride, workspace.error)
+            transcode(bank_w, bank_s, wbytes, sbytes, src0[first:first + count],
+                      None if src1 is None else src1[first:first + count], lists[index],
+                      counts[index:index + 1], CTAS, kind, n, k, k_offset, workspace.error)
             ext.lattice_gemm(result, source, offsets[first:first + count + 1], wt[:count * 16], st[:count * 16],
                              kind, n, count, group, indices, variant, swizzle)
 
     proj = torch.empty(routes, 2 * inter, dtype=torch.float32, device=device)
-    projection("gu", gate_type, 2 * inter, HIDDEN, 0, _addresses(gate), _addresses(up), gate.stride(1),
-               x.contiguous(), rows, proj)
+    projection("gu", gate_type, 2 * inter, HIDDEN, 0, gate, up,
+               x.contiguous(), rows, proj, ext.transcode)
     hidden = torch.empty(routes, inter, dtype=torch.float16, device=device)
     ext.swiglu(proj, weights, order, valid, hidden, LIMIT)
     del proj
     down_rows = torch.empty(routes, HIDDEN, dtype=torch.float16, device=device)
-    projection("dn", down_type, HIDDEN, inter, int(left), _addresses(down), None, down.stride(1), hidden, None,
-               down_rows)
+    transcode_down = ext.transcode_down_fragments if fragment_down else ext.transcode
+    projection("dn", down_type, HIDDEN, inter, int(left), down, None, hidden, None,
+               down_rows, transcode_down)
+    if fp32_sp_rows is not None:
+        # Allocate the collective send at combine, after the larger gate/up operands retire.
+        send = torch.empty((fp32_sp_rows, HIDDEN), dtype=torch.float32, device=device)
+        ext.combine_fp32_sp(down_rows, inverse, valid, send[:tokens])
+        send[tokens:].zero_()
+        return send
     if out is None:
         out = torch.empty_like(x)
     ext.combine(down_rows, inverse, valid, out, TOP)

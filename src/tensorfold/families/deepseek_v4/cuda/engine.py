@@ -1,4 +1,4 @@
-"""DeepSeek-V4.1-Flash on eight V100s: TP8 attention/dense, ETP4 x EP2 routed experts.
+"""DeepSeek-V4.1-Flash on eight V100s with TP8 attention/dense and selectable expert tensor parallelism.
 
 Rank 0 drives; ranks 1-7 run ``follow``. Every model operation is announced to the followers through the
 same-host control pipes as one small frame before rank 0 issues its own identical kernels and collectives
@@ -31,20 +31,36 @@ from .schedule import RoundCosts, UnitCosts
 from tensorfold.families.gemma4.sm70.ops import OP_ATTACH, OP_DETACH, OP_FORWARD as OP_STEP, OP_GROW, OP_LAYERS, OP_STOP
 _HEAD = struct.Struct("<qqqqq")
 PIPE_TIMEOUT = 600.0
+# An idle follower with outstanding RotorQuant work must surface a device trap
+# even while the leader is blocked on a cross-rank GPU operation.
+ROTOR_ERROR_POLL_S = 1.0
 F_SCORE, F_LAST = 1 << 20, 1 << 21  # OP_STEP d flags (low bits: the stop layer): score every row; and the last row
 # graph decode flags: return the compact greedy packet (``round_sampling``); and also gather the full rows
 F_COMPACT, F_FULL = 1 << 22, 1 << 23
 F_IMAGE = 1 << 24          # a prompt chunk with image rows: their features are every rank's staged tower rows
 F_AHEAD = 1 << 25          # run-ahead round: token ids from the previous replay's device greedy tokens (graphs.py)
+EXPERT_SAMPLE_SHIFT = 26   # OP_STEP: 0 off, 1 prefill, 2 decode, visible only to the rank-zero observer
+F_W576_FP32 = 1 << 28      # experimental continuation math, independent of output packet format
 # The TP8 vision tower's operations (``OP_TOWER``, kind in a; every rank runs its shard, ``DS41Engine._tower``)
 OP_TOWER = 32
+OP_EXPERT_PLACEMENT = 33
+_EXPERT_EPOCH = struct.Struct("<q")
 T_BEGIN, T_RUN, T_SPAN, T_STAGE, T_FREE = range(5)
 SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
 MAX_STREAMS = 32
 RESERVE = 3 << 30          # bytes left free per rank for prompt transients, after the KV pool
+H64_TEXT_RESERVE = 5 << 29
 GRAPH_EACH_BYTES = 40 << 20 # decode graph memory per captured bucket (sizing bound; measured ~30 MiB)
 GRAPH_BYTES = 128 << 20     # + the graphs' shared torch pool (measured ~40 MiB)
+# Experimental compact ETP4 allowance for these exact, ordered 128K H64 keys.
+# Keep the catalogue independent of shape_keys so edits use the generic allowance
+# until requalified. See docs/recipes/deepseek-v41-v100.md.
+H64_128K_GRAPH_KEYS = (
+    *((bucket, 131_072) for bucket in range(1, 4)),
+    *((bucket, context) for bucket in (*range(4, 17), 24, 32) for context in (8_192, 32_768, 131_072)),
+)
+H64_128K_GRAPH_BYTES = 1536 << 20
 TRACE = bool(os.environ.get("TENSORFOLD_DS41_SCHED_TRACE"))   # diagnostic: the Decoder's group plans and costs
 
 
@@ -59,11 +75,63 @@ class DS41Engine:
                  context: int | None = None, slots: int = 4, max_tokens: int = MAX_TOKENS, parallel: int | None = None,
                  serve: bool = False, queue_timeout_s: float | None = None, graphs: bool = True,
                  keep_slots: int | None = None, prefix_host_bytes: int | None = None, vision: bool = False,
-                 vision_urls: bool = False, vision_offload: bool = False, **_options) -> None:
+                 vision_urls: bool = False, vision_offload: bool = False, yarn_factor: float | None = None,
+                 kv_dtype: str = "bf16", expert_tensor_parallel_size: int | None = None,
+                 expert_placement: Path | None = None, expert_balance_state: Path | None = None,
+                 expert_balance_sample_every: int = 64, expert_balance_half_life: int = 262_144,
+                 no_expert_balance: bool = False,
+                 **_options) -> None:
+        from .. import ROTOR_KV_DTYPE
+
+        expert_balance_live = serve and not no_expert_balance
+        # The container may also serve the native codec. Its execution must
+        # skip the experiments scoped to the compact RotorQuant profile.
+        rotorquant = kv_dtype == ROTOR_KV_DTYPE
+        w576_fp32 = rotorquant and os.environ.get("TENSORFOLD_DS41_EXPERIMENT_W576_FP32") == "1"
+        sp_fp32 = rotorquant and os.environ.get("TENSORFOLD_DS41_EXPERIMENT_SP_FP32") == "1"
+        if no_expert_balance and (expert_placement is not None or expert_balance_state is not None):
+            raise ValueError("disabled expert balancing cannot accept a placement or history file")
+        if not expert_balance_live and expert_balance_state is not None:
+            raise ValueError("expert balance history requires live serving")
+        if expert_balance_live and expert_balance_state is None:
+            from .weights import checked_etp
+
+            degree = checked_etp(expert_tensor_parallel_size)
+            model_path = Path(model_dir).resolve(strict=True)
+            name = f"expert-balance-etp{degree}.json"
+            expert_balance_state = model_path / name if model_path.is_dir() else model_path.with_name(f"{model_path.name}.{name}")
+        options = dict(rank=rank, tp=tp, master=master, master_port=master_port, context=context, slots=slots,
+                       max_tokens=max_tokens, parallel=parallel, serve=serve, queue_timeout_s=queue_timeout_s,
+                       graphs=graphs, keep_slots=keep_slots, prefix_host_bytes=prefix_host_bytes, vision=vision,
+                       vision_urls=vision_urls, vision_offload=vision_offload, yarn_factor=yarn_factor,
+                       kv_dtype=kv_dtype, expert_tensor_parallel_size=expert_tensor_parallel_size,
+                       expert_placement=expert_placement, expert_balance_state=expert_balance_state,
+                       expert_balance_sample_every=expert_balance_sample_every,
+                       expert_balance_half_life=expert_balance_half_life, expert_balance_live=expert_balance_live,
+                       w576_fp32=w576_fp32, sp_fp32=sp_fp32)
+        if expert_placement is None and expert_balance_state is None and not (w576_fp32 or sp_fp32):
+            self._initialize(model_dir, startup=None, **options)
+            return
+
+        from tensorfold.cleanup import rollback
+        from .startup import ExpertStartup
+
+        startup = ExpertStartup()
+        try:
+            self._initialize(model_dir, startup=startup, **options)
+        except BaseException as primary:
+            rollback(startup, primary, lambda: startup.abort(self, primary))
+
+    def _initialize(self, model_dir, *, rank, tp, master, master_port, context, slots, max_tokens, parallel,
+                    serve, queue_timeout_s, graphs, keep_slots, prefix_host_bytes, vision, vision_urls,
+                    vision_offload, yarn_factor, kv_dtype, expert_tensor_parallel_size, expert_placement,
+                    expert_balance_state, expert_balance_sample_every, expert_balance_half_life, expert_balance_live,
+                    w576_fp32, sp_fp32, startup):
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
         from tensorfold.cuda.control_pipes import ControlPipes
+        from .. import CUDA_KV_DTYPES, NATIVE_KV_DTYPE, ROTOR_KV_DTYPE
         from . import weights as W
         from .engram import HostEngram
         from .collectives import Collectives
@@ -71,7 +139,15 @@ class DS41Engine:
         from .startup import Timeline
 
         if tp != W.WORLD or not 0 <= rank < tp:
-            raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8 (TP8 attention/dense, ETP4 x EP2 experts)")
+            raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8")
+        etp = W.checked_etp(expert_tensor_parallel_size)
+        self._experimental_w576_fp32 = w576_fp32
+        experiment = w576_fp32 or sp_fp32
+        if expert_balance_state is not None:
+            if (not serve or type(expert_balance_sample_every) is not int or not 1 <= expert_balance_sample_every <= 1 << 20
+                    or type(expert_balance_half_life) is not int or not 1 <= expert_balance_half_life <= 1 << 52):
+                raise ValueError("DeepSeek expert balancing requires serving and positive bounded sampling settings")
+        self.expert_tensor_parallel_size = etp
         model_dir = Path(model_dir)
         if parallel is not None:
             if type(parallel) is not int or not 1 <= parallel <= MAX_STREAMS:
@@ -80,7 +156,15 @@ class DS41Engine:
         self.streams = slots
         raw = read_config(model_dir)
         self.geometry = g = W.Geometry.from_config(raw)
-        self.context = self.context_window = min(int(context or g.max_positions), g.max_positions)
+        if kv_dtype not in CUDA_KV_DTYPES:
+            raise ValueError(f"DeepSeek-V4.1 does not support --kv-dtype {kv_dtype!r}")
+        rotorquant = kv_dtype == ROTOR_KV_DTYPE
+        self.model_kv_dtype = ROTOR_KV_DTYPE if rotorquant else NATIVE_KV_DTYPE
+        rope = g.rope_parameters(yarn_factor)
+        self.yarn_factor = rope.factor
+        self.context = self.context_window = int(context or rope.context_limit)
+        if not 1 <= self.context <= rope.context_limit:
+            raise ValueError(f"DeepSeek-V4.1 context must be within the {rope.context_limit}-token YaRN window")
         self.rank, self.world = rank, tp
         self.vocab = g.vocab
         self.max_tokens = max_tokens
@@ -102,6 +186,15 @@ class DS41Engine:
         prebuild.wait(small_gather.__name__)
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
+            mode = (int(expert_balance_live) | (int(w576_fp32) << 1) | (int(sp_fp32) << 2)
+                    | (int(rotorquant) << 3))
+            settings = [etp, int(expert_placement is not None), mode]
+            local = torch.tensor(settings, dtype=torch.int64, device=device)
+            agreed = torch.empty(tp * len(settings), dtype=torch.int64, device=device)
+            self.comm.all_gather(local, agreed)
+            if agreed.tolist() != settings * tp:
+                raise ValueError("DeepSeek-V4.1 ranks must agree on KV storage, ETP degree, expert placement and experimental math")
+            del local, agreed
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
         from .prefix import HostSlab, default_keep_slots
@@ -110,17 +203,100 @@ class DS41Engine:
         if type(keep_slots) is not int or keep_slots < 0:
             raise ValueError("keep_slots must be a nonnegative integer")
         self.keep_slots = keep_slots
+        # Development smoke runs load only the first N decoder layers.
+        smoke = int(os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS") or 0)
+        if smoke > 0 and expert_balance_state is not None:
+            raise ValueError("DeepSeek expert balancing requires all model layers")
+        capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
+        h64_text = rotorquant and not vision and capture and self.context <= 131_072 and max_tokens <= MAX_TOKENS
+        from .graphs import shape_keys
+        graph_keys = shape_keys(slots, self.context) if capture else ()
+        compact_profile = (etp == W.ETP and h64_text and tuple(graph_keys) == H64_128K_GRAPH_KEYS
+                           and self.context == 131_072 and slots == MAX_STREAMS
+                           and keep_slots == default_keep_slots(slots) and max_tokens == MAX_TOKENS
+                           and yarn_factor is None and self.yarn_factor == 16.0 and smoke <= 0
+                           and prefix_host_bytes == 16 << 30)
+        # After rank mode agreement, reject unsupported experiments before opening the checkpoint.
+        if w576_fp32 and not (serve and compact_profile):
+            raise ValueError("experimental W576 FP32 requires the native compact 128K H64 text serving profile")
+        if sp_fp32 and not compact_profile:
+            raise ValueError("experimental SP FP32 requires the native compact 128K H64 text profile")
+        if experiment and vision_offload:
+            raise ValueError("DeepSeek-V4.1 SM70 keeps its vision tower in VRAM: --vision-offload is unsupported")
         entry = raw.get("gguf_file") or raw.get("gguf_entrypoint")
         engram_file = raw.get("engram_file")
         if not entry or not engram_file:
             raise ValueError("the DeepSeek-V4.1 model directory's config.json must name gguf_file (the backbone's "
                              "first shard) and engram_file (the llama.cpp Engram GGUF)")
         resolve = lambda p: Path(p) if Path(p).is_absolute() else model_dir / p
-        shards = W.Shards(resolve(entry), resolve(engram_file))
-        # Development smoke (TENSORFOLD_DS41_SMOKE_LAYERS=N): only the first N decoder layers load, so plumbing and
-        # integration changes run in seconds; outputs are not the model's. Below the first Engram layer the table is
-        # never read, so it is not mapped either. Numerics gates and benchmarks never set it.
-        smoke = int(os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS") or 0)
+        bind_files = startup is not None
+        shards = W.Shards(resolve(entry), resolve(engram_file), bind_files=True) if bind_files else W.Shards(
+            resolve(entry), resolve(engram_file))
+        placement_options = {}
+        if bind_files:
+            startup.shards = shards
+            from .expert_placement import agree_placement, placement_identity
+
+            checkpoint = placement_identity(shards.placement_files(), raw)
+            identity = list(bytes.fromhex(checkpoint))
+            local = torch.tensor(identity, dtype=torch.int32, device=device)
+            agreed = torch.empty(tp * len(identity), dtype=torch.int32, device=device)
+            self.comm.all_gather(local, agreed)
+            if agreed.tolist() != identity * tp:
+                raise ValueError("DeepSeek-V4.1 ranks loaded different expert-balance checkpoint inputs")
+            del local, agreed
+        if expert_placement is not None:
+            placement_options["expert_placement"] = agree_placement(
+                Path(expert_placement), store=self.comm.store, rank=rank, checkpoint=checkpoint,
+                layers=g.layers, experts=g.experts, etp=etp,
+            )
+        self.expert_observer = None
+        self.expert_live = None
+        if expert_balance_state is not None:
+            key = "deepseek-v41/expert-history-startup-v1"
+            if rank == 0:
+                from .expert_balance_state import ExpertBalanceState
+                from .expert_observer import ExpertObserver
+
+                try:
+                    history = ExpertBalanceState(Path(expert_balance_state), checkpoint=checkpoint, etp=etp,
+                                                 layers=g.layers, experts=g.experts, half_life_routes=expert_balance_half_life,
+                                                 current=placement_options.get("expert_placement"))
+                    startup.history = history
+                    self.expert_observer = ExpertObserver(device, history, sample_every=expert_balance_sample_every,
+                                                          minimum_routes=expert_balance_half_life)
+                    startup.observer = self.expert_observer
+                except (OSError, ValueError, RuntimeError) as exc:
+                    from tensorfold.cleanup import rollback
+
+                    error = str(exc).encode(errors="replace")[:1024]
+                    rollback(self, exc, lambda: self.comm.store.set(key, b"!" + error))
+                from .expert_placement import encode_placement
+
+                active_epoch, active_placement = history.placement_snapshot()
+                status = b"+" + _EXPERT_EPOCH.pack(active_epoch) + encode_placement(
+                    active_placement, checkpoint=checkpoint, etp=etp)
+                self.comm.store.set(key, status)
+            else:
+                status = self.comm.store.get(key)
+                if status.startswith(b"!"):
+                    error = status[1:].decode(errors="replace")
+                    raise RuntimeError(f"DeepSeek expert history initialization failed on rank zero: {error}")
+                from .expert_placement import decode_placement
+
+                if not status.startswith(b"+") or len(status) <= 1 + _EXPERT_EPOCH.size:
+                    raise RuntimeError("DeepSeek ranks received an incomplete live expert history")
+                active_epoch, = _EXPERT_EPOCH.unpack_from(status, 1)
+                if active_epoch < 0:
+                    raise RuntimeError("DeepSeek expert history contains an invalid active epoch")
+                active_placement = decode_placement(status[1 + _EXPERT_EPOCH.size:], checkpoint=checkpoint,
+                                                    layers=g.layers, experts=g.experts, etp=etp,
+                                                    source="DeepSeek live expert history on rank 0")
+            identity = tuple(range(g.experts))
+            if all(row == identity for row in active_placement):
+                placement_options.pop("expert_placement", None)
+            else:
+                placement_options["expert_placement"] = active_placement
         layers = range(min(smoke, g.layers)) if smoke > 0 else None
         self.engram = None
         mapping = None
@@ -132,25 +308,41 @@ class DS41Engine:
             # 20-28 s beside a 7-16 s registration).
             from concurrent.futures import ThreadPoolExecutor
             rows = W.engram_split(shards, g)
+            engram_path, engram_offset = shards.engram.path, shards.engram.offset
 
-            def map_engram():
+            def map_engram(open_fd=None):
                 with clock.phase("engram") as note:
-                    e = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store)
+                    options = {} if open_fd is None else {"open_fd": open_fd}
+                    e = HostEngram(engram_path, engram_offset, rows, rank, self.comm.store, **options)
+                    if startup is not None:
+                        startup.engram = e
                     note[0] = f"fill {e.fill_seconds:.1f} wait {e.wait_seconds:.1f} register {e.register_seconds:.1f}"
                 return e
-            mapping = ThreadPoolExecutor(1, thread_name_prefix="ds41-engram")
-            engram = mapping.submit(map_engram)
-            mapping.shutdown(wait=False)
+            if startup is None:
+                mapping = ThreadPoolExecutor(1, thread_name_prefix="ds41-engram")
+                engram = mapping.submit(map_engram)
+                mapping.shutdown(wait=False)
+            else:
+                engram = startup.map_engram(shards.duplicate_file(engram_path), map_engram)
         if layers is not None:
             print(f"[tensorfold] rank {rank}: DEVELOPMENT SMOKE: {len(layers)} of {g.layers} layers loaded", flush=True)
         prebuild.wait()
         with clock.phase("weights"):
-            self.w = W.load(shards, g, rank, device, layers=layers)
+            self.w = W.load(shards, g, rank, device, layers=layers, expert_tensor_parallel_size=etp,
+                            compact_expert_down=h64_text and layers is None, **placement_options)
             torch.cuda.synchronize()
-        if mapping is not None:
+        if mapping is not None or (startup is not None and startup.mapper is not None):
             self.engram = engram.result()
+            if startup is not None:
+                startup.retire_mapper()
             print(f"[tensorfold] rank {rank}: Engram table mapped and registered in {self.engram.seconds:.0f} s", flush=True)
+        if bind_files:
+            shards.verify_placement_files()
         shards.close()
+        if startup is not None:
+            startup.shards = None
+        if experiment and not self.w.compact_expert_down:
+            raise ValueError("experimental FP32 requires actual compact expert banks")
         # Image input (--vision): the vision router bias and a TP8 part of the mmproj tower on every rank (each rank
         # reads only its part). Every rank encodes in step (``_tower``), so each ends with the same span and a prompt
         # chunk's image rows need no broadcast. Loaded before the KV pool is sized, so the pool pays for it; the pool
@@ -201,33 +393,47 @@ class DS41Engine:
         # rank's Engram registration is done: pinning while the Engram table registers slowed m-pf1's registration
         # 4x) until before the graph capture.
         slab_started = time.perf_counter()
-        slab = HostSlab(self.comm, rank, tp, prefix_host_bytes)
-        # The lattice prefill experts' persistent canonical-bank workspace (540 MiB) exists before the KV pool is
+        if experiment:
+            slab = HostSlab(self.comm, rank, tp, prefix_host_bytes, required_per_rank=2 << 30, startup=startup)
+        else:
+            slab = HostSlab(self.comm, rank, tp, prefix_host_bytes)
+        # The lattice prefill experts' persistent canonical-bank workspace exists before the KV pool is
         # sized, so it does not come out of RESERVE.
         from tensorfold.cuda.sm70 import ds41_lattice_moe
         with clock.phase("lattice-ws"):
-            lattice = ds41_lattice_moe.Workspace(device)
+            if etp == W.ETP:
+                lattice = ds41_lattice_moe.Workspace(device)
+            else:
+                lattice = ds41_lattice_moe.Workspace(device, tile=len(self.w.local_experts),
+                                                      intermediate=g.moe_inter // etp)
             torch.cuda.synchronize()
         free = torch.cuda.mem_get_info()[0]
         mine = torch.tensor([free], dtype=torch.int64, device=device)
         every = torch.empty(tp, dtype=torch.int64, device=device)
         self.comm.all_gather(mine, every)
-        from .target import Pool, BLOCK
+        from .target import BLOCK, window_ring_bytes
         from .kernels.mu_packed import PackedLayout
-        page_bytes = PackedLayout({l: g.compress_ratios[l] for l in g.kv_sources}, BLOCK).page_bytes
+        layout = PackedLayout({l: g.compress_ratios[l] for l in g.kv_sources}, BLOCK, rotorquant=rotorquant)
+        page_bytes = layout.page_bytes
         self.slots = slots + keep_slots + 1          # streams, kept chains, the scratch slot
-        ring_bytes = self.slots * g.layers * 128 * 512 * 2
+        ring_bytes = self.slots * g.layers * window_ring_bytes(rotorquant)
         # The decode graphs are captured after the KV pool exists, so their memory comes out of the free memory too:
         # ~30 MiB per captured graph outside the torch pool (graph/NCCL resources) + ~40 MiB pool (ds41-graphs g2:
         # 606 MiB for 18 buckets on one capture stream).
-        from .graphs import shape_keys
-        capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
-        graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(shape_keys(slots, self.context)) if capture else 0
-        pages = max(1, (int(every.min()) - RESERVE - graph_bytes - ring_bytes) // page_bytes)
+        compact_128k = compact_profile and self.w.compact_expert_down and slab.per_rank == 2 << 30
+        graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(graph_keys) if capture else 0
+        prompt_reserve = RESERVE
+        if etp == W.ETP and h64_text:
+            prompt_reserve = H64_TEXT_RESERVE
+            if compact_128k:
+                graph_bytes = H64_128K_GRAPH_BYTES
+        pages = max(1, (int(every.min()) - prompt_reserve - graph_bytes - ring_bytes) // page_bytes)
         target_started = time.perf_counter()
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device, lattice=lattice,
-                             bias_vl=self.bias_vl)
+                             bias_vl=self.bias_vl, rope=rope, layout=layout, fp32_sp=sp_fp32)
+        if self.expert_observer is not None:
+            self.target.expert_usage = self.expert_observer.usage
         clock.add("target", target_started, time.perf_counter() - target_started)
         self.image_features = None          # every rank: the next F_IMAGE step's image rows [n, 5120] FP16
         self.layer_count = len(self.w.layers)
@@ -249,6 +455,8 @@ class DS41Engine:
         self._warm()
         with clock.phase("slab-join"):
             self.host_per_rank, self.host_slab = slab.finish()
+            if experiment:
+                startup.retire_slab()
         clock.add("slab", slab_started, time.perf_counter() - slab_started)
         self.prefix.slab = self.host_slab
         if rank == 0:
@@ -262,13 +470,21 @@ class DS41Engine:
                 self.graphs = DecodeGraphs(self, slots)
                 note[0] = f"{len(self.graphs.keys)}, warm-up runs {self.graphs.warm_seconds:.1f}"
             spare = torch.cuda.mem_get_info()[0] + torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
-            if self.graphs.bytes > graph_bytes or spare < RESERVE:
+            if self.graphs.bytes > graph_bytes or spare < prompt_reserve:
                 raise RuntimeError(f"DeepSeek-V4.1 SM70 rank {rank}: decode graphs took {self.graphs.bytes >> 20} MiB "
                                    f"(sized {graph_bytes >> 20} MiB); {spare >> 20} MiB left for prompt transients, "
-                                   f"{RESERVE >> 20} MiB required")
+                                   f"{prompt_reserve >> 20} MiB required")
         elif rank == 0:
             print("[tensorfold] DeepSeek-V4.1 SM70: eager decode (" +
                   ("graphs disabled)" if not graphs else "TENSORFOLD_DS41_ENGRAM_TRACE set)"), flush=True)
+        if expert_balance_live:
+            from .expert_live import LiveExpertPlacement
+
+            self.expert_live = LiveExpertPlacement(self, epoch=active_epoch, placement=active_placement,
+                                                   operation=OP_EXPERT_PLACEMENT)
+            self._expert_graph_keys = tuple(self.graphs.keys) if self.graphs is not None else None
+            self._expert_graph_bytes = graph_bytes
+            self._expert_prompt_reserve = prompt_reserve
         with clock.phase("pipes"):
             self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
         if rank == 0 and sorted(self.pipes.piped()) != list(range(1, tp)):
@@ -280,6 +496,7 @@ class DS41Engine:
         self.decoder = self.scheduler = None
         self._closed = False
         if rank == 0:
+            print(f"[tensorfold] DeepSeek-V4.1 SM70: routed experts ETP{etp} x EP{tp // etp}", flush=True)
             if self.graphs is not None:
                 print(f"[tensorfold] DeepSeek-V4.1 SM70: decode graphs for batches {list(self.graphs.sizes)} "
                       f"(index classes {self.graphs.classes[self.graphs.sizes[-1]]}; {len(self.graphs.keys)} graphs) "
@@ -298,15 +515,27 @@ class DS41Engine:
             self.points = message_points(load_tokenizer(model_dir).token_to_id)
             self.decoder = Decoder(self)
             # Requests beyond --parallel wait in the scheduler's queue; --queue-timeout-s bounds that wait (503 after).
-            self.scheduler = Scheduler(self.decoder, max_streams=slots, queue_timeout_s=queue_timeout_s)
+            options = {}
+            if self.expert_live is not None:
+                from threading import Lock
+
+                self._expert_proposal_lock = Lock()
+                self._expert_proposal = None
+                self._expert_refused = None
+                options["worker_maintenance"] = self._expert_maintenance
+                self.expert_observer.publish_live = self._publish_expert_proposal
+            self.scheduler = Scheduler(self.decoder, max_streams=slots, queue_timeout_s=queue_timeout_s, **options)
             try:
                 self.scheduler.start()
             except BaseException as primary:
-                try:
-                    self.scheduler.close()
-                except BaseException as cleanup:
-                    raise primary from cleanup
+                if startup is None:
+                    try:
+                        self.scheduler.close()
+                    except BaseException as cleanup:
+                        raise primary from cleanup
                 raise
+            if self.expert_observer is not None:
+                self.expert_observer.active = True
 
     def _warm(self):
         """Startup, every rank, no control frames: build the native extensions and compile the forward's Triton
@@ -457,11 +686,19 @@ class DS41Engine:
         for slot, start, count in entries:
             if start + count > len(pool.owned.get(slot, ())) * 64:
                 raise RuntimeError(f"slot {slot}: positions up to {start + count} exceed its KV pages")
+        observer = self.expert_observer
+        expert_sample = (flags >> EXPERT_SAMPLE_SHIFT) & 3 if observer is not None else 0
+        retain_routed = bool(flags & F_W576_FP32)
+        if retain_routed and (not self._experimental_w576_fp32 or flags & (F_SCORE | F_LAST | F_IMAGE)):
+            raise ValueError("experimental W576 FP32 is only for continuation frames")
         if (stop == 0 and not flags & F_IMAGE and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
                 and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
             compact = bool(flags & F_COMPACT)
             return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL),
-                                   ahead=bool(flags & F_AHEAD))
+                                   ahead=bool(flags & F_AHEAD), expert_sample=expert_sample, retain_routed=retain_routed)
+        # The experiment applies only to graph continuations. Eager and prompt forwards keep stock arithmetic.
+        if retain_routed:
+            raise RuntimeError("experimental W576 FP32 continuation must replay a startup graph")
         if flags & F_AHEAD:
             raise RuntimeError("a run-ahead decode round must replay a startup graph")
         for r, (slot, start, count) in enumerate(entries):
@@ -500,6 +737,9 @@ class DS41Engine:
                     qsl=t(qsl, torch.int32), qsl_cpu=qsl, num_reqs=len(entries), req_slot=t(req_slot, torch.int32),
                     block_table=t(table, torch.int32), prefill=prefill, decode_index=decode_index,
                     image=image, image_rows=image_rows, features=features)
+        if expert_sample:
+            step.expert_sample = observer.eager_flags[expert_sample]
+            step.expert_prefill_phase = expert_sample - 1
         del rows
         state = self.target.begin(step)
         if flags & F_SCORE:                # logits_rows carries each row's next token: score all rows
@@ -585,6 +825,11 @@ class DS41Engine:
             return self._layers(a)
         if op == OP_TOWER:
             return self._tower(a, b, c, d, ids)
+        if op == OP_EXPERT_PLACEMENT and self.expert_live is not None:
+            receipt = self.expert_live.handle(a, b, c, d, ids)
+            if self.rank != 0:
+                self.pipes.acknowledge(receipt)
+            return receipt
         if op in PREFIX_OPS:
             out = self.prefix.run(op, a, b, c, d, ids)
             if op == OP_GROW:                   # the slot gained pages: the graphs' device page table follows
@@ -598,24 +843,109 @@ class DS41Engine:
 
     def follow(self) -> None:
         import torch
-        with torch.inference_mode():
-            while True:
+
+        watch = self.target.rotor_cache is not None
+        pending = False
+        try:
+            with torch.inference_mode():
+                while True:
+                    try:
+                        frame = self.pipes.receive(ROTOR_ERROR_POLL_S if pending else PIPE_TIMEOUT)
+                    except TimeoutError:
+                        if pending:
+                            pending = not torch.cuda.current_stream().query()
+                        continue
+                    if frame is None:
+                        return
+                    op, a, b, c, d = _HEAD.unpack_from(frame)
+                    if op == OP_STOP:
+                        return
+                    payload = array.array("i")
+                    payload.frombytes(frame[_HEAD.size:])
+                    self._run(op, a, b, c, d, list(payload))
+                    pending = watch
+        except BaseException as primary:
+            if watch or getattr(self, "expert_live", None) is not None:
+                from tensorfold.cuda.cohort import notify_failure
+                from tensorfold.cleanup import raise_failures
+
                 try:
-                    frame = self.pipes.receive(PIPE_TIMEOUT)
-                except TimeoutError:
-                    continue
-                if frame is None:
-                    return
-                op, a, b, c, d = _HEAD.unpack_from(frame)
-                if op == OP_STOP:
-                    return
-                payload = array.array("i")
-                payload.frombytes(frame[_HEAD.size:])
-                self._run(op, a, b, c, d, list(payload))
+                    notify_failure()
+                except BaseException as cleanup:
+                    raise_failures(primary, [cleanup])
+            raise
 
     # ---------------------------------------------------------------------------------------- leader
+    def _publish_expert_proposal(self, proposal):
+        def publish():
+            with self._expert_proposal_lock:
+                epoch, plan = proposal
+                if self._expert_refused != (epoch, plan.proposed):
+                    self._expert_proposal = proposal
+
+        if not self._closed:
+            try:
+                self.scheduler.request_runtime(publish)
+            except RuntimeError:
+                if not self._closed:
+                    raise
+
+    def _expert_maintenance(self, closing, occupied):
+        from .expert_rebalance_wire import PeerRefusal
+
+        with self._expert_proposal_lock:
+            if closing:
+                self._expert_proposal = None
+                return False
+            if self._expert_proposal is None:
+                return False
+            if occupied:
+                return True     # Existing requests can progress; new admissions wait at the worker boundary.
+            proposal, self._expert_proposal = self._expert_proposal, None
+        epoch, plan = proposal
+        if self.expert_live.epoch != epoch or self.expert_live.placement != plan.current:
+            return False        # A previous successful application superseded this queued proposal.
+
+        try:
+            self.decoder.drain_placement_work()
+            self.expert_observer.pause_for_placement()
+            try:
+                applied = self.expert_live.apply(plan, expected_epoch=epoch, history=self.expert_observer.history)
+            except PeerRefusal as refusal:
+                with self._expert_proposal_lock:
+                    self._expert_refused = (epoch, plan.proposed)
+                print(f"[tensorfold] {refusal}", flush=True)
+            else:
+                if applied:
+                    print(f"[tensorfold] DeepSeek live expert placement epoch {self.expert_live.epoch} committed", flush=True)
+            self.expert_observer.resume_after_placement()
+        except BaseException as error:
+            self.decoder.broken = error
+            raise
+        return False
+
+    def recapture_expert_graphs(self):
+        """Rebuild the same optional decode catalogue while scheduler admission is held."""
+        if self.graphs is not None:
+            raise RuntimeError("expert placement still owns the previous graph catalogue")
+        if self._expert_graph_keys is None:
+            return
+        import torch
+        from .graphs import DecodeGraphs
+
+        self.graphs = DecodeGraphs(self, self.streams)
+        spare = torch.cuda.mem_get_info()[0] + torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
+        if (tuple(self.graphs.keys) != self._expert_graph_keys or self.graphs.bytes > self._expert_graph_bytes
+                or spare < self._expert_prompt_reserve):
+            raise RuntimeError("rebuilt expert graphs do not meet the original catalogue and memory budget")
+
     def step(self, entries, ids, logits_rows, stop=0):
         payload = [v for e in entries for v in e] + list(ids) + list(logits_rows)
+        observer = self.expert_observer
+        if observer is not None:
+            # Polling history can fail. Prepare the sample before notifying peers to enter the TP8 forward.
+            phase = int(bool(stop & F_COMPACT))
+            stop |= observer.sample(phase, may_copy=self.part is None) << EXPERT_SAMPLE_SHIFT
         return self.announce(OP_STEP, len(entries), len(ids), len(logits_rows), stop, payload)
 
     # the vision tower (every rank runs its TP part; ``_tower``); handles are rank 0's
@@ -755,22 +1085,52 @@ class DS41Engine:
         if self._closed:
             return
         self._closed = True
-        if self.rank == 0:
-            def stop():
-                self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
 
-            if self.scheduler is None:
-                stop()
-            else:
-                finish((self.scheduler.close, stop))
+        def retire_device():
+            # A run-ahead graph can still be queued after the scheduler stops. Fence readers before releasing
+            # graphs, pinned history snapshots, or the Engram map. A failed fence retains their owners.
+            torch.cuda.synchronize()
+            self.graphs = None
+            operations = []
+            if self.expert_observer is not None:
+                operations.append(self.expert_observer.finish)
+            if self.engram is not None:
+                operations.append(self.engram.close)
+            finish(operations)
+
+        if self.rank != 0:
+            retire_device()
+            return
+
+        scheduler = self.scheduler
+        joined = scheduler is None
+        stopped = False
+
+        def join():
+            nonlocal joined
+            scheduler.close()
+            joined = True
+
+        def stop():
+            nonlocal stopped
+            self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
+            stopped = True
+
+        def retire_if_quiescent():
+            # Scheduler.close can report an earlier request failure after verified worker retirement.
+            if not joined and self.expert_observer is not None:
+                if scheduler._worker_done.is_set() and scheduler._cleanup_failure is None:
+                    with scheduler._worker_lease:
+                        pass
+                else:
+                    return
+            elif not joined:
+                return
+            if stopped:
                 self.scheduler = None
-        # The last request can stop after a successor graph was already queued. Host worker exit and OP_STOP
-        # only establish that no more work will be issued. Each rank fences its outstanding users of Engram
-        # before destroying their graphs and unregistering the table. A failed fence leaves the mapping owned.
-        torch.cuda.synchronize()
-        self.graphs = None
-        if self.engram is not None:
-            self.engram.close()
+                retire_device()
+
+        finish((lambda: finish((join, stop) if scheduler is not None else (stop,)), retire_if_quiescent))
 
 
 class Decoder(PrefixOwner):
@@ -793,6 +1153,7 @@ class Decoder(PrefixOwner):
         import torch
         from tensorfold.cuda.geometry import DECODE_GAP_MS
         self.e = engine
+        self.decode_math = F_W576_FP32 if getattr(engine, "_experimental_w576_fp32", False) else 0
         self.GAP_MS = DECODE_GAP_MS
         self.streams: dict = {}
         self.filling: list = []
@@ -833,6 +1194,27 @@ class Decoder(PrefixOwner):
 
     def live(self) -> int:
         return len(self.streams) + len(self.filling)
+
+    def drain_placement_work(self) -> None:
+        """Fence the last DeepSeek graph and retire its metadata at a maintenance boundary."""
+        import torch
+
+        self._check()
+        engine = self.e
+        if (self.live() or self.ahead is not None or self.split is not None or engine.part is not None
+                or self.timing is not None or engine.layer_marks is not None
+                or engine.image_features is not None or engine.tower_states or engine.tower_spans
+                or self.finishing not in (None, (None, None, None))):
+            raise RuntimeError("expert placement requires drained prompt, decode, and image work")
+        # An EOS/cancellation can retire the last logical stream after its successor was already submitted.
+        # The scheduler cannot rely on another decoding round to observe that successor's completion.
+        if self.inflight is not None and self._collect():
+            raise RuntimeError("expert placement found a live decision at the drained decode boundary")
+        torch.cuda.current_stream(engine.target.device).synchronize()
+        self.finishing = None
+        self._absorb()
+        if self.timed:
+            raise RuntimeError("expert placement found unread prompt events after the device fence")
 
     def usage(self) -> dict:
         """/stats' KV-memory and prefix-cache readings."""
@@ -905,7 +1287,7 @@ class Decoder(PrefixOwner):
                 # barrier for that batch, but release the cancelled prompt's result and skip its completion.
                 self.finishing = (None, None, None) if self.inflight is not None else None
             if s in self.filling:
-                self._release(s)
+                self._release_tower_handles(s)
                 out.append(s)
         # Fallible cohort operations precede retirement. On failure drop() still finds every cancelled request.
         for s in out:
@@ -919,7 +1301,7 @@ class Decoder(PrefixOwner):
             if s in self.filling:
                 if self._broken is None:
                     try:
-                        self._release(s)
+                        self._release_tower_handles(s)
                     except BaseException as error:
                         self.broken = error
                         raise
@@ -1119,7 +1501,7 @@ class Decoder(PrefixOwner):
             e.tower_stage(pieces)
         return True
 
-    def _release(self, s) -> None:
+    def _release_tower_handles(self, s) -> None:
         """Drop the tower encodes and spans an unfinished image request still holds (every rank)."""
         if getattr(s, "vision", None) is None:
             return
@@ -1200,7 +1582,7 @@ class Decoder(PrefixOwner):
         started, done = self._events()
         started.record()
         t0 = time.perf_counter()
-        out = e.step(entries, ids, list(range(len(entries))), F_COMPACT | (F_FULL if need else 0))
+        out = e.step(entries, ids, list(range(len(entries))), F_COMPACT | (F_FULL if need else 0) | self.decode_math)
         compact, rows = out if isinstance(out, tuple) else (None, out)      # an eager forward: full rows only
         if compact is None:
             need = list(range(len(live)))
@@ -1240,7 +1622,8 @@ class Decoder(PrefixOwner):
         started, done = self._events()
         started.record()
         t0 = time.perf_counter()
-        compact, rows = e.step(entries, [0] * len(entries), list(range(len(entries))), F_COMPACT | F_AHEAD)
+        compact, rows = e.step(entries, [0] * len(entries), list(range(len(entries))),
+                               F_COMPACT | F_AHEAD | self.decode_math)
         done.record()
         self.ahead = (live, [entry[1] + 1 for entry in entries], compact, rows, None, t0,
                       (started, done, self._bucket(len(entries))), entries)

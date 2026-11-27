@@ -133,13 +133,28 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     """Refuse KV cache, draft rule, image, tokenizer, share, slot and precision options the backend or family can't
     serve."""
 
+    placement = getattr(args, "expert_placement", None)
+    balance_state = getattr(args, "expert_balance_state", None)
+    balance_disabled = getattr(args, "no_expert_balance", False)
+    balance_sampling = any(getattr(args, setting, None) is not None for setting in (
+        "expert_balance_sample_every", "expert_balance_half_life"))
     etp = getattr(args, "expert_tensor_parallel_size", None)
+    if (placement is not None or balance_state is not None or balance_disabled or balance_sampling) and (
+            backend != "cuda" or getattr(family, "model_type", "") != "deepseek_v41" or getattr(args, "tp", None) != 8):
+        raise ValueError("expert placement and balance history require DeepSeek-V4.1 GGUF on CUDA with --tp 8")
+    if balance_disabled and (placement is not None or balance_state is not None or balance_sampling):
+        raise ValueError("--no-expert-balance cannot be combined with expert placement or history settings")
     if etp is not None:
-        if type(etp) is not int or etp not in (2, 4, 8):
+        model_type = getattr(family, "model_type", "")
+        if model_type == "deepseek_v41":
+            from tensorfold.families.deepseek_v4.cuda.weights import checked_etp
+
+            checked_etp(etp)
+        elif type(etp) is not int or etp not in (2, 4, 8):
             raise ValueError("--expert-tensor-parallel-size must be 2, 4 or 8")
-        if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+        if (backend != "cuda" or model_type not in ("qwen4_exp", "qwen3_8_flash_next", "deepseek_v41")
                 or type(getattr(args, "tp", None)) is not int or args.tp != 8):
-            raise ValueError("--expert-tensor-parallel-size requires Flash Next GGUF on CUDA with --tp 8")
+            raise ValueError("--expert-tensor-parallel-size requires Flash Next or DeepSeek-V4.1 GGUF on CUDA with --tp 8")
         if (getattr(args, "expert_ranks", 1) != 1 or getattr(args, "expert_shards", None) is not None
                 or getattr(args, "vram_experts", None) is not None or getattr(args, "indexer_history", "gpu") != "gpu"):
             raise ValueError("--expert-tensor-parallel-size requires resident TP8 GPU histories and expert banks")
@@ -147,7 +162,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
 
         source = config_dir if config_dir is not None else getattr(args, "model", None)
         if source is None or resolve_gguf(source) is None:
-            raise ValueError("--expert-tensor-parallel-size requires a local Flash Next GGUF checkpoint")
+            raise ValueError("--expert-tensor-parallel-size requires a local GGUF checkpoint")
 
     if getattr(args, 'delta4_head', False) and getattr(args, 'lossless_head', False):
         raise ValueError('--delta4-head and --lossless-head are mutually exclusive')
@@ -334,7 +349,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         check_ram(config_dir, ram, tp=getattr(args, "tp", 1))
     if getattr(args, "yarn_factor", None) is not None:
         if backend != "cuda" or not hasattr(family.package, "rope_parameters"):
-            raise ValueError("--yarn-factor is supported by Flash Next, Qwen3.8 dense and Qwen3.6 on CUDA only")
+            raise ValueError("--yarn-factor is supported by Flash Next, Qwen3.8 dense, Qwen3.6 and DeepSeek-V4.1 on CUDA only")
         family.package.rope_parameters(config_dir, args.yarn_factor)
     if getattr(args, "vision_urls", False) and not getattr(args, "vision", False):
         raise ValueError("--vision-urls needs --vision")

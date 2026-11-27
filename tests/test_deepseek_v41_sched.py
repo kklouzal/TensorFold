@@ -9,6 +9,42 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
+def test_w576_experimental_math_flag_is_independent_of_packet_format():
+    from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine, F_AHEAD, F_COMPACT, F_SCORE, F_W576_FP32
+    from tensorfold.families.deepseek_v4.cuda.graphs import Shape
+
+    engine = object.__new__(DS41Engine)
+    engine.target = SimpleNamespace(device=torch.device("cpu"), rotor_cache=object(), expert_usage=object(),
+                                    pool=SimpleNamespace(owned={0: [1]}))
+    engine.expert_observer = None
+    engine._experimental_w576_fp32 = True
+    engine.geometry = SimpleNamespace(bos=7)
+    engine.slots, engine.rank, engine.slot_pages = 2, 1, SimpleNamespace(width=2)
+    shape = Shape(engine, 1, 131072)
+    entries, ids = [(0, 3, 1)], [42]
+
+    def replay(entries, ids, compact, *, full, ahead, expert_sample, retain_routed):
+        shape.stage(entries, ids, 2, retain_routed=retain_routed)
+        return (compact, ahead, shape.step.round_w576_routed.item(), shape.step.expert_sample.item(),
+                shape.step.ids.item())
+
+    engine.graphs = SimpleNamespace(sizes=[1], run=replay)
+    assert engine._step(entries, ids, [0], 0) == (False, False, 1, 2, 42)
+    assert engine._step(entries, ids, [0], F_COMPACT) == (True, False, 1, 2, 42)
+    assert engine._step(entries, ids, [0], F_W576_FP32) == (False, False, 0, 2, 42)
+    assert engine._step(entries, ids, [0], F_COMPACT | F_AHEAD | F_W576_FP32) == (True, True, 0, 2, 42)
+    assert engine._step(entries, ids, [0], F_COMPACT) == (True, False, 1, 2, 42)
+    with pytest.raises(ValueError, match="continuation frames"):
+        engine._step(entries, ids, [0], F_SCORE | F_W576_FP32)
+
+    engine._experimental_w576_fp32 = False
+    stock = Shape(engine, 1, 131072)
+    stock.stage(entries, ids, 2)
+    assert stock.step.round_w576_routed is None and stock.host.shape == (4, 1)
+    with pytest.raises(ValueError, match="continuation frames"):
+        engine._step(entries, ids, [0], F_W576_FP32)
+
+
 # ----------------------------------------------------------------------------------------------- schedule
 
 def test_unit_costs_interpolate_inside_and_bound_outside_the_anchors():
@@ -180,6 +216,7 @@ def _decoder(units=8, streams=1):
     from tensorfold.families.deepseek_v4.cuda.schedule import RoundCosts, UnitCosts
     d = object.__new__(Decoder)
     d.e = SimpleNamespace(units=units, graphs=SimpleNamespace(sizes=(1, 2, 4, 8, 16, 24, 32)))
+    d.decode_math = 0                           # Stock Decoder.__init__ mode.
     d.GAP_MS = 175.0
     d.streams = {i: object() for i in range(streams)}
     d.costs = UnitCosts(100, [25.0] * units)           # 100 rows: 25 ms per unit
@@ -346,6 +383,7 @@ def _timeline_decoder(monkeypatch, unit_ms, round_ms=20.0, units=8, warm_rows=25
     monkeypatch.setattr(RS, "greedy_tokens", lambda packet, n: [(7, None)] * n)
     d = object.__new__(E.Decoder)
     d.e = Engine()
+    d.decode_math = 0                           # Stock Decoder.__init__ mode.
     d.GAP_MS, d.streams, d.filling, d._broken, d.eos = 175.0, {}, [], None, ()
     d.inflight = d.ahead = d.split = d.finishing = d.timing = None
     d.timed = []

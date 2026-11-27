@@ -14,8 +14,8 @@
 // per lane where it fits: R; window activation layout: L; 0.125 folded into the activation scale: S, exact in
 // FP32's normal range; IQ1_M folded 4096-entry table: F; persistent CTAs: P). See his notes kept below.
 //
-// TensorFold changes (ETP4 x EP2 carriers: 576 gate/up rows, 768-column down with left 0/64/128/192, any
-// E <= 1024 local experts; Target.moe passes non-local routes as id 0 with probability 0):
+// TensorFold changes (ETP4/ETP2/ETP1 original GGUF carriers, any E <= 1024 local experts;
+// Target.moe passes non-local routes as id 0 with probability 0):
 //  * routes with probability exactly 0 are dropped by the plan (no unit), skipped by the non-fused SwiGLU
 //    and by combine. In the 6-row path such a route contributes exactly +-0 to a sum that starts at +0.f
 //    (clamped SwiGLU x 0 -> +-0, a zero Q8_1 block, a zero dot), and +0.f + (+-0) and x + (+-0) (x != 0)
@@ -64,8 +64,11 @@
 #include <c10/cuda/CUDAException.h>
 #include <cuda_fp16.h>
 #include <cstdint>
+#include <initializer_list>
+#include <limits>
 #include <vector>
 #include "onecat_ds41_dp4a.cuh"
+#include "ds41_down_fragments.cuh"
 
 namespace tensorfold::ds41_decode_moe {
 using tensorfold::onecat_ds41::Q8_1;
@@ -75,6 +78,7 @@ using tensorfold::onecat_ds41::sign_mask;
 constexpr int kTopK = 6;
 constexpr int kMaxRoutes = 64 * kTopK;  // 384
 constexpr int kMaxExperts = 1024;
+constexpr int kEtp4Intermediate = 576, kEtp2Intermediate = 1152, kEtp1Intermediate = 2304;
 
 template <int Type>
 constexpr int block_bytes() {
@@ -121,16 +125,31 @@ __global__ void build_signs(uint2* out) {
 
 // ---- one 32-weight group ----------------------------------------------------
 __device__ __forceinline__ void ld8(const uint8_t* p, uint32_t& w0, uint32_t& w1) {
-  // 8 bytes at a 2-byte-aligned address: three aligned words + funnel shifts.
+  // An aligned eight-byte read can end at the final IQ2_XXS carrier row.
   const uintptr_t a = reinterpret_cast<uintptr_t>(p);
   const uint32_t* q = reinterpret_cast<const uint32_t*>(a & ~uintptr_t(3));
   const uint32_t sh = uint32_t(a & 3) * 8;
-  const uint32_t x0 = __ldg(q), x1 = __ldg(q + 1), x2 = __ldg(q + 2);
+  const uint32_t x0 = __ldg(q), x1 = __ldg(q + 1);
+  const uint32_t x2 = sh ? __ldg(q + 2) : 0;
   w0 = __funnelshift_r(x0, x1, sh);
   w1 = __funnelshift_r(x1, x2, sh);
 }
 __device__ __forceinline__ uint32_t ld16(const uint8_t* p) {
   return __ldg(reinterpret_cast<const unsigned short*>(p));
+}
+__device__ __forceinline__ void ld8_bounded(const uint8_t* p, uint32_t& w0, uint32_t& w1) {
+  // The leading pair can include two bytes from the current block's
+  // header. Read exactly through p+7, even at the final IQ2_XXS row.
+  const uintptr_t a = reinterpret_cast<uintptr_t>(p);
+  const uint32_t* q = reinterpret_cast<const uint32_t*>(a & ~uintptr_t(3));
+  const uint32_t x0 = __ldg(q), x1 = __ldg(q + 1);
+  if (a & 2) {
+    w0 = __funnelshift_r(x0, x1, 16);
+    w1 = __funnelshift_r(x1, ld16(p + 6), 16);
+  } else {
+    w0 = x0;
+    w1 = x1;
+  }
 }
 __device__ __forceinline__ uint32_t apply_sign(uint32_t magnitude, uint32_t mask) {
   // == __vsub4(magnitude ^ mask, mask) for magnitude bytes in 1..127.
@@ -140,20 +159,43 @@ __device__ __forceinline__ uint32_t apply_sign(uint32_t magnitude, uint32_t mask
 // ---- one 32-weight group -----------------------------------------------------
 // book / signs: this lane's copy (base + (lane & (copies - 1))); entry e at [e * copies].
 // F (IQ1_M): book is the 4096-entry folded table (entry = final words).
-template <int Type, int RG = 1, int SR = 1, int F = 0>
+enum class DownStorage { raw, compact, padded };
+
+template <int Type, int RG = 1, int SR = 1, int F = 0, bool Bounded = false, DownStorage Storage = DownStorage::raw>
 struct Group {
   uint32_t w[8];
   float d;
   int m0, m1;
 
   __device__ __forceinline__ Group(const uint8_t* row, int group, const uint2* book,
-                                   const uint2* signs) {
-    const uint8_t* b = row + (group >> 3) * block_bytes<Type>();
-    const int sub = group & 7;
+                                   const uint2* signs, int left_groups = 0) {
+    using Fragment = tensorfold::ds41_down_fragments::Layout<Type>;
+    const uint8_t* b = nullptr;
+    const int source_group = group + left_groups;
+    if constexpr (Storage == DownStorage::raw) {
+      b = row + (source_group >> 3) * block_bytes<Type>();
+    }
     if constexpr (Type == 29) {
-      const uint32_t qs = __ldg(reinterpret_cast<const uint32_t*>(b + 4 * sub));
-      const uint32_t qh = ld16(b + 32 + 2 * sub);
-      const uint2 sc = __ldg(reinterpret_cast<const uint2*>(b + 48));
+      uint32_t qs, qh;
+      uint2 sc;
+      int sub;
+      if constexpr (Storage == DownStorage::raw) {
+        sub = source_group & 7;
+        qs = __ldg(reinterpret_cast<const uint32_t*>(b + 4 * sub));
+        qh = ld16(b + 32 + 2 * sub);
+        sc = __ldg(reinterpret_cast<const uint2*>(b + 48));
+      } else {
+        const auto fragment = Fragment::group(row, group, left_groups);
+        sub = fragment.source_subgroup;
+        qs = __ldg(reinterpret_cast<const uint32_t*>(fragment.low_codes));
+        qh = ld16(fragment.high_codes);
+        if constexpr (Storage == DownStorage::padded) {
+          sc = __ldg(reinterpret_cast<const uint2*>(fragment.scale_block));
+        } else {
+          const auto* scale = reinterpret_cast<const uint32_t*>(fragment.scale_block);
+          sc = make_uint2(__ldg(scale), __ldg(scale + 1));
+        }
+      }
       if constexpr (F) {
         // index(octet) = qs byte | qh nibble << 8: bytes (qs0, n0, qs2, n2), (qs1, n1, qs3, n3).
         const uint32_t a = qh & 0x0F0FU, c = (qh >> 4) & 0x0F0FU;
@@ -183,8 +225,27 @@ struct Group {
       m1 = 2 * int((s >> (shift + 3)) & 7) + 1;
     } else {
       uint32_t w0, w1;
-      ld8(b + 2 + 8 * sub, w0, w1);
-      d = __half2float(__ushort_as_half(uint16_t(ld16(b))));
+      const uint8_t* local_scale = nullptr;
+      if constexpr (Storage == DownStorage::raw) {
+        const int sub = source_group & 7;
+        if constexpr (Bounded)
+          ld8_bounded(b + 2 + 8 * sub, w0, w1);
+        else
+          ld8(b + 2 + 8 * sub, w0, w1);
+        d = __half2float(__ushort_as_half(uint16_t(ld16(b))));
+        if constexpr (Type == 17) local_scale = b + 66 + sub;
+      } else {
+        const auto fragment = Fragment::group(row, group, left_groups);
+        if constexpr (Storage == DownStorage::padded || Type == 17) {
+          const uint2 codes = __ldg(reinterpret_cast<const uint2*>(fragment.codes));
+          w0 = codes.x;
+          w1 = codes.y;
+        } else {
+          ld8(fragment.codes, w0, w1);
+        }
+        d = __half2float(__ushort_as_half(uint16_t(ld16(fragment.block_scale))));
+        if constexpr (Type == 17) local_scale = fragment.local_scale;
+      }
       if constexpr (Type == 16) {
 #pragma unroll
         for (int octet = 0; octet < 4; ++octet) {
@@ -203,7 +264,7 @@ struct Group {
           w[2 * octet] = apply_sign(e.x, s.x);
           w[2 * octet + 1] = apply_sign(e.y, s.y);
         }
-        const int sc = __ldg(b + 66 + sub);
+        const int sc = __ldg(local_scale);
         m0 = 1 + 2 * (sc & 15);
         m1 = 1 + 2 * (sc >> 4);
       }
@@ -371,7 +432,7 @@ __device__ __forceinline__ const uint2* lane_view(const uint2* table) {
 // CTA = WARPS warps; a row uses L lanes (16 / L partials per lane); ROWS rows per
 // CTA block bx; one unit (<= C routes of one expert) u. EM2's arithmetic and
 // schedule; activations in the window layout with folded scales.
-template <int Type, int L, int WARPS, int C, int RG, int SR, int F>
+template <int Type, int L, int WARPS, int C, int RG, int SR, int F, int Width>
 __device__ __forceinline__ void gate_up_body(
     int u, int bx, const uint2* lbook, const uint2* lsigns, half* sg, half* su, int* s_route,
     Q8_1* __restrict__ down_in, half* __restrict__ projection, const int4* __restrict__ xq,
@@ -391,8 +452,8 @@ __device__ __forceinline__ void gate_up_body(
   __syncthreads();
   const int lane = threadIdx.x % 32, warp = threadIdx.x / 32, jl = lane % L;
   const int local = warp * RPW + lane / L, row = bx * ROWS + local;
-  const uint8_t* g = gate + (int64_t(expert) * 576 + row) * stride;
-  const uint8_t* v = up + (int64_t(expert) * 576 + row) * stride;
+  const uint8_t* g = gate + (int64_t(expert) * Width + row) * stride;
+  const uint8_t* v = up + (int64_t(expert) * Width + row) * stride;
   float ga[C][P], ua[C][P];
 #pragma unroll
   for (int j = 0; j < C; ++j)
@@ -403,7 +464,8 @@ __device__ __forceinline__ void gate_up_body(
 #pragma unroll
     for (int k = 0; k < P; ++k) {
       const int group = jl + L * k + 16 * i;
-      const Group<Type, RG, SR, F> dg(g, group, lbook, lsigns), du(v, group, lbook, lsigns);
+      const Group<Type, RG, SR, F, Width != kEtp4Intermediate> dg(g, group, lbook, lsigns),
+          du(v, group, lbook, lsigns);
 #pragma unroll
       for (int j = 0; j < C; ++j)
         if (j < n) {
@@ -436,17 +498,17 @@ __device__ __forceinline__ void gate_up_body(
       us += __shfl_down_sync(0xffffffffU, us, offset, L);
     }
     if (jl == 0) {
-      if (fused) {
+      if (Width != kEtp4Intermediate || fused) {
         sg[j * ROWS + local] = __float2half_rn(gs);
         su[j * ROWS + local] = __float2half_rn(us);
       } else {
         const int route = s_route[j];
-        projection[int64_t(route) * 1152 + row] = __float2half_rn(gs);
-        projection[int64_t(route) * 1152 + 576 + row] = __float2half_rn(us);
+        projection[int64_t(route) * (2 * Width) + row] = __float2half_rn(gs);
+        projection[int64_t(route) * (2 * Width) + Width + row] = __float2half_rn(us);
       }
     }
   }
-  if (!fused) return;
+  if (Width == kEtp4Intermediate && !fused) return;
   if constexpr (ROWS % 32 == 0) {
     __syncthreads();
     constexpr int BLOCKS = ROWS / 32;
@@ -455,12 +517,12 @@ __device__ __forceinline__ void gate_up_body(
       const int route = s_route[j];
       const float value = __half2float(__float2half_rn(v41_swiglu(
           __half2float(sg[j * ROWS + r]), __half2float(su[j * ROWS + r]), __ldg(probabilities + route))));
-      quantize_q8_1_warp(down_in + int64_t(route) * 18 + (bx * ROWS + b * 32) / 32, value);
+      quantize_q8_1_warp(down_in + int64_t(route) * (Width / 32) + (bx * ROWS + b * 32) / 32, value);
     }
   }
 }
 
-template <int Type, int L, int WARPS, int C, int RG, int SR, int F, int PERSIST>
+template <int Type, int L, int WARPS, int C, int RG, int SR, int F, int PERSIST, int Width = kEtp4Intermediate>
 __global__ __launch_bounds__(WARPS * 32) void gate_up_kernel(
     Q8_1* __restrict__ down_in, half* __restrict__ projection, const int4* __restrict__ xq,
     const float* __restrict__ xd, const float* __restrict__ probabilities,
@@ -469,7 +531,9 @@ __global__ __launch_bounds__(WARPS * 32) void gate_up_kernel(
     const uint8_t* __restrict__ up, int stride, const uint2* __restrict__ gbook,
     const uint2* __restrict__ gsigns, int fused) {
   static_assert(L == 16 || L == 8 || L == 4, "lanes per row");
-  constexpr int ROWS = WARPS * 32 / L, NB = 576 / ROWS;
+  constexpr int ROWS = WARPS * 32 / L, NB = Width / ROWS;
+  static_assert(Width % ROWS == 0, "exact gate/up tiles");
+  static_assert(Width == kEtp4Intermediate || ROWS % 32 == 0, "wide experts require fused Q8 tiles");
   __shared__ __align__(16) uint2 book[table_entries<Type, RG, F>()];
   __shared__ __align__(16) uint2 signs[sign_entries<Type, SR>()];
   __shared__ half sg[C * ROWS], su[C * ROWS];
@@ -484,12 +548,12 @@ __global__ __launch_bounds__(WARPS * 32) void gate_up_kernel(
 #pragma unroll 1
     for (int item = blockIdx.x; item < items; item += gridDim.x) {
       __syncthreads();  // tables staged; the previous item's epilogue is done with sg/su/s_route
-      gate_up_body<Type, L, WARPS, C, RG, SR, F>(item / NB, item % NB, lbook, lsigns, sg, su,
+      gate_up_body<Type, L, WARPS, C, RG, SR, F, Width>(item / NB, item % NB, lbook, lsigns, sg, su,
                                                  s_route, down_in, projection, xq, xd,
                                                  probabilities, units, order, gate, up, stride, fused);
     }
   } else {
-    gate_up_body<Type, L, WARPS, C, RG, SR, F>(blockIdx.y, blockIdx.x, lbook, lsigns, sg, su,
+    gate_up_body<Type, L, WARPS, C, RG, SR, F, Width>(blockIdx.y, blockIdx.x, lbook, lsigns, sg, su,
                                                s_route, down_in, projection, xq, xd,
                                                probabilities, units, order, gate, up, stride, fused);
   }
@@ -497,14 +561,14 @@ __global__ __launch_bounds__(WARPS * 32) void gate_up_kernel(
 
 // ---- down -------------------------------------------------------------------
 // CTA = WARPS warps x 8 columns (4 lanes per column) x TILES column tiles (EM2).
-template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F>
+template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, int kGroups, DownStorage Storage>
 __device__ __forceinline__ void down_body(int u, int bx, const uint2* lbook, const uint2* lsigns,
                                           half* __restrict__ partial, const Q8_1* __restrict__ input,
                                           const int32_t* __restrict__ units,
                                           const int32_t* __restrict__ order,
                                           const uint8_t* __restrict__ weights, int row_stride,
                                           int left_groups) {
-  constexpr int kGroups = 18, COLS = WARPS * 8;
+  constexpr int COLS = WARPS * 8;
   const int expert = __ldg(units + u), first = __ldg(units + kMaxRoutes + u);
   const int n = __ldg(units + 2 * kMaxRoutes + u);
   int route[C];
@@ -524,7 +588,8 @@ __device__ __forceinline__ void down_body(int u, int bx, const uint2* lbook, con
       const int group = start + q;
       // Lanes past the last group decode a valid group and contribute 0.f,
       // like raw_down_unroute's `group < groups ? dot : 0.f`.
-      const Group<Type, RG, SR, F> dg(row, min(group, kGroups - 1) + left_groups, lbook, lsigns);
+      const Group<Type, RG, SR, F, kGroups != kEtp4Intermediate / 32, Storage>
+          dg(row, min(group, kGroups - 1), lbook, lsigns, left_groups);
 #pragma unroll
       for (int j = 0; j < C; ++j) {
         if (j >= n) break;  // uniform
@@ -546,7 +611,7 @@ __device__ __forceinline__ void down_body(int u, int bx, const uint2* lbook, con
 // Down, staged (EM2 pass 2): the unit's Q8_1 inputs staged in the aligned layout
 // (scale folded), per-lane group values in shared memory, one lane per (route,
 // column) adds the 18 values in ascending order from 0.f.
-template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F>
+template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, DownStorage Storage>
 __device__ __forceinline__ void down_staged_body(
     int u, int bx, const uint2* lbook, const uint2* lsigns, int4 (*xq)[18][2], float (*xd)[18],
     float (*vals)[C][8][19], int* s_route, half* __restrict__ partial,
@@ -576,7 +641,7 @@ __device__ __forceinline__ void down_staged_body(
     for (int start = 0; start < kGroups; start += 4) {
       const int group = start + q;
       if (group < kGroups) {
-        const Group<Type, RG, SR, F> dg(row, group + left_groups, lbook, lsigns);
+        const Group<Type, RG, SR, F, false, Storage> dg(row, group, lbook, lsigns, left_groups);
 #pragma unroll
         for (int j = 0; j < C; ++j)
           if (j < n) vals[warp][j][c][group] = dg.apply(xq[j][group][0], xq[j][group][1], xd[j][group]);
@@ -596,7 +661,8 @@ __device__ __forceinline__ void down_staged_body(
   }
 }
 
-template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, int STAGED, int PERSIST>
+template <int Type, int WARPS, int TILES, int C, int RG, int SR, int F, int STAGED, int PERSIST, int Groups = 18,
+          DownStorage Storage = DownStorage::raw>
 __global__ __launch_bounds__(WARPS * 32) void down_kernel(
     half* __restrict__ partial, const Q8_1* __restrict__ input,
     const int32_t* __restrict__ units, const int32_t* __restrict__ count,
@@ -604,6 +670,8 @@ __global__ __launch_bounds__(WARPS * 32) void down_kernel(
     int row_stride, int left_groups, const uint2* __restrict__ gbook,
     const uint2* __restrict__ gsigns) {
   constexpr int NB = 5120 / (WARPS * 8 * TILES);
+  static_assert(!STAGED || Groups == 18, "staged layouts own the eighteen-group buffers");
+  static_assert(Storage == DownStorage::raw || Groups == 18, "fragments hold one ETP4 slice");
   __shared__ __align__(16) uint2 book[table_entries<Type, RG, F>()];
   __shared__ __align__(16) uint2 signs[sign_entries<Type, SR>()];
   __shared__ __align__(16) int4 xq[STAGED ? C : 1][18][2];
@@ -617,11 +685,11 @@ __global__ __launch_bounds__(WARPS * 32) void down_kernel(
   const uint2* lsigns = lane_view<Type, SR>(signs);
   auto body = [&](int u, int bx) {
     if constexpr (STAGED)
-      down_staged_body<Type, WARPS, TILES, C, RG, SR, F>(u, bx, lbook, lsigns, xq, xd, vals,
+      down_staged_body<Type, WARPS, TILES, C, RG, SR, F, Storage>(u, bx, lbook, lsigns, xq, xd, vals,
                                                          s_route, partial, input, units, order,
                                                          weights, row_stride, left_groups);
     else
-      down_body<Type, WARPS, TILES, C, RG, SR, F>(u, bx, lbook, lsigns, partial, input, units,
+      down_body<Type, WARPS, TILES, C, RG, SR, F, Groups, Storage>(u, bx, lbook, lsigns, partial, input, units,
                                                   order, weights, row_stride, left_groups);
   };
   if constexpr (PERSIST) {
@@ -636,13 +704,8 @@ __global__ __launch_bounds__(WARPS * 32) void down_kernel(
   }
 }
 
-// out[t, c] = half(sum over warps w = 0..3 of (sum of routes w, w + 4)), the
-// route-per-warp split and FP32 order of raw_down_unroute (top-6, 4 warps).
-// Dropped (probability 0) routes have no partial and add nothing (+-0 there).
-__global__ void combine_kernel(half* out, const half* partial, const float* probabilities, int tokens) {
-  const int c = blockIdx.x * blockDim.x + threadIdx.x;
-  const int t = blockIdx.y;
-  if (c >= 5120 || t >= tokens) return;
+// Preserve the raw_down_unroute FP32 order (top-6, 4 warps). Dropped routes have no initialized partial.
+__device__ __forceinline__ float combine_partials(const half* partial, const float* probabilities, int t, int c) {
   float sum = 0.f;
 #pragma unroll
   for (int w = 0; w < 4; ++w) {
@@ -652,7 +715,26 @@ __global__ void combine_kernel(half* out, const half* partial, const float* prob
         total = __fadd_rn(total, __half2float(partial[(int64_t(t) * kTopK + route) * 5120 + c]));
     sum = __fadd_rn(sum, total);
   }
-  out[int64_t(t) * 5120 + c] = __float2half_rn(sum);
+  return sum;
+}
+
+__global__ void combine_kernel(half* out, const half* partial, const float* probabilities, int tokens) {
+  const int c = blockIdx.x * blockDim.x + threadIdx.x;
+  const int t = blockIdx.y;
+  if (c >= 5120 || t >= tokens) return;
+  out[int64_t(t) * 5120 + c] = __float2half_rn(combine_partials(partial, probabilities, t, c));
+}
+
+__global__ void combine_shared_kernel(float* out, const half* partial, const float* probabilities,
+                                      const half* shared, const int64_t* round_routed, int tokens) {
+  const int c = blockIdx.x * blockDim.x + threadIdx.x;
+  const int t = blockIdx.y;
+  if (c >= 5120 || t >= tokens) return;
+  float routed = combine_partials(partial, probabilities, t, c);
+  if (*round_routed)
+    routed = __half2float(__float2half_rn(routed));  // The same graph can replay a one-token prompt.
+  const int64_t at = int64_t(t) * 5120 + c;
+  out[at] = __fadd_rn(routed, __half2float(shared[at]));
 }
 
 // Non-fused gate/up variants: onecat_ds41.cu v41_swiglu_q8 over every kept route (grid 1 x M * 6, 576
@@ -710,6 +792,7 @@ struct Variant {
   int shape, mode;
 };
 constexpr int kGateUpVariants = 28, kDownVariants = 36;
+constexpr int kWideGateUp = 4, kWideDown = 4;
 __host__ __device__ constexpr Variant gate_up_variant(int v) {
   constexpr int extra[4] = {4, 8, 9, 0};
   return v < 10 ? Variant{v, 0} : v < 20 ? Variant{v - 10, 1} : v < 24 ? Variant{extra[v - 20], 2}
@@ -777,7 +860,7 @@ inline int persistent_grid(K kernel, int threads, int max_items) {
   return grid < max_items ? grid : max_items;
 }
 
-template <int Type, int V>
+template <int Type, int V, int Width = kEtp4Intermediate>
 void launch_gate_up_v(cudaStream_t stream, int routes, Q8_1* down_in, half* projection,
                       const int4* xq, const float* xd, const float* prob, const int32_t* units,
                       const int32_t* count, const int32_t* order, const uint8_t* gate,
@@ -787,20 +870,20 @@ void launch_gate_up_v(cudaStream_t stream, int routes, Q8_1* down_in, half* proj
   constexpr auto s = gate_up_shape(var.shape);
   constexpr int rows = s.warps * 32 / s.lanes, mode = var.mode, persist = mode == 3 ? 1 : 0;
   auto kernel = gate_up_kernel<Type, s.lanes, s.warps, s.chunk, gu_rg<Type, mode>(), gu_sr<Type, mode>(),
-                               gu_f<Type, mode>(), persist>;
+                               gu_f<Type, mode>(), persist, Width>;
   if constexpr (persist) {
     static int grid = 0;  // per instantiation and process (one device per worker)
     if (!grid) grid = persistent_grid(kernel, s.warps * 32, 1 << 30);
-    const int items = routes * (576 / rows);
+    const int items = routes * (Width / rows);
     kernel<<<grid < items ? grid : items, s.warps * 32, 0, stream>>>(
         down_in, projection, xq, xd, prob, units, count, order, gate, up, stride, book, signs, fused);
   } else {
-    kernel<<<dim3(576 / rows, routes), s.warps * 32, 0, stream>>>(
+    kernel<<<dim3(Width / rows, routes), s.warps * 32, 0, stream>>>(
         down_in, projection, xq, xd, prob, units, count, order, gate, up, stride, book, signs, fused);
   }
 }
 
-template <int Type, int V>
+template <int Type, int V, int Groups = 18, DownStorage Storage = DownStorage::raw>
 void launch_down_v(cudaStream_t stream, int routes, half* partial, const Q8_1* input,
                    const int32_t* units, const int32_t* count, const int32_t* order,
                    const uint8_t* weights, int row_stride, int left_groups, const uint2* book,
@@ -812,7 +895,7 @@ void launch_down_v(cudaStream_t stream, int routes, half* partial, const Q8_1* i
   constexpr int sr = dn_sr<Type, s.warps, s.chunk, s.staged, mode>();
   constexpr int f = dn_f<Type, s.warps, s.chunk, s.staged, mode>();
   constexpr int blocks = 5120 / (s.warps * 8 * s.tiles);
-  auto kernel = down_kernel<Type, s.warps, s.tiles, s.chunk, rg, sr, f, s.staged, persist>;
+  auto kernel = down_kernel<Type, s.warps, s.tiles, s.chunk, rg, sr, f, s.staged, persist, Groups, Storage>;
   if constexpr (persist) {
     static int grid = 0;
     if (!grid) grid = persistent_grid(kernel, s.warps * 32, 1 << 30);
@@ -826,6 +909,9 @@ void launch_down_v(cudaStream_t stream, int routes, half* partial, const Q8_1* i
 }
 
 #define DS41MU_EM3_CASES4(F, B) F(B + 0); F(B + 1); F(B + 2); F(B + 3)
+#define DS41_FRAGMENT_16(F) F(19); F(21); F(22)
+#define DS41_FRAGMENT_17(F) F(12); F(13); F(16); F(20); F(21)
+#define DS41_FRAGMENT_29(F) F(35)
 template <int Type>
 void launch_gate_up(int variant, cudaStream_t stream, int routes, Q8_1* down_in,
                     half* projection, const int4* xq, const float* xd, const float* prob,
@@ -851,32 +937,61 @@ void launch_gate_up(int variant, cudaStream_t stream, int routes, Q8_1* down_in,
 #undef DS41MU_EM3_GU
 }
 
-template <int Type>
+template <int Type, DownStorage Storage>
 void launch_down(int variant, cudaStream_t stream, int routes, half* partial, const Q8_1* input,
                  const int32_t* units, const int32_t* count, const int32_t* order,
                  const uint8_t* weights, int row_stride, int left_groups, const uint2* book,
                  const uint2* signs) {
-#define DS41MU_EM3_DN(V)                                                                     \
-  case V:                                                                                    \
-    launch_down_v<Type, V>(stream, routes, partial, input, units, count, order, weights,     \
-                           row_stride, left_groups, book, signs);                            \
+#define DS41MU_EM3_DN(V)                                                                              \
+  case V:                                                                                             \
+    launch_down_v<Type, V, 18, Storage>(stream, routes, partial, input, units, count, order, weights, \
+                           row_stride, left_groups, book, signs);                                     \
     break
-  switch (variant) {
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 0);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 4);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 8);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 12);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 16);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 20);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 24);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 28);
-    DS41MU_EM3_CASES4(DS41MU_EM3_DN, 32);
-    default:
-      break;
+  // Compact readers are only instantiated for the actual ordinary schedule.
+  if constexpr (Storage == DownStorage::raw) {
+    switch (variant) {
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 0);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 4);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 8);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 12);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 16);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 20);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 24);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 28);
+      DS41MU_EM3_CASES4(DS41MU_EM3_DN, 32);
+    }
+  } else if constexpr (Type == 16) {
+    switch (variant) {
+      DS41_FRAGMENT_16(DS41MU_EM3_DN);
+    }
+  } else if constexpr (Type == 17) {
+    switch (variant) {
+      DS41_FRAGMENT_17(DS41MU_EM3_DN);
+    }
+  } else {
+    switch (variant) {
+      DS41_FRAGMENT_29(DS41MU_EM3_DN);
+    }
   }
 #undef DS41MU_EM3_DN
 }
 #undef DS41MU_EM3_CASES4
+
+bool supports_fragment_variant(int type, int variant) {
+#define DS41_FRAGMENT_SUPPORTED(V) case V: return true
+  if (type == 16) {
+    switch (variant) { DS41_FRAGMENT_16(DS41_FRAGMENT_SUPPORTED); }
+  } else if (type == 17) {
+    switch (variant) { DS41_FRAGMENT_17(DS41_FRAGMENT_SUPPORTED); }
+  } else if (type == 29) {
+    switch (variant) { DS41_FRAGMENT_29(DS41_FRAGMENT_SUPPORTED); }
+  }
+#undef DS41_FRAGMENT_SUPPORTED
+  return false;
+}
+#undef DS41_FRAGMENT_16
+#undef DS41_FRAGMENT_17
+#undef DS41_FRAGMENT_29
 
 inline int block_bytes_of(int type) { return type == 16 ? 66 : type == 17 ? 74 : 56; }
 inline int book_entries_of(int type) {
@@ -892,28 +1007,44 @@ constexpr int64_t kUnits = kXd + align256(64 * 160 * 4);
 constexpr int64_t kCount = kUnits + align256(3 * kMaxRoutes * 4);
 constexpr int64_t kOrder = kCount + 256;
 constexpr int64_t kDownIn = kOrder + align256(kMaxRoutes * 4);
-constexpr int64_t kProjection = kDownIn + align256(int64_t(kMaxRoutes) * 18 * 36);
-constexpr int64_t kPartial = kProjection + align256(int64_t(kMaxRoutes) * 1152 * 2);
-constexpr int64_t kBook16 = kPartial + align256(int64_t(kMaxRoutes) * 5120 * 2);
-constexpr int64_t kBook17 = kBook16 + align256(book_entries<16>() * 8);
-constexpr int64_t kBook29 = kBook17 + align256(book_entries<17>() * 8);
-constexpr int64_t kSigns = kBook29 + align256(book_entries<29>() * 8);
-constexpr int64_t kWorkspace = kSigns + align256(128 * 8);
+struct WorkspaceLayout {
+  int intermediate;
+  int64_t projection, partial, book16, book17, book29, signs, bytes;
+  constexpr explicit WorkspaceLayout(int width)
+      : intermediate(width),
+        projection(kDownIn + align256(int64_t(kMaxRoutes) * (width / 32) * sizeof(Q8_1))),
+        // Only ETP4 has non-fused variants that materialize projections.
+        partial(projection + (width == kEtp4Intermediate ? align256(int64_t(kMaxRoutes) * 2 * width * 2) : 0)),
+        book16(partial + align256(int64_t(kMaxRoutes) * 5120 * 2)),
+        book17(book16 + align256(book_entries<16>() * 8)),
+        book29(book17 + align256(book_entries<17>() * 8)),
+        signs(book29 + align256(book_entries<29>() * 8)),
+        bytes(signs + align256(128 * 8)) {}
+};
+constexpr WorkspaceLayout kEtp4Layout(kEtp4Intermediate), kEtp2Layout(kEtp2Intermediate),
+    kEtp1Layout(kEtp1Intermediate);
+static_assert(kEtp4Layout.bytes != kEtp2Layout.bytes && kEtp4Layout.bytes != kEtp1Layout.bytes &&
+                  kEtp2Layout.bytes != kEtp1Layout.bytes,
+              "workspace size identifies expert width");
 
 struct Views {
   uint8_t* base;
+  const WorkspaceLayout& layout;
   int4* xq() const { return reinterpret_cast<int4*>(base + kXq); }
   float* xd() const { return reinterpret_cast<float*>(base + kXd); }
   int32_t* units() const { return reinterpret_cast<int32_t*>(base + kUnits); }
   int32_t* count() const { return reinterpret_cast<int32_t*>(base + kCount); }
   int32_t* order() const { return reinterpret_cast<int32_t*>(base + kOrder); }
   Q8_1* down_in() const { return reinterpret_cast<Q8_1*>(base + kDownIn); }
-  half* projection() const { return reinterpret_cast<half*>(base + kProjection); }
-  half* partial() const { return reinterpret_cast<half*>(base + kPartial); }
-  const uint2* book(int type) const {
-    return reinterpret_cast<const uint2*>(base + (type == 16 ? kBook16 : type == 17 ? kBook17 : kBook29));
+  half* projection() const {
+    return layout.intermediate == kEtp4Intermediate ? reinterpret_cast<half*>(base + layout.projection) : nullptr;
   }
-  const uint2* signs() const { return reinterpret_cast<const uint2*>(base + kSigns); }
+  half* partial() const { return reinterpret_cast<half*>(base + layout.partial); }
+  const uint2* book(int type) const {
+    return reinterpret_cast<const uint2*>(base + (type == 16 ? layout.book16 : type == 17 ? layout.book17 :
+                                                                                          layout.book29));
+  }
+  const uint2* signs() const { return reinterpret_cast<const uint2*>(base + layout.signs); }
 };
 
 void require(bool ok, const char* what) { TORCH_CHECK(ok, "ds41_decode_moe: ", what); }
@@ -923,10 +1054,12 @@ bool aligned(const torch::Tensor& t, int bytes) {
 bool is_type(int64_t type) { return type == 16 || type == 17 || type == 29; }
 
 Views workspace_of(const torch::Tensor& ws, const torch::Tensor& like) {
+  const auto& layout = ws.numel() == kEtp4Layout.bytes ? kEtp4Layout
+                     : ws.numel() == kEtp2Layout.bytes ? kEtp2Layout : kEtp1Layout;
   require(ws.is_cuda() && ws.scalar_type() == torch::kUInt8 && ws.is_contiguous() && ws.dim() == 1 &&
-              ws.numel() == kWorkspace && aligned(ws, 256) && ws.device() == like.device(),
-          "workspace must be a 256-byte aligned uint8 [workspace_bytes()] tensor on the operands' device");
-  return Views{ws.data_ptr<uint8_t>()};
+              ws.numel() == layout.bytes && aligned(ws, 256) && ws.device() == like.device(),
+          "workspace must be an aligned uint8 tensor sized for its intermediate width on the operands' device");
+  return Views{ws.data_ptr<uint8_t>(), layout};
 }
 
 int rows_of(const torch::Tensor& probabilities) {
@@ -937,24 +1070,53 @@ int rows_of(const torch::Tensor& probabilities) {
   return int(probabilities.size(0));
 }
 
-void check_experts(const torch::Tensor& gate, const torch::Tensor& up, const torch::Tensor& down,
-                   int64_t gate_type, int64_t down_type, int64_t left, const torch::Tensor& like) {
-  require(is_type(gate_type) && is_type(down_type), "types must be IQ2_XXS(16)/IQ2_XS(17)/IQ1_M(29)");
+void check_gate_banks(const torch::Tensor& gate, const torch::Tensor& up, int64_t type, int width,
+                      const torch::Tensor& like) {
+  require(is_type(type), "gate/up type must be IQ2_XXS(16)/IQ2_XS(17)/IQ1_M(29)");
   require(gate.device() == like.device() && gate.scalar_type() == torch::kUInt8 && gate.is_contiguous() &&
-              gate.dim() == 3 && gate.size(0) >= 1 && gate.size(0) <= kMaxExperts && gate.size(1) == 576 &&
-              gate.size(2) == 20 * block_bytes_of(gate_type) && gate.sizes() == up.sizes() &&
+              gate.dim() == 3 && gate.size(0) >= 1 && gate.size(0) <= kMaxExperts && gate.size(1) == width &&
+              gate.size(2) == 20 * block_bytes_of(type) && gate.sizes() == up.sizes() &&
               up.device() == like.device() && up.scalar_type() == torch::kUInt8 && up.is_contiguous() &&
               aligned(gate, 8) && aligned(up, 8),
-          "gate/up must be 8-byte aligned original rows uint8 [E <= 1024, 576, 20 * block]");
-  require(left >= 0 && left % 64 == 0 && left < 256, "down left offset must be 0/64/128/192");
-  require(down.device() == like.device() && down.scalar_type() == torch::kUInt8 && down.is_contiguous() &&
-              down.dim() == 3 && down.size(0) == gate.size(0) && down.size(1) == 5120 &&
-              down.size(2) == ((left + 576 + 255) / 256) * block_bytes_of(down_type) && aligned(down, 8),
-          "down must be 8-byte aligned original rows uint8 [E, 5120, 3 * block]");
+          "gate/up must be aligned original uint8 [E <= 1024, intermediate, 20 * block] matching workspace");
 }
 
-void launch_prep(const Views& v, const torch::Tensor& x, const torch::Tensor& ids,
-                 const torch::Tensor& probabilities, int experts, int chunk, cudaStream_t stream) {
+template <DownStorage Storage, int Type>
+constexpr int fragment_row_width() {
+  using Fragment = tensorfold::ds41_down_fragments::Layout<Type>;
+  static_assert(Storage != DownStorage::raw, "fragment width requires fragment storage");
+  if constexpr (Storage == DownStorage::compact)
+    return Fragment::compact_row_bytes;
+  else
+    return Fragment::padded_row_bytes;
+}
+
+template <DownStorage Storage = DownStorage::raw>
+void check_down_bank(const torch::Tensor& down, int64_t type, int64_t left, int width, const torch::Tensor& like) {
+  require(is_type(type), "down type must be IQ2_XXS(16)/IQ2_XS(17)/IQ1_M(29)");
+  if constexpr (Storage != DownStorage::raw)
+    require(width == kEtp4Intermediate, "down fragments require ETP4");
+  const bool valid_left = width == kEtp4Intermediate ? left >= 0 && left % 64 == 0 && left < 256
+                        : width == kEtp2Intermediate ? left == 0 || left == 128 : left == 0;
+  require(valid_left, "down left offset must be 0 for ETP1, 0/128 for ETP2, or 0/64/128/192 for ETP4");
+
+  int64_t row_width;
+  if constexpr (Storage == DownStorage::raw) {
+    row_width = ((left + width + 255) / 256) * block_bytes_of(type);
+  } else {
+    row_width = type == 16 ? fragment_row_width<Storage, 16>()
+               : type == 17 ? fragment_row_width<Storage, 17>() : fragment_row_width<Storage, 29>();
+  }
+  require(down.device() == like.device() && down.scalar_type() == torch::kUInt8 && down.is_contiguous() &&
+              down.dim() == 3 && down.size(0) >= 1 && down.size(0) <= kMaxExperts && down.size(1) == 5120 &&
+              down.size(2) == row_width && aligned(down, Storage == DownStorage::padded ? 16 : 8),
+          Storage == DownStorage::raw
+              ? "down must be aligned original uint8 [E, 5120, blocks * block_bytes] matching workspace and left"
+              : "down fragment row width or alignment disagrees with the selected storage");
+}
+
+int check_prep(const torch::Tensor& x, const torch::Tensor& ids, const torch::Tensor& probabilities,
+               int experts, int chunk) {
   const int m = rows_of(probabilities);
   require(x.is_cuda() && x.scalar_type() == torch::kFloat16 && x.is_contiguous() && x.dim() == 2 &&
               x.size(0) == m && x.size(1) == 5120 && aligned(x, 2),
@@ -963,19 +1125,66 @@ void launch_prep(const Views& v, const torch::Tensor& x, const torch::Tensor& id
               ids.sizes() == probabilities.sizes() && probabilities.device() == x.device(),
           "ids must be int32 [M, 6] like probabilities");
   require(experts >= 1 && experts <= kMaxExperts && chunk >= 1 && chunk <= 16, "experts/chunk");
+  return m;
+}
+
+void launch_prep(const Views& v, const torch::Tensor& x, const torch::Tensor& ids, const torch::Tensor& probabilities,
+                 int m, int experts, int chunk, cudaStream_t stream) {
   prep_kernel<<<1 + m * 10, 512, 0, stream>>>(v.xq(), v.xd(), reinterpret_cast<const half*>(x.data_ptr()),
                                               ids.data_ptr<int32_t>(), probabilities.data_ptr<float>(),
                                               m * kTopK, experts, chunk, v.units(), v.count(), v.order());
 }
 
+struct OperandSpan { uintptr_t begin, end; };
+
+// The fused binding can receive contiguous dtype views, even of the workspace or another operand.
+// Compare complete address spans rather than only data_ptr equality or storage identity.
+OperandSpan fused_operand_span(const torch::Tensor& value) {
+  require(value.layout() == at::kStrided && value.is_contiguous() && !value.is_neg() && !value.is_conj() &&
+              value.storage_offset() >= 0 && value.numel() > 0,
+          "shared combine requires plain nonempty contiguous operands");
+  const auto element = value.element_size();
+  const uint64_t stored = value.storage().nbytes() / element;
+  const uint64_t offset = value.storage_offset(), elements = value.numel();
+  require(offset <= stored && elements <= stored - offset, "shared combine operand backing storage is too small");
+  const auto begin = reinterpret_cast<uintptr_t>(value.data_ptr());
+  require(elements <= (std::numeric_limits<uintptr_t>::max() - begin) / element,
+          "shared combine operand address extent overflows");
+  return {begin, begin + uintptr_t(elements) * element};
+}
+
+bool disjoint(OperandSpan a, OperandSpan b) {
+  return a.end <= b.begin || b.end <= a.begin;
+}
+
+void check_fused_ownership(const torch::Tensor& ws, const torch::Tensor& out,
+                           std::initializer_list<const torch::Tensor*> inputs) {
+  const auto scratch = fused_operand_span(ws), written = fused_operand_span(out);
+  require(disjoint(scratch, written), "shared combine needs disjoint workspace and output");
+  for (const auto* input : inputs) {
+    const auto borrowed = fused_operand_span(*input);
+    require(disjoint(scratch, borrowed) && disjoint(written, borrowed),
+            "shared combine needs disjoint workspace, output and live inputs");
+  }
+}
+
 void launch_gate_up_any(const Views& v, const torch::Tensor& probabilities, const torch::Tensor& gate,
                         const torch::Tensor& up, int type, int variant, cudaStream_t stream) {
   const int routes = rows_of(probabilities) * kTopK, fused = gate_up_rows(variant) % 32 == 0;
-#define DS41_GATE(T)                                                                                    \
-  launch_gate_up<T>(variant, stream, routes, v.down_in(), v.projection(), v.xq(), v.xd(),             \
-                    probabilities.data_ptr<float>(), v.units(), v.count(), v.order(),                  \
-                    gate.data_ptr<uint8_t>(), up.data_ptr<uint8_t>(), int(gate.size(2)), v.book(T),    \
-                    v.signs(), fused)
+  const int width = v.layout.intermediate;
+#define DS41_GATE_ARGS(T)                                                                              \
+  stream, routes, v.down_in(), v.projection(), v.xq(), v.xd(), probabilities.data_ptr<float>(),         \
+      v.units(), v.count(), v.order(), gate.data_ptr<uint8_t>(), up.data_ptr<uint8_t>(),                 \
+      int(gate.size(2)), v.book(T), v.signs(), fused
+#define DS41_GATE(T)                                                                                   \
+  do {                                                                                                 \
+    if (width == kEtp4Intermediate)                                                                     \
+      launch_gate_up<T>(variant, DS41_GATE_ARGS(T));                                                    \
+    else if (width == kEtp2Intermediate)                                                                \
+      launch_gate_up_v<T, kWideGateUp, kEtp2Intermediate>(DS41_GATE_ARGS(T));                            \
+    else                                                                                               \
+      launch_gate_up_v<T, kWideGateUp, kEtp1Intermediate>(DS41_GATE_ARGS(T));                            \
+  } while (false)
   if (type == 16)
     DS41_GATE(16);
   else if (type == 17)
@@ -983,17 +1192,31 @@ void launch_gate_up_any(const Views& v, const torch::Tensor& probabilities, cons
   else
     DS41_GATE(29);
 #undef DS41_GATE
+#undef DS41_GATE_ARGS
   if (!fused)
     swiglu_q8_kernel<<<dim3(1, routes), 576, 0, stream>>>(v.down_in(), v.projection(),
                                                           probabilities.data_ptr<float>());
 }
 
+template <DownStorage Storage = DownStorage::raw>
 void launch_down_any(const Views& v, const torch::Tensor& probabilities, const torch::Tensor& down, int type,
                      int left, int variant, cudaStream_t stream) {
   const int routes = rows_of(probabilities) * kTopK;
-#define DS41_DOWN(T)                                                                                   \
-  launch_down<T>(variant, stream, routes, v.partial(), v.down_in(), v.units(), v.count(), v.order(),  \
-                 down.data_ptr<uint8_t>(), int(down.size(2)), left / 32, v.book(T), v.signs())
+  const int width = v.layout.intermediate;
+#define DS41_DOWN_ARGS(T)                                                                              \
+  stream, routes, v.partial(), v.down_in(), v.units(), v.count(), v.order(), down.data_ptr<uint8_t>(),  \
+      int(down.size(2)), left / 32, v.book(T), v.signs()
+#define DS41_DOWN(T)                                                          \
+  do {                                                                        \
+    if constexpr (Storage != DownStorage::raw)                                \
+      launch_down<T, Storage>(variant, DS41_DOWN_ARGS(T));                    \
+    else if (width == kEtp4Intermediate)                                      \
+      launch_down<T, DownStorage::raw>(variant, DS41_DOWN_ARGS(T));           \
+    else if (width == kEtp2Intermediate)                                      \
+      launch_down_v<T, kWideDown, kEtp2Intermediate / 32>(DS41_DOWN_ARGS(T)); \
+    else                                                                      \
+      launch_down_v<T, kWideDown, kEtp1Intermediate / 32>(DS41_DOWN_ARGS(T)); \
+  } while (false)
   if (type == 16)
     DS41_DOWN(16);
   else if (type == 17)
@@ -1001,6 +1224,7 @@ void launch_down_any(const Views& v, const torch::Tensor& probabilities, const t
   else
     DS41_DOWN(29);
 #undef DS41_DOWN
+#undef DS41_DOWN_ARGS
 }
 
 void launch_combine(const Views& v, const torch::Tensor& out, const torch::Tensor& probabilities,
@@ -1013,15 +1237,23 @@ void launch_combine(const Views& v, const torch::Tensor& out, const torch::Tenso
                                                           probabilities.data_ptr<float>(), m);
 }
 
-void check_variants(int64_t gate_up_variant_, int64_t down_variant_) {
+void check_variants(int64_t gate_up_variant_, int64_t down_variant_, int width) {
   require(gate_up_variant_ >= 0 && gate_up_variant_ < kGateUpVariants, "gate/up variant");
   require(down_variant_ >= 0 && down_variant_ < kDownVariants, "down variant");
+  if (width != kEtp4Intermediate)
+    require(gate_up_variant_ == kWideGateUp && down_variant_ == kWideDown,
+            "ETP1 and ETP2 require gate/up and down variant 4");
 }
 }  // namespace tensorfold::ds41_decode_moe
 
 using namespace tensorfold::ds41_decode_moe;
 
-int64_t ds41_decode_moe_workspace_bytes() { return kWorkspace; }
+int64_t ds41_decode_moe_workspace_bytes(int64_t intermediate) {
+  require(intermediate == kEtp4Intermediate || intermediate == kEtp2Intermediate || intermediate == kEtp1Intermediate,
+          "intermediate width must be 576 (ETP4), 1152 (ETP2), or 2304 (ETP1)");
+  return intermediate == kEtp4Intermediate ? kEtp4Layout.bytes
+       : intermediate == kEtp2Intermediate ? kEtp2Layout.bytes : kEtp1Layout.bytes;
+}
 
 void ds41_decode_moe_init(torch::Tensor ws) {
   const Views v = workspace_of(ws, ws);
@@ -1042,22 +1274,82 @@ std::vector<std::vector<int64_t>> ds41_decode_moe_variants() {
   return out;
 }
 
+template <DownStorage Storage, bool WithShared = false>
+void experts_impl(const torch::Tensor& ws, const torch::Tensor& out, const torch::Tensor& x,
+                  const torch::Tensor& ids, const torch::Tensor& probabilities, const torch::Tensor& gate,
+                  const torch::Tensor& up, const torch::Tensor& down, int64_t gate_type, int64_t down_type,
+                  int64_t left, int64_t gate_up_variant_, int64_t down_variant_,
+                  const torch::Tensor* shared = nullptr, const torch::Tensor* round_routed = nullptr) {
+  const Views v = workspace_of(ws, x);
+  check_gate_banks(gate, up, gate_type, v.layout.intermediate, x);
+  check_down_bank<Storage>(down, down_type, left, v.layout.intermediate, x);
+  require(gate.size(0) == down.size(0), "gate/up and down expert counts must match");
+  check_variants(gate_up_variant_, down_variant_, v.layout.intermediate);
+  if constexpr (Storage != DownStorage::raw)
+    require(supports_fragment_variant(int(down_type), int(down_variant_)),
+            "down fragment requires a scheduled ordinary variant");
+  const c10::cuda::CUDAGuard guard(x.device());
+  const auto stream = at::cuda::getCurrentCUDAStream();
+  const int experts = gate.size(0), chunk = chunk_of(int(gate_up_variant_), int(down_variant_));
+  const int m = check_prep(x, ids, probabilities, experts, chunk);
+  if constexpr (WithShared) {
+    static_assert(Storage == DownStorage::compact);
+    require(v.layout.intermediate == 576 && out.device() == x.device() && shared->device() == x.device() &&
+                round_routed->device() == x.device() && out.scalar_type() == torch::kFloat32 &&
+                shared->scalar_type() == torch::kFloat16 && round_routed->scalar_type() == torch::kInt64 &&
+                out.is_contiguous() && shared->is_contiguous() && round_routed->is_contiguous() &&
+                out.dim() == 2 && out.size(0) == m && out.size(1) == 5120 &&
+                shared->sizes() == out.sizes() &&
+                round_routed->dim() == 1 && round_routed->size(0) == 1,
+            "shared combine requires compact W576, FP32 out and FP16 shared [M, 5120], and int64 round flag [1]");
+    check_fused_ownership(ws, out, {&x, &ids, &probabilities, &gate, &up, &down, shared, round_routed});
+  }
+  launch_prep(v, x, ids, probabilities, m, experts, chunk, stream);
+  launch_gate_up_any(v, probabilities, gate, up, int(gate_type), int(gate_up_variant_), stream);
+  launch_down_any<Storage>(v, probabilities, down, int(down_type), int(left), int(down_variant_), stream);
+  if constexpr (WithShared) {
+    combine_shared_kernel<<<dim3(5120 / 128, m), 128, 0, stream>>>(
+      out.data_ptr<float>(), v.partial(), probabilities.data_ptr<float>(),
+      reinterpret_cast<const half*>(shared->data_ptr()), round_routed->data_ptr<int64_t>(), m);
+  } else {
+    launch_combine(v, out, probabilities, stream);
+  }
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void ds41_decode_moe_experts(torch::Tensor ws, torch::Tensor out, const torch::Tensor& x,
                              const torch::Tensor& ids, const torch::Tensor& probabilities,
                              const torch::Tensor& gate, const torch::Tensor& up, const torch::Tensor& down,
                              int64_t gate_type, int64_t down_type, int64_t left, int64_t gate_up_variant_,
                              int64_t down_variant_) {
-  const Views v = workspace_of(ws, x);
-  check_experts(gate, up, down, gate_type, down_type, left, x);
-  check_variants(gate_up_variant_, down_variant_);
-  const c10::cuda::CUDAGuard guard(x.device());
-  const auto stream = at::cuda::getCurrentCUDAStream();
-  launch_prep(v, x, ids, probabilities, int(gate.size(0)), chunk_of(int(gate_up_variant_), int(down_variant_)),
-              stream);
-  launch_gate_up_any(v, probabilities, gate, up, int(gate_type), int(gate_up_variant_), stream);
-  launch_down_any(v, probabilities, down, int(down_type), int(left), int(down_variant_), stream);
-  launch_combine(v, out, probabilities, stream);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  experts_impl<DownStorage::raw>(ws, out, x, ids, probabilities, gate, up, down,
+                                gate_type, down_type, left, gate_up_variant_, down_variant_);
+}
+
+void ds41_decode_moe_experts_fragments(torch::Tensor ws, torch::Tensor out, const torch::Tensor& x,
+                                       const torch::Tensor& ids, const torch::Tensor& probabilities,
+                                       const torch::Tensor& gate, const torch::Tensor& up, const torch::Tensor& down,
+                                       int64_t gate_type, int64_t down_type, int64_t left, int64_t gate_up_variant_,
+                                       int64_t down_variant_, bool padded) {
+  if (padded) {
+    experts_impl<DownStorage::padded>(ws, out, x, ids, probabilities, gate, up, down,
+                                     gate_type, down_type, left, gate_up_variant_, down_variant_);
+  } else {
+    experts_impl<DownStorage::compact>(ws, out, x, ids, probabilities, gate, up, down,
+                                      gate_type, down_type, left, gate_up_variant_, down_variant_);
+  }
+}
+
+// The private workspace wrapper allocates a fresh FP32 out, disjoint from all live inputs and stage scratch.
+void ds41_decode_moe_experts_fragments_shared(torch::Tensor ws, torch::Tensor out, const torch::Tensor& x,
+                                              const torch::Tensor& ids, const torch::Tensor& probabilities,
+                                              const torch::Tensor& gate, const torch::Tensor& up,
+                                              const torch::Tensor& down, int64_t gate_type, int64_t down_type,
+                                              int64_t left, int64_t gate_up_variant_, int64_t down_variant_,
+                                              const torch::Tensor& shared, const torch::Tensor& round_routed) {
+  experts_impl<DownStorage::compact, true>(ws, out, x, ids, probabilities, gate, up, down,
+                                         gate_type, down_type, left, gate_up_variant_, down_variant_,
+                                         &shared, &round_routed);
 }
 
 // Stage ops for the schedule sweep (tests/cuda/bench_ds41_decode_moe.py): same launches, one at a time.
@@ -1067,15 +1359,16 @@ void ds41_decode_moe_prep(torch::Tensor ws, const torch::Tensor& x, const torch:
                           const torch::Tensor& probabilities, int64_t experts, int64_t chunk) {
   const Views v = workspace_of(ws, x);
   const c10::cuda::CUDAGuard guard(x.device());
-  launch_prep(v, x, ids, probabilities, int(experts), int(chunk), at::cuda::getCurrentCUDAStream());
+  const int m = check_prep(x, ids, probabilities, int(experts), int(chunk));
+  launch_prep(v, x, ids, probabilities, m, int(experts), int(chunk), at::cuda::getCurrentCUDAStream());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void ds41_decode_moe_gate_up(torch::Tensor ws, const torch::Tensor& probabilities, const torch::Tensor& gate,
                              const torch::Tensor& up, int64_t type, int64_t variant) {
   const Views v = workspace_of(ws, gate);
-  require(is_type(type) && gate.size(2) == 20 * block_bytes_of(type), "gate/up type");
-  check_variants(variant, 0);
+  check_gate_banks(gate, up, type, v.layout.intermediate, probabilities);
+  check_variants(variant, kWideDown, v.layout.intermediate);
   const c10::cuda::CUDAGuard guard(gate.device());
   launch_gate_up_any(v, probabilities, gate, up, int(type), int(variant), at::cuda::getCurrentCUDAStream());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -1084,9 +1377,8 @@ void ds41_decode_moe_gate_up(torch::Tensor ws, const torch::Tensor& probabilitie
 void ds41_decode_moe_down(torch::Tensor ws, const torch::Tensor& probabilities, const torch::Tensor& down,
                           int64_t type, int64_t left, int64_t variant) {
   const Views v = workspace_of(ws, down);
-  require(is_type(type) && left >= 0 && left % 64 == 0 && left < 256 &&
-              down.size(2) == ((left + 576 + 255) / 256) * block_bytes_of(type), "down type/left");
-  check_variants(0, variant);
+  check_down_bank(down, type, left, v.layout.intermediate, probabilities);
+  check_variants(kWideGateUp, variant, v.layout.intermediate);
   const c10::cuda::CUDAGuard guard(down.device());
   launch_down_any(v, probabilities, down, int(type), int(left), int(variant), at::cuda::getCurrentCUDAStream());
   C10_CUDA_KERNEL_LAUNCH_CHECK();

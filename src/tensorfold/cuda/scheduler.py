@@ -196,15 +196,22 @@ class Waiting(queue.PriorityQueue):
     def get(self, block: bool = True, timeout: float | None = None):
         return super().get(block, timeout)[2]
 
-    def get_control(self, *, since=None, deadline=None):
+    def wait_for_work(self) -> None:
+        """Wait without taking a request before the owner's next control boundary."""
+        with self.not_empty:
+            self.not_empty.wait_for(self._qsize)
+
+    def get_control(self, *, since=None, deadline=None, observe_stop=False):
         """A full media cohort waits for completion without consuming queued requests."""
         with self.not_empty:
-            while (not self._wake_pending and not (self._stop_queued and (self.policy == "fifo" or not self.queue))
+            while (not self._wake_pending and not (self._stop_queued and (observe_stop or self.policy == "fifo" or not self.queue))
                    and (since is None or self.revision == since)):
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
                     return self._wake_marker
                 self.not_empty.wait(None if remaining is None else min(remaining, threading.TIMEOUT_MAX))
+            if observe_stop and self._stop_queued:
+                return self._wake_marker  # leave the stop marker behind queued legacy requests
             if self._wake_pending:
                 self._wake_pending = False
                 return self._wake_marker
@@ -324,9 +331,12 @@ class Scheduler:
                  max_waiting_input_bytes: int | None = None,
                  max_waiting_input_bytes_per_principal: int | None = None, queue_timeout_s: float | None = None,
                  output_queue_tokens: int | None = None,
-                 worker_prepare: Callable[[], None] | None = None) -> None:
+                 worker_prepare: Callable[[], None] | None = None,
+                 worker_maintenance: Callable[[bool, int], bool] | None = None) -> None:
         if worker_prepare is not None and not callable(worker_prepare):
             raise ValueError("worker_prepare must be a callable cold ownership handoff")
+        if worker_maintenance is not None and not callable(worker_maintenance):
+            raise ValueError("worker_maintenance must be a callable owner boundary")
         if type(max_streams) is not int or max_streams <= 0:
             raise ValueError("max_streams must be a positive integer")
         if admission_policy not in ("legacy", "fifo"):
@@ -376,6 +386,7 @@ class Scheduler:
         self._worker_done = threading.Event()
         self._worker_entered = threading.Event()
         self._worker_prepare = worker_prepare
+        self._worker_maintenance = worker_maintenance
         self._worker_prepared = None if worker_prepare is None else threading.Event()
         self._worker_prepare_error = None
         self._worker_lease = threading.Lock()
@@ -582,6 +593,7 @@ class Scheduler:
                 self.decoder = None
                 self._arrival_original = None
                 self._worker_prepare = None
+                self._worker_maintenance = None
         if self._failure is not None:
             raise RuntimeError("CUDA scheduler worker failed during shutdown") from self._failure
 
@@ -873,7 +885,7 @@ class Scheduler:
         head._window_bypasses = count
         return True
 
-    def _admit_fifo(self, entries):
+    def _admit_fifo(self, entries, *, hold_admission=False):
         from tensorfold.server.cancellation import RequestCancelled
 
         done, capacity_blocked, window_head = [], False, None
@@ -892,6 +904,8 @@ class Scheduler:
                 stream.admission_status = replace(status, terminal_reason="expired")
                 self._retire_waiting(entry, CapacityError("request queue timeout elapsed before GPU admission; retry later"))
                 continue
+            if hold_admission:
+                continue  # includes claimed readmissions, but waiting retirement still runs
             try:
                 self._check_profile(stream.profile_epoch)
                 stage = getattr(self.decoder, "stage_request", None)
@@ -1344,41 +1358,55 @@ class Scheduler:
         controller = getattr(self.decoder, "controller", None)
         return self.max_streams if controller is None else min(self.max_streams, controller.admission_limit())
 
-    def _execution_boundary(self) -> None:
+    def _execution_boundary(self) -> bool:
+        """Run owner controls, then return whether new admission must wait this round.
+
+        Maintenance receives (closing, occupied). It runs on the decoding worker
+        without publication locks. Closing settles unstarted maintenance and
+        follows the original shutdown policy for admitted and queued requests.
+        """
         if self.serving_profiles is not None:
             self.serving_profiles.boundary(self)
             if not self._serving_profile_available:
-                return
+                return False
         controller = getattr(self.decoder, "controller", None)
         if controller is not None:
             controller.boundary()
         if self._pending_manifest is not None:
             with self._state_lock:
                 request, self._pending_manifest = self._pending_manifest, None
-            if request is None:
-                return
-            generation, name = request
-            error = None
-            try:
-                self.decoder.install_execution_manifest(name)
-            except ValueError as failed:
-                # Expected invalid evidence leaves the previous registry and
-                # every retained state intact. Protocol/device failures escape.
-                error = str(failed)[:1024]
-            with self._state_lock:
-                status = dict(self._manifest_status)
-                if error is None:
-                    status["effective"] = name
-                if self._manifest_status["request_epoch"] == generation:
-                    status.update(pending=False, error=error)
-                self._manifest_status = status
+            if request is not None:
+                generation, name = request
+                error = None
+                try:
+                    self.decoder.install_execution_manifest(name)
+                except ValueError as failed:
+                    # Expected invalid evidence leaves the previous registry and
+                    # every retained state intact. Protocol/device failures escape.
+                    error = str(failed)[:1024]
+                with self._state_lock:
+                    status = dict(self._manifest_status)
+                    if error is None:
+                        status["effective"] = name
+                    if self._manifest_status["request_epoch"] == generation:
+                        status.update(pending=False, error=error)
+                    self._manifest_status = status
+        maintenance = self._worker_maintenance
+        if maintenance is None:
+            return False
+        with self._state_lock:
+            closing = self._stop_published  # admission is also closed temporarily during startup
+        hold = maintenance(closing, self._occupied())
+        if type(hold) is not bool:
+            raise RuntimeError("worker_maintenance must return a boolean admission decision")
+        return hold and not closing
 
     def _run(self) -> None:
         if self.admission_policy == "fifo":
             return self._run_fifo()
         return self._run_legacy()
 
-    def _round_requests(self, done, *, only_runnable=False):
+    def _round_requests(self, done, *, only_runnable=False, hold_admission=False):
         """One shared execution/error/retirement path for both admission policies."""
         ran, leases, primary = False, [], None
         try:
@@ -1389,7 +1417,8 @@ class Scheduler:
                 failed, media = ([], {}) if readiness is None else readiness()
                 done += failed
                 leases, production = self._production_plan(media)
-                self._suspend_blocked()
+                if not hold_admission:
+                    self._suspend_blocked()
                 runnable = getattr(self.decoder, "media_runnable", None)
                 active = self.decoder.live() > 0
                 execute = self._serving_profile_available and production and active and (runnable is None or runnable())
@@ -1434,10 +1463,13 @@ class Scheduler:
                 self._stopping = self._stopping or self._stop_published
             # Observe admission closure before the final control boundary: a
             # control accepted before close must run before worker retirement.
-            self._execution_boundary()
+            hold_admission = self._execution_boundary()
             revision, entries = self.waiting.requests()
-            done = self._admit_fifo(entries)
-            ran = self._round_requests(done, only_runnable=True) if self._serving_profile_available else False
+            done = self._admit_fifo(entries, hold_admission=True) if hold_admission else self._admit_fifo(entries)
+            ran = False
+            if self._serving_profile_available:
+                ran = (self._round_requests(done, only_runnable=True, hold_admission=True) if hold_admission
+                       else self._round_requests(done, only_runnable=True))
             _current, waiting = self.waiting.requests()
             # A between-subruns claim has positively retired its backend and
             # retains only the logical caller's input credit. That caller may
@@ -1453,7 +1485,7 @@ class Scheduler:
             drained, changed = True, False
             if boundary is not None and self._serving_profile_available:
                 progress = boundary(idle=not ran,
-                    needs_slot=any(stream.admission_status.blocked_reason == "gpu_capacity"
+                    needs_slot=not hold_admission and any(stream.admission_status.blocked_reason == "gpu_capacity"
                                    for _priority, _ticket, (stream, _box) in waiting),
                     shutdown=self._stopping and not waiting and not live and not self._retiring and not backend_claims)
                 drained, changed = progress["drained"], progress["changed"]
@@ -1481,10 +1513,11 @@ class Scheduler:
                 self._stopping = True
 
     def _run_legacy(self) -> None:
+        maintenance = self._worker_maintenance is not None
         while True:
             if self._retiring:
                 self._finish_ready([])
-            self._execution_boundary()
+            hold_admission = self._execution_boundary()
             if not self._serving_profile_available:
                 # Keep the same worker/transport alive while a refused profile
                 # awaits an explicit in-process retry. No model method is valid.
@@ -1497,6 +1530,14 @@ class Scheduler:
 
                     self._terminal(box, "error", mark_error_state_retired(ProfileUnavailable("the serving profile is unavailable")))
                 continue
+            if hold_admission:
+                runnable = getattr(self.decoder, "media_runnable", None)
+                live = self.decoder.live()
+                if not live or (runnable is not None and not runnable()):
+                    self.waiting.get_control(observe_stop=True)
+                if live:
+                    self._round_requests([])
+                continue
             self._yield()
             idle = not self.decoder.live() and self.held is None
             if idle and self._stopping and not self._retiring:
@@ -1506,13 +1547,24 @@ class Scheduler:
                 self.decoder.live() or self._media_held_wait or self._retiring)
             if media_wait and self._occupied() >= self._stream_limit():
                 first = self.waiting.get_control()
+                if maintenance:
+                    self._stopping = self._stopping or first is None
+                    if self._execution_boundary():
+                        self._round_requests([])
+                        continue
+                    if not self._serving_profile_available:
+                        continue
             else:
+                if maintenance and (idle or media_wait):
+                    self.waiting.wait_for_work()
+                    if self._execution_boundary() or not self._serving_profile_available:
+                        continue
                 first = self.waiting.get() if idle or media_wait else None
             if idle and not self._retiring and first is None:
                 return                                                                # close()
             if media_wait and first is None:
                 self._stopping = True
-            if idle:
+            if idle and not maintenance:
                 self._execution_boundary()  # a control may arrive while the worker waits on the queue
                 if not self._serving_profile_available:
                     if first is not None and not self.waiting.is_wake(first):

@@ -14,9 +14,9 @@ zero inactive scratch rows, while preserving output rows beyond ``rows``.
 Status is the existing int32 [bits, first_layer] with an initial layer sentinel
 of -2. Bad source/rotation values latch ``error``; invalid RMS or FP16 decoded
 operands latch8; invalid device indices/live-row counts latch16. Status remains
-sticky. Omitting it is only valid for previously validated finite/range-safe
-operands and device controls. Model encoding/query preparation supplies status;
-readers may omit it only under their validated cache and working-range contract.
+sticky. Encoding and rotation can also trap on the current stream before a
+failed group writes. Without either status or a trap, callers must prove their
+operands and device controls finite and in range.
 These primitives do not admit a format: the existing ordered descriptor policy
 selects supported model formats independently.
 """
@@ -46,7 +46,7 @@ def extension():
 
 
 def encode(x, codes, scales, *, codec=4, position=None, status=None, error=2, layer=0,
-           valid_rows=None, rows=None):
+           valid_rows=None, rows=None, trap_on_error=False):
     """[R,H,D] FP16/FP32 -> uint8 [C,H,D/2], four-byte metadata [C,H,D/128].
 
     The metadata tensor dtype is float32. CODEC1..5 store numerical FP32
@@ -56,18 +56,54 @@ def encode(x, codes, scales, *, codec=4, position=None, status=None, error=2, la
     int64 ``position[1]`` selects the destination base; bounds are checked on
     device without a host readback. A nullable CUDA int32 ``valid_rows[1]``
     limits active source rows. An invalid active cache index latches16 and does
-    not write. No allocations occur after preparation.
+    not write. With ``trap_on_error=True``, active numeric or control failures
+    are fatal on the current stream, including when it is replaying a graph.
+    No allocations occur after preparation.
     """
     extension().encode(x, codes, scales, position, status, valid_rows,
-                       codec, x.shape[0] if rows is None else rows, error, layer)
+                       codec, x.shape[0] if rows is None else rows, error, layer, trap_on_error)
     return codes, scales
 
 
+def pack_h64(x, valid, out, *, status, layer):
+    """Write H64 [R,272] rows from [R,512] with arbitrary device-side bool holes.
+
+    Inactive rows encode positive zero. Active numeric errors latch status and
+    trap on the current stream before the failed group writes. The caller owns
+    the separate inputs and aligned output through stream or graph completion.
+    """
+    extension().pack_h64(x, valid, out, status, layer)
+    return out
+
+
+def pack_h64_ring(x, valid, out, ring, positions, slots, *, status, layer):
+    """Pack one H64 window row per distinct live request slot and mirror it to the ring.
+
+    The prepared decode step owns slot uniqueness, the last slot is scratch,
+    and following attention must take its current row from ``out``. Ring
+    writes and all readers are ordered on the same serving stream. A fatal
+    group retires the cohort before any partially written ring can be reused.
+    """
+    extension().pack_h64_ring(x, valid, out, ring, positions, slots, status, layer)
+    return out
+
+
 def rotate(x, out, *, codec=4, inverse=False, status=None, error=1, layer=0,
-           valid_rows=None, rows=None):
-    """Staged FP32 basis transform, rounded to the caller's FP16/FP32 output."""
+           valid_rows=None, rows=None, trap_on_error=False):
+    """Staged FP32 basis transform with the same optional fatal mode as encode."""
     extension().rotate(x, out, status, valid_rows, codec, x.shape[0] if rows is None else rows,
-                       inverse, error, layer)
+                       inverse, error, layer, trap_on_error)
+    return out
+
+
+def rotate_h64(x, valid, out, *, status, layer, inverse=False):
+    """Rotate H64 [R,H,128*k] values with an independent device bool mask [R].
+
+    Holes enter the same transform as positive zero and do not read the input.
+    Live numerical failures latch status and trap before writing the failed
+    group. The caller owns the tensors through stream or graph completion.
+    """
+    extension().rotate_h64(x, valid, out, status, inverse, layer)
     return out
 
 

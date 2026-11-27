@@ -10,7 +10,7 @@ of its first h tokens only (patch 85's slot semantics; every kernel resolves its
     Rows at positions >= h may hold anything (a later reply, a cancelled chunk, another slot's old data in a reused
     page): a forward writes a position's rows before any read of them (insert precedes select/attend per layer,
     and reads are causal), exactly as a cold prefill into reused pages relies on.
-  * The window rings ([slots, 128, 512] FP16 per layer): after a forward ending at h a ring holds positions
+  * The window rings (128 FP16 or RotorQuant rows per slot/layer): after a forward ending at h a ring holds positions
     h-128..h-1 at p % 128 (patch 87 writes each request's last 128 positions); copied whole.
   * The ratio-2 compressor partials (``MuC2State``: partial [2, 512] FP32 + committed position per source) and the
     Engram n-gram history (``MuEngramHashState.history`` [4] int64: three compressed ids + committed position);
@@ -56,23 +56,23 @@ from tensorfold.families.gemma4.sm70.ops import (OP_COPY, OP_DROP, OP_GROW, OP_H
 from tensorfold.families.qwen4_exp.cuda import prefixes
 from tensorfold.families.qwen4_exp.cuda.prefix_host import BLOCK_BYTES
 
-from .kernels.kv_pack import C_ROW, I_ROW
+from .kernels.kv_pack import I_ROW
 from .target import BLOCK
 
-RING = 128
 WIDTH = 512
 OPS = (OP_SNAP, OP_RESTORE, OP_DROP, OP_COPY, OP_GROW, OP_HSPILL, OP_HRESTORE)
 
 
-def snapshot_bytes(layers: int, c2_sources: int) -> int:
+def snapshot_bytes(ring_bytes: int, c2_sources: int) -> int:
     """Raw bytes of one kept point's slot state on one rank: every layer's ring rows, the C2 partials and committed
     positions, the Engram history."""
-    return layers * RING * WIDTH * 2 + c2_sources * (2 * WIDTH * 4 + 8) + 4 * 8
+    return ring_bytes + c2_sources * (2 * WIDTH * 4 + 8) + 4 * 8
 
 
 def extent_bytes(layout, first: int, end: int) -> int:
     """Bytes of the KV rows of positions [first, end) (every source's rows first // r .. end // r)."""
-    return sum((end // ratio - first // ratio) * (C_ROW + I_ROW) for ratio, _, _, _ in layout.regions.values())
+    return sum((end // ratio - first // ratio) * (layout.compressed_row_bytes + I_ROW)
+               for ratio, _, _, _ in layout.regions.values())
 
 
 MIN_CHUNK = 256          # rows: no split closer than this to the previous one (a forward costs ~470 rows' work)
@@ -120,7 +120,7 @@ class HostSlab:
     the rest of the startup, until ``finish`` (one collective, every rank) -> (bytes, slab). No CUDA graph may be
     captured in between (a pinned allocation is not allowed during a global-mode capture)."""
 
-    def __init__(self, comm, rank: int, tp: int, requested: int | None):
+    def __init__(self, comm, rank: int, tp: int, requested: int | None, *, required_per_rank=None, startup=None):
         from tensorfold.families.qwen4_exp.cuda.prefix_host import default_bytes, pinned_slab_bytes
         if requested is not None and (type(requested) is not int or requested < 0):
             raise ValueError("prefix_host_bytes must be a nonnegative byte count")
@@ -131,12 +131,31 @@ class HostSlab:
         agreed = torch.empty(tp, dtype=torch.int64, device="cuda")
         comm.all_gather(mine, agreed)
         self.per_rank = int(agreed.min())
+        if required_per_rank is not None and self.per_rank != required_per_rank:
+            raise ValueError(f"experimental FP32 requires {required_per_rank} host prefix bytes per rank")
         self._pin = None
+        self._pin_worker = None
+        self._pin_observed = False
+        if startup is not None:
+            startup.slab = self
         if self.per_rank:
             from concurrent.futures import ThreadPoolExecutor
             pool = ThreadPoolExecutor(1, thread_name_prefix="ds41-slab")
+            if startup is not None:
+                self._pin_worker = pool
             self._pin = pool.submit(lambda: torch.empty(self.per_rank, dtype=torch.uint8, pin_memory=True))
             pool.shutdown(wait=False)
+
+    def join_pin(self, *, cancel=False):
+        if self._pin_worker is not None:
+            self._pin_worker.shutdown(wait=True, cancel_futures=cancel)
+            self._pin_worker = None
+
+    def report_pin_error(self):
+        """Publish an unobserved pin failure after the worker has been joined."""
+        job, self._pin = self._pin, None
+        if job is not None and not self._pin_observed and not job.cancelled():
+            job.result()
 
     def finish(self):
         from tensorfold.families.qwen4_exp.cuda.prefix_host import pin_agreed
@@ -149,7 +168,19 @@ class HostSlab:
             self.comm.all_gather(torch.tensor([ok], dtype=torch.int64, device="cuda"), flags)
             return flags.tolist()
 
-        slab = pin_agreed(self._pin.result, every_rank, self.per_rank, explicit=self.explicit, requested=self.total,
+        allocate = self._pin.result
+        if self._pin_worker is not None:
+            def allocate():
+                try:
+                    slab = self._pin.result()
+                except BaseException as error:
+                    if self._pin.done() and not self._pin.cancelled() and self._pin.exception() is error:
+                        self._pin_observed = True
+                    raise
+                self._pin_observed = True
+                return slab
+
+        slab = pin_agreed(allocate, every_rank, self.per_rank, explicit=self.explicit, requested=self.total,
                           rank=self.rank, lane="DeepSeek-V4.1 SM70: ")
         return (self.per_rank, slab) if slab is not None else (0, None)
 
@@ -188,6 +219,47 @@ class PrefixOwner(_gemma.PrefixOwner):
         self._extent = 0
         self._counted = None
         self.host_tier = HostTier(self, engine.host_per_rank) if engine.host_per_rank else None
+
+    def retire_placement_prefixes(self) -> None:
+        """Retire the old placement's retained state on the drained scheduler owner.
+
+        Admission, running model work and the issuing stream must already be
+        fenced by the caller. Complete normal snapshot/slot releases before
+        asking every rank to retire its host reachability tables.
+        """
+        if self.streams or self.filling:
+            raise RuntimeError("DeepSeek placement retirement requires an idle prefix owner")
+        all_slots = {id(slot) for slot in self.slots}
+        free_slots = {id(slot) for slot in self.free}
+        kept_slots = {id(entry[1]) for entry in self.kept}
+        if (len(all_slots) != len(self.slots) or len(free_slots) != len(self.free)
+                or free_slots & kept_slots or free_slots | kept_slots != all_slots):
+            raise RuntimeError("DeepSeek placement retirement found inconsistent prefix slot ownership")
+        for _, slot, point, _ in self.kept:
+            end = point.get("prompt_end")
+            if (not slot.capacity or point["sid"] not in self.snap_ids
+                    or (end is not None and end["state"]["sid"] not in self.snap_ids)):
+                raise RuntimeError("DeepSeek placement retirement found an unowned retained prefix")
+        expected = sum(self._bytes(slot) for slot in self.slots) + len(self.snap_ids) * self.snap_bytes
+        if self.held != expected:
+            raise RuntimeError("DeepSeek placement retirement found inconsistent retained bytes")
+        # Regular eviction may leave attached pages in the free slot list.
+        # Drop every reachable point and release every attached slot.
+        self.kept.clear()
+        self._sweep()
+        for slot in self.slots:
+            if slot.capacity:
+                self._release(slot)
+            else:
+                slot.host_rows = None
+        self.free[:] = reversed(self.slots)
+        self.used.clear()
+        self._counted = None
+        self._extent = 0
+        if self.host_tier is not None:
+            self.host_tier.retire_placement_prefixes()
+        if self.held or self.snap_ids or self.turn_of:
+            raise RuntimeError("DeepSeek placement retirement did not release the GPU prefix ledger")
 
     def _cap(self, rows: int) -> int:
         return min(self.e.context, -(-rows // BLOCK) * BLOCK)
@@ -297,6 +369,16 @@ def state_at(snap) -> int:
 class HostTier(_gemma_host.HostTier):
     """Gemma 4 SM70's host tier; a row extent [first, end) holds every source's rows first // r .. end // r."""
 
+    def retire_placement_prefixes(self) -> None:
+        """Release every entry and its extent chain on the drained host-tier owner."""
+        for entry in tuple(self.entries):
+            self._drop(entry)
+        if self.extents or any(self.taken):
+            raise RuntimeError("DeepSeek placement retirement found an outstanding host extent")
+        self._plan = None
+        # The caller clears every rank's host namespace before new work.
+        self._gone.clear()
+
     def _rows_bytes(self, first: int, rows: int) -> int:
         return extent_bytes(self.owner.e.layout, first, rows)
 
@@ -335,7 +417,8 @@ class SlotState:
 
     def __init__(self, target, slab=None) -> None:
         self.target, self.pool, self.slab = target, target.pool, slab
-        self.raw = snapshot_bytes(len(self.pool.rings), len(target.c2))
+        ring_bytes = sum(ring.nbytes // ring.shape[0] for ring in self.pool.rings)
+        self.raw = snapshot_bytes(ring_bytes, len(target.c2))
         self.pages = -(-self.raw // self.pool.layout.page_bytes)     # pool pages per snapshot
         self.snaps: dict[int, int] = {}                              # sid -> position
         self.host_layout: dict[int, list] = {}                       # entry id -> [(slab offset, position)]
@@ -414,13 +497,20 @@ class SlotState:
             cache[self._index(want[:k])] = cache[self._index(have[:k])]
 
     # ---- KV rows by position (host extents)
+    def retire_placement_prefixes(self) -> None:
+        """Clear host reachability after ordered GPU retirement and a device fence."""
+        if self.snaps or self.pool.owned or len(self.pool.free) != self.pool.pages:
+            raise RuntimeError("DeepSeek placement retirement requires released rank-local KV borrowers")
+        self.host_layout.clear()
+        self.host_extents.clear()
+
     def _segments(self, first: int, end: int):
         """(region view [pages, rows per page, row bytes], first row, end row) of every source's latent and index
         rows of positions [first, end), in a fixed order."""
         cache = self.pool.cache
         for layer in sorted(self.pool.layout.regions):
             ratio, per, c_offset, i_offset = self.pool.layout.regions[layer]
-            for offset, size in ((c_offset, C_ROW), (i_offset, I_ROW)):
+            for offset, size in ((c_offset, self.pool.layout.compressed_row_bytes), (i_offset, I_ROW)):
                 view = cache[:, offset:offset + per * size].unflatten(1, (per, size))
                 yield view, per, first // ratio, end // ratio
 

@@ -278,6 +278,57 @@ def compact_to_positions(picked, cand, block):
     return torch.where(j >= 0, position, torch.full_like(position, -1)).to(torch.int32)
 
 
+@jit(do_not_specialize=["width", "stride", "blocks"])
+def _reachable_block_scores(scores, lengths, out, width, stride, blocks, GROUP: tl.constexpr, TILE: tl.constexpr):
+    row = tl.program_id(0).to(tl.int64)
+    block = tl.program_id(1) * TILE + tl.arange(0, TILE)
+    offsets = block[:, None] * GROUP + tl.arange(0, GROUP)[None, :]
+    length = tl.load(lengths + row)
+    values = tl.load(scores + row * stride + offsets, (offsets < width) & (offsets < length), float("-inf"))
+    value = tl.max(values, axis=1)
+    value = tl.where((length > 0) & (block == (length - 1) // GROUP), float("inf"), value)
+    tl.store(out + row * blocks + block, value, block < blocks)
+
+
+@jit(do_not_specialize=["width", "score_stride", "cand_stride"])
+def _compact_live_scores(scores, lengths, candidates, out, width, score_stride, cand_stride,
+                         CAPACITY: tl.constexpr, GROUP: tl.constexpr, TILE: tl.constexpr):
+    row = tl.program_id(0).to(tl.int64)
+    index = tl.program_id(1) * TILE + tl.arange(0, TILE)
+    block = tl.load(candidates + row * cand_stride + index // GROUP, index < CAPACITY, -1)
+    position = block * GROUP + index % GROUP
+    length = tl.load(lengths + row)
+    value = tl.load(scores + row * score_stride + position,
+                    (block >= 0) & (position < width) & (position < length), float("-inf"))
+    tl.store(out + row * CAPACITY + index, value, index < CAPACITY)
+
+
+def select_ranked(out, scores, positions, valid, ratio, topk, *, candidates, block, publish):
+    """Rank a score tile after its existing TP reduction, publishing or consuming the layer-20 pool.
+
+    Candidate IDs are ordered by block position so the compact ranker retains
+    the native low-position tie rule. Padding cannot read scores or become a
+    candidate. Per-row query coordinates determine visibility even in a graph.
+    """
+    rows, width = scores.shape
+    lengths = torch.where(valid, ((positions + 1) // ratio).clamp(min=0, max=width), 0)
+    if publish:
+        block_count = triton.cdiv(width, block)
+        block_scores = scores.new_empty((rows, block_count))
+        _reachable_block_scores[(rows, triton.cdiv(block_count, 128))](
+            scores, lengths, block_scores, width, scores.stride(0), block_count, block, 128)
+        topk(candidates, block_scores, (lengths + block - 1) // block - 1, valid, 1, candidates.shape[1])
+        return topk(out, scores, positions, valid, ratio, out.shape[1])
+    capacity = candidates.shape[1] * block
+    compact = scores.new_empty((rows, capacity))
+    _compact_live_scores[(rows, triton.cdiv(capacity, 256))](
+        scores, lengths, candidates, compact, width, scores.stride(0), candidates.stride(0), capacity, block, 256)
+    picked = torch.empty_like(out)
+    topk(picked, compact, candidate_lengths(candidates, lengths, block) - 1, valid, 1, out.shape[1])
+    out.copy_(compact_to_positions(picked, candidates, block))
+    return out
+
+
 # ------------------------------------------------------------ prefill selector
 def prefill_select(
     q, weights, keys, positions, valid_tokens, ratio, all_reduce, *, kind, blocks,

@@ -103,3 +103,98 @@ class Prebuild:
             slowest = max(self.jobs, key=lambda n: self.jobs[n].result())
             self.timeline.add(f"extensions (slowest {slowest.rsplit('.', 1)[-1]} {self.jobs[slowest].result():.1f})",
                               self.started, time.perf_counter() - self.started)
+
+
+class ExpertStartup:
+    """Opt-in resource ownership until the DeepSeek engine is usable."""
+
+    def __init__(self):
+        self.shards = None
+        self.history = None
+        self.observer = None
+        self.mapper = None
+        self.engram_job = None
+        self.engram_fd = None
+        self.engram = None
+        self.slab = None
+
+    def map_engram(self, fd, construct):
+        from concurrent.futures import ThreadPoolExecutor
+
+        # This descriptor is independent of Shards. The worker gives HostEngram a
+        # separate descriptor of its own and never borrows Shards' fd table.
+        self.engram_fd = fd
+        self.mapper = ThreadPoolExecutor(1, thread_name_prefix="ds41-engram")
+
+        def load():
+            from tensorfold.cleanup import rollback
+            from tensorfold.cuda.cohort import notify_failure
+
+            try:
+                return construct(lambda _path: os.dup(fd))
+            except BaseException as primary:
+                rollback(self, primary, notify_failure)
+
+        self.engram_job = self.mapper.submit(load)
+        return self.engram_job
+
+    def retire_mapper(self, primary=None):
+        from tensorfold.cleanup import finish
+
+        if self.mapper is not None:
+            self.mapper.shutdown(wait=True, cancel_futures=True)
+            self.mapper = None
+
+        def observe():
+            job, self.engram_job = self.engram_job, None
+            if job is not None and not job.cancelled():
+                error = job.exception()
+                if error is not None and error is not primary:
+                    raise error
+
+        def close_lease():
+            if self.engram_fd is not None:
+                fd, self.engram_fd = self.engram_fd, None
+                os.close(fd)
+
+        finish((observe, close_lease))
+
+    def retire_slab(self, *, cancel=False):
+        slab = self.slab
+        if slab is not None:
+            slab.join_pin(cancel=cancel)
+            self.slab = None
+            if cancel:
+                slab.report_pin_error()
+
+    def abort(self, engine, primary=None):
+        from tensorfold.cleanup import finish
+        from tensorfold.cuda.cohort import notify_failure
+
+        self.engine = engine
+
+        def retire_native():
+            if self.mapper is not None or self.slab is not None:
+                return  # a failed join retains the remaining borrowers and mapping
+            scheduler = getattr(engine, "scheduler", None)
+            if scheduler is not None:
+                scheduler.close()
+            if self.engram is not None or getattr(engine, "graphs", None) is not None:
+                import torch
+
+                torch.cuda.synchronize()
+                engine.graphs = None
+                if self.engram is not None:
+                    self.engram.close()
+
+        operations = [notify_failure]
+        if self.shards is not None:
+            operations.append(self.shards.close)
+        if self.observer is not None:
+            operations.append(self.observer.abort_startup)
+        elif self.history is not None:
+            operations.append(self.history.close)
+        # The mapper can still be waiting in HostEngram's store exchange.
+        # Notify the process supervisor before waiting for that borrower.
+        operations.extend((lambda: self.retire_mapper(primary), lambda: self.retire_slab(cancel=True), retire_native))
+        finish(operations)

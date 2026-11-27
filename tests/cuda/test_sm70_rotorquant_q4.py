@@ -1,5 +1,7 @@
 """SM70 Q4 codec proof against adopted staged and independent scalar oracles."""
 import math
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -234,6 +236,78 @@ def test_invalid_device_live_count_never_writes_cache(count):
                   status=errors, layer=2)
     assert errors.tolist() == [16, 2]
     assert torch.equal(codes, old[0]) and torch.equal(scales, old[1])
+
+
+def test_codec11_fatal_mode_preserves_valid_rows_and_ignores_inactive_values():
+    x = torch.ones((2, 1, 128), device="cuda")
+    x[1].fill_(math.nan)
+    valid = torch.tensor([1], device="cuda", dtype=torch.int32)
+    ordinary, fatal = storage(2, dim=128), storage(2, dim=128)
+    native.encode(x, *ordinary, codec=11, valid_rows=valid)
+    native.encode(x, *fatal, codec=11, valid_rows=valid, trap_on_error=True)
+    assert torch.equal(ordinary[0], fatal[0])
+    assert torch.equal(ordinary[1].view(torch.int32), fatal[1].view(torch.int32))
+    ordinary_out, fatal_out = torch.empty_like(x), torch.empty_like(x)
+    native.rotate(x, ordinary_out, codec=11, valid_rows=valid)
+    native.rotate(x, fatal_out, codec=11, valid_rows=valid, trap_on_error=True)
+    assert torch.equal(ordinary_out.view(torch.int32), fatal_out.view(torch.int32))
+
+
+@pytest.mark.parametrize("operation,fault", [
+    ("encode", "source"), ("encode", "position"), ("encode", "empty-active"),
+    ("rotate", "source"), ("rotate", "half-overflow"), ("rotate", "live-count"), ("rotate", "empty-active"),
+])
+def test_codec11_fatal_mode_traps_on_graph_replay(operation, fault):
+    # Run each failure on its own CUDA context. The first clean replay proves
+    # capture and operand preparation succeeded before changing device values.
+    program = """
+import sys
+import torch
+from tensorfold.cuda.sm70 import rotorquant_q4_native as native
+
+operation, fault = sys.argv[1:]
+native.extension()
+rows = 0 if fault == "empty-active" else 1
+x = torch.ones((rows, 1, 128), device="cuda")
+codes = torch.empty((1, 1, 64), device="cuda", dtype=torch.uint8)
+scales = torch.empty((1, 1, 1), device="cuda")
+out = torch.empty_like(x, dtype=torch.float16)
+position = torch.zeros(1, device="cuda", dtype=torch.int64)
+live = torch.full((1,), rows, device="cuda", dtype=torch.int32)
+
+def run():
+    if operation == "encode":
+        native.encode(x, codes, scales, codec=11, position=position, valid_rows=live, trap_on_error=True)
+    else:
+        native.rotate(x, out, codec=11, valid_rows=live, trap_on_error=True)
+
+torch.cuda.synchronize()
+graph = torch.cuda.CUDAGraph()
+with torch.cuda.graph(graph):
+    run()
+graph.replay()
+torch.cuda.synchronize()
+if fault == "source":
+    x.fill_(float("nan"))
+elif fault == "position":
+    position.fill_(1)
+elif fault == "half-overflow":
+    x.fill_(1e10)
+else:
+    live.fill_(rows + 1)
+try:
+    graph.replay()
+    torch.cuda.synchronize()
+except RuntimeError as error:
+    if not any(mark in str(error).lower() for mark in ("illegal instruction", "launch failure", "device-side assert")):
+        raise
+    print("codec11 graph fault reached the caller", flush=True)
+else:
+    raise AssertionError("the invalid codec11 replay completed")
+"""
+    child = subprocess.run((sys.executable, "-c", program, operation, fault),
+                           capture_output=True, text=True, timeout=180)
+    assert child.returncode == 0 and "codec11 graph fault reached the caller" in child.stdout, child.stderr
 
 
 def test_zero_rows_and_strided_projection_source():

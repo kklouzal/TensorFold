@@ -10,14 +10,16 @@ from tensorfold.families.gemma4.sm70.ops import OP_RESTORE
 torch = pytest.importorskip("torch")
 
 
-def _target(slots=4, pages=64, layers=3):
-    from tensorfold.families.deepseek_v4.cuda.target import Pool
+def _target(slots=4, pages=64, layers=3, *, rotorquant=False):
+    from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import PackedLayout
+    from tensorfold.families.deepseek_v4.cuda.target import BLOCK, Pool
     ratios = [0] * 21
     for layer in (2, 8, 14):
         ratios[layer] = 2
     ratios[20] = 1
     geometry = SimpleNamespace(compress_ratios=ratios, kv_sources=(2, 8, 14, 20), layers=layers)
-    pool = Pool(geometry, pages, slots, torch.device("cpu"))
+    layout = PackedLayout({layer: ratios[layer] for layer in geometry.kv_sources}, BLOCK, rotorquant=rotorquant)
+    pool = Pool(geometry, pages, slots, torch.device("cpu"), layout=layout)
     c2 = {layer: SimpleNamespace(partial=torch.zeros(slots, 2, 512), committed=torch.zeros(slots, dtype=torch.int64))
           for layer in (2, 8, 14)}
     history = torch.full((slots, 4), -1, dtype=torch.int64)
@@ -27,7 +29,10 @@ def _target(slots=4, pages=64, layers=3):
 def _fill(target, slot, seed):
     g = torch.Generator().manual_seed(seed)
     for ring in target.pool.rings:
-        ring[slot] = torch.randn(128, 512, generator=g).half()
+        if ring.dtype == torch.uint8:
+            ring[slot] = torch.randint(0, 256, ring.shape[1:], dtype=torch.uint8, generator=g)
+        else:
+            ring[slot] = torch.randn(ring.shape[1:], generator=g).half()
     for state in target.c2.values():
         state.partial[slot] = torch.randn(2, 512, generator=g)
         state.committed[slot] = seed
@@ -46,13 +51,18 @@ def _same(a, b):
             and torch.equal(a[2], b[2]))
 
 
-def test_snapshot_pages_roundtrip_and_fork():
+@pytest.mark.parametrize("rotorquant,row_bytes,token_bytes", [(False, 1024, 890), (True, 272, 850)])
+def test_snapshot_pages_roundtrip_and_fork(rotorquant, row_bytes, token_bytes):
     from tensorfold.families.deepseek_v4.cuda import prefix
-    t = _target()
+    from tensorfold.families.deepseek_v4.cuda.target import window_ring_bytes
+
+    t = _target(rotorquant=rotorquant)
     state = prefix.SlotState(t)
     page = t.pool.layout.page_bytes
-    assert t.pool.layout.bytes_per_token == 890
-    assert state.raw == prefix.snapshot_bytes(3, 3) and state.pages == -(-state.raw // page)
+    assert t.pool.layout.bytes_per_token == token_bytes and page == token_bytes * 64
+    assert window_ring_bytes(rotorquant) == 128 * row_bytes
+    assert state.raw == 3 * 128 * row_bytes + 3 * (2 * 512 * 4 + 8) + 32
+    assert state.pages == -(-state.raw // page)
     free = len(t.pool.free)
     _fill(t, 1, 7)
     want = _state(t, 1)
@@ -79,9 +89,10 @@ def _rows(t, slot, first, end):
     """Every source's latent and index rows of positions [first, end) of ``slot`` (reference: plain loops)."""
     out = []
     layout = t.pool.layout
+    latent_bytes = 272 if layout.rotorquant else 288
     for layer in sorted(layout.regions):
         ratio, per, c_off, i_off = layout.regions[layer]
-        for off, size in ((c_off, 288), (i_off, 68)):
+        for off, size in ((c_off, latent_bytes), (i_off, 68)):
             for k in range(first // ratio, end // ratio):
                 page = t.pool.owned[slot][k // per]
                 at = off + (k % per) * size
@@ -89,10 +100,11 @@ def _rows(t, slot, first, end):
     return out
 
 
-def test_host_extents_exact_bytes_and_chain_restore():
+@pytest.mark.parametrize("rotorquant,token_bytes", [(False, 890), (True, 850)])
+def test_host_extents_exact_bytes_and_chain_restore(rotorquant, token_bytes):
     from tensorfold.families.deepseek_v4.cuda import prefix
     from tensorfold.families.qwen4_exp.cuda.prefix_host import BLOCK_BYTES
-    t = _target(pages=96)
+    t = _target(pages=96, rotorquant=rotorquant)
     slab = torch.zeros(8 * BLOCK_BYTES, dtype=torch.uint8)
     state = prefix.SlotState(t, slab)
     t.pool.attach(0, 1000)
@@ -105,7 +117,7 @@ def test_host_extents_exact_bytes_and_chain_restore():
     state.run(prefix.OP_HSPILL, 12, 0, 701, 3, [1, 1, 13, 333, 2])
     for first, end in ((0, 333), (333, 701), (5, 6), (6, 7)):
         assert prefix.extent_bytes(t.pool.layout, first, end) == sum(r.numel() for r in _rows(t, 0, first, end))
-    assert prefix.extent_bytes(t.pool.layout, 0, 640) == 640 * 890
+    assert prefix.extent_bytes(t.pool.layout, 0, 640) == 640 * token_bytes
     want_rows, want_state = _rows(t, 0, 0, 701), _state(t, 0)
     t.pool.attach(3, 1000)
     t.pool.cache[t.pool.owned[3]] = 0
@@ -152,6 +164,102 @@ def _owner(rows=64):
     o.e, o.streams, o.filling = _Engine(rows), {}, []
     o._init_prefix(o.e, None)
     return o
+
+
+@pytest.mark.parametrize("failure,message", [
+    ("stream", "idle prefix owner"), ("filling", "idle prefix owner"),
+    ("duplicate", "inconsistent prefix slot ownership"), ("bytes", "inconsistent retained bytes"),
+    ("snapshot", "unowned retained prefix"),
+])
+def test_placement_retirement_refuses_invalid_prefix_ownership(failure, message):
+    owner = _owner()
+    if failure == "stream":
+        owner.streams[1] = SimpleNamespace(st=owner.free[-1])
+    elif failure == "filling":
+        owner.filling.append(SimpleNamespace(st=owner.free[-1]))
+    elif failure == "duplicate":
+        owner.free.append(owner.free[-1])
+    elif failure == "bytes":
+        owner.held = 1
+    else:
+        slot = owner.free.pop()
+        slot.capacity = 64
+        owner.kept.append(([1, 2], slot, {"sid": 37}, None))
+    before = (list(owner.free), list(owner.kept), owner.held)
+    with pytest.raises(RuntimeError, match=message):
+        owner.retire_placement_prefixes()
+    assert (owner.free, owner.kept, owner.held) == before and owner.e.ops == []
+
+
+def test_placement_retirement_releases_gpu_and_host_prefix_owners():
+    from tensorfold.families.deepseek_v4.cuda import prefix
+    from tensorfold.families.gemma4.sm70.ops import OP_ATTACH, OP_DETACH
+    from tensorfold.families.qwen4_exp.cuda.prefix_host import BLOCK_BYTES
+
+    target = _target(pages=96, rotorquant=True)
+    slab = torch.zeros(4 * BLOCK_BYTES, dtype=torch.uint8)
+    rank = prefix.SlotState(target, slab)
+
+    class Engine(_Engine):
+        def __init__(self):
+            super().__init__()
+            self.layout = target.pool.layout
+            self.host_per_rank, self.host_slab = slab.numel(), slab
+            self.snap_bytes, self.budget = rank.snap_bytes, target.pool.pages * self.layout.page_bytes
+            self.page_bytes = self.layout.page_bytes
+
+        def announce(self, op, a=0, b=0, c=0, d=0, ids=()):
+            super().announce(op, a, b, c, d, ids)
+            if op == OP_ATTACH:
+                target.pool.attach(a, b)
+            elif op == OP_DETACH:
+                target.pool.detach(a)
+            else:
+                return rank.run(op, a, b, c, d, ids)
+
+    owner = _owner()
+    owner.e = Engine()
+    owner._init_prefix(owner.e, None)
+    kept = owner.free.pop()
+    attached_free = owner.free[-1]
+    assert owner._grow(kept, 256) and owner._grow(attached_free, 64)
+    for page in target.pool.owned[kept.index]:
+        target.pool.cache[page].fill_(17)
+    _fill(target, kept.index, 3)
+    first = owner._snapshot(kept, 128)
+    owner.kept.append((list(range(128)), kept, {"sid": first, "pos": 128}, None))
+    tier = owner.host_tier
+    tier.spill(owner.kept, None)
+    later = owner._snapshot(kept, 256)
+    owner.kept.append((list(range(256)), kept, {"sid": later, "pos": 256}, None))
+    tier.spill(owner.kept, None)
+    assert len(tier.entries) == 2 and tier.extents == 2 and any(tier.taken)
+    assert rank.host_layout and rank.host_extents and kept.host_rows is not None
+    assert owner.held > 0 and rank.snaps and target.pool.owned
+    counters = dict(tier.counters)
+    ids = (owner.next_snap, tier.next_id)
+    before_slab = slab.clone()
+    before_pool = target.pool.cache.clone()
+    with pytest.raises(RuntimeError, match="rank-local KV borrowers"):
+        rank.retire_placement_prefixes()
+    assert rank.host_layout and rank.host_extents
+
+    offset = len(owner.e.ops)
+    owner.retire_placement_prefixes()
+    assert owner.e.ops[offset:] == [
+        (prefix.OP_DROP, first, 0, 0), (prefix.OP_DROP, later, 0, 0),
+        (OP_DETACH, kept.index, 0, 0), (OP_DETACH, attached_free.index, 0, 0),
+    ]
+    assert owner.free == list(reversed(owner.slots)) and not owner.kept and not owner.turn_of and owner.held == 0
+    assert all(slot.capacity == 0 and slot.host_rows is None for slot in owner.slots)
+    assert not tier.entries and not tier._gone and tier.extents == 0 and not any(tier.taken)
+    assert owner.host_tier is tier and tier.counters == counters and (owner.next_snap, tier.next_id) == ids
+    assert not rank.snaps and not target.pool.owned and len(target.pool.free) == target.pool.pages
+    assert rank.host_layout and rank.host_extents
+    rank.retire_placement_prefixes()
+    assert not rank.host_layout and not rank.host_extents
+    assert rank.slab is slab and torch.equal(slab, before_slab)
+    assert torch.equal(target.pool.cache, before_pool)
 
 
 class _Head:
@@ -231,6 +339,67 @@ def test_owner_no_reuse_keeps_nothing():
     _serve(o, p, reuse=False)
     assert not o.kept and not o.snap_ids
     assert _serve(o, p)[0] == 0
+
+
+@pytest.mark.parametrize("outcome", ("text-finished", "vision-finished", "vision-cancelled"))
+def test_decoder_finish_releases_uncached_slot(outcome):
+    from tensorfold.families.deepseek_v4.cuda.engine import Decoder, DS41Engine, OP_ATTACH, OP_DETACH
+
+    engine = _Engine(pages=16)
+    engine.target = _target(pages=16)
+    engine.target.reset_slot = lambda slot: None
+    pool = engine.target.pool
+    engine.page_bytes = pool.layout.page_bytes
+    engine.budget = pool.pages * engine.page_bytes
+    engine.token_bytes = pool.token_bytes()
+    slot_pages, tower_frees = {}, []
+    engine.slot_pages = SimpleNamespace(set=lambda slot, pages: slot_pages.__setitem__(slot, tuple(pages)))
+    engine.tower_free = lambda handles: tower_frees.append(tuple(handles))
+    record = engine.announce
+
+    def announce(op, slot, capacity=0):
+        record(op, slot, capacity)
+        if op == OP_ATTACH:
+            DS41Engine._attach(engine, slot, capacity)
+        else:
+            assert op == OP_DETACH
+            DS41Engine._detach(engine, slot)
+
+    engine.announce = announce
+    decoder = object.__new__(Decoder)
+    decoder.e, decoder.streams, decoder.filling, decoder._broken = engine, {}, [], None
+    decoder.split = decoder.finishing = None
+    decoder._init_prefix(engine, None)
+    vision = outcome.startswith("vision")
+    stream = SimpleNamespace(sid=7, prompt=list(range(1, 150)), count=4, draft=False,
+                             vision=object() if vision else None, encoded={0: 11} if vision else {},
+                             encoding=(1, 13) if vision else None)
+    capacity = decoder._cap(len(stream.prompt) + stream.count)
+    decoder.place(stream, capacity, reuse=False)
+    state, slot = stream.st, stream.slot
+    assert stream.cached == 0 and state.capacity == capacity
+    assert decoder.held == engine.slot_bytes(capacity) > 0
+    assert slot_pages[slot] == tuple(pool.owned[slot]) and pool.owned[slot]
+    if vision:
+        decoder.filling.append(stream)
+    else:
+        decoder.streams[stream.sid] = stream
+    if outcome == "vision-cancelled":
+        assert decoder.cancel([stream]) == [stream]
+        assert stream.done and stream.st is state and slot in pool.owned
+        assert tower_frees == [(11, 13)]
+
+    decoder.finish([stream])
+
+    assert decoder.live() == 0 and decoder.broken is None
+    assert stream.st is None and stream.slot is None
+    assert state.capacity == decoder.held == 0
+    assert tower_frees == ([(11, 13)] if vision else [])
+    assert not stream.encoded and stream.encoding is None
+    assert list(engine.ops) == [(OP_ATTACH, slot, capacity, 0), (OP_DETACH, slot, 0, 0)]
+    assert not pool.owned and len(pool.free) == pool.pages and slot_pages[slot] == ()
+    assert sum(free is state for free in decoder.free) == 1
+    assert decoder.usage()["kv"]["free_tokens_estimate"] == pool.pages * 64
 
 
 def test_chunk_splits_rules():

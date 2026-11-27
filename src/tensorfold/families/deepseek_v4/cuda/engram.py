@@ -56,7 +56,7 @@ class HostEngram:
     """The two tables, shared by every rank on the host; ``rows``: rows of table 0 and table 1."""
 
     def __init__(self, path, offset: int, rows: tuple[int, int], rank: int, store, *, threads: int = 16,
-                 key: str = "ds41/engram"):
+                 key: str = "ds41/engram", open_fd=None):
         self.rows = tuple(int(r) for r in rows)
         self.size = sum(self.rows) * ROW_BYTES
         self.fd, self.address, self.registered = -1, 0, False
@@ -64,7 +64,7 @@ class HostEngram:
         self.fill_seconds = self.wait_seconds = self.register_seconds = 0.0   # startup phases
         started = time.perf_counter()
         try:
-            self.fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+            self.fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC) if open_fd is None else open_fd(path)
             if os.fstat(self.fd).st_size < offset + self.size:
                 raise ValueError(f"{path}: the Engram table [{offset}, +{self.size}) runs past the end of the file")
             page = os.sysconf("SC_PAGE_SIZE")

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Ported from 1Cat-vLLM 4d57473db67eb77a13018d179e4d95169e82044f tests/models/test_deepseek_v41_quant_rope.py (blob c110c9a13dd35abadbdceee47a25917d92a64a88).
-# TensorFold change: imports only (vendored kernels package).
+# TensorFold changes: local imports and an explicit YaRN override test.
 import ast
 import math
 from functools import lru_cache
@@ -46,8 +46,21 @@ def _reference(x, fp4, group, e4m3):
     return (values * scale).half().view_as(x)
 
 
+def test_attention_fp8_scales_do_not_cross_32_channel_groups():
+    # Put the outlier in the neighboring group, including in the rotary tail.
+    # A scale shared across 128 columns rounds each small value to zero.
+    x = torch.zeros((1, 512), dtype=torch.float16)
+    x[0, [0, 448]] = 2**-14
+    x[0, [32, 480]] = 64
+    expected = _reference(x, False, 32, False)
+    actual = attention_qdq(x.cuda(), group=32).cpu()
+    assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
+    assert torch.all(actual[0, [0, 448]] != 0)
+    assert torch.all(_reference(x, False, 128, False)[0, [0, 448]] == 0)
+
+
 @pytest.mark.parametrize(
-    "fp4,group,e4m3", [(False, 128, False), (True, 16, True), (True, 32, False)]
+    "fp4,group,e4m3", [(False, 128, False), (False, 32, False), (True, 16, True), (True, 32, False)]
 )
 @pytest.mark.parametrize("magnitude", [0.0, 2**-20, 0.03125, 1.37, 100.0])
 def test_software_attention_qdq_preserves_exact_fp16_values(
@@ -62,7 +75,7 @@ def test_software_attention_qdq_preserves_exact_fp16_values(
 
 
 @pytest.mark.parametrize(
-    "fp4,group,e4m3", [(False, 128, False), (True, 16, True), (True, 32, False)]
+    "fp4,group,e4m3", [(False, 128, False), (False, 32, False), (True, 16, True), (True, 32, False)]
 )
 def test_attention_qdq_ties_signed_zero_and_graph_replay(fp4, group, e4m3):
     values = (
@@ -127,9 +140,36 @@ def test_rope_table_matches_reviewed_official_function(compressed):
         1,
     )
     expected = torch.cat((reference.real, reference.imag), dim=-1)
-    torch.testing.assert_close(
-        rope_table(compressed=compressed, device="cpu"), expected, rtol=0, atol=0
-    )
+    # The V100 kernel appends a frequency row for positions beyond the table.
+    table = rope_table(max_length=expected.size(0), compressed=compressed, device="cpu")
+    assert table.shape == (expected.size(0) + 1, expected.size(1))
+    torch.testing.assert_close(table[:-1], expected, rtol=0, atol=0)
+    assert torch.count_nonzero(table[-1, 32:]) == 0
+    angles = table[-1, :32] * expected.size(0)
+    unit = torch.polar(torch.ones_like(angles), angles)
+    first_extended = scope["precompute_freqs_cis"](
+        64, expected.size(0) + 1, 65536 if compressed else 0, 160000 if compressed else 10000, 16, 32, 1
+    )[-1]
+    torch.testing.assert_close(unit, first_extended, rtol=0, atol=0)
+
+
+def test_yarn_factor_two_changes_compressed_low_frequencies_only():
+    from tensorfold.families.deepseek_v4.cuda.weights import Geometry
+
+    geometry = Geometry()
+    stock = geometry.rope_parameters()
+    scaled = geometry.rope_parameters(2)
+    assert scaled.context_limit == 131_072
+    common = dict(max_length=17, device="cpu")
+    assert torch.equal(rope_table(**common, rope=stock), rope_table(**common, rope=scaled))
+    prior = rope_table(**common, rope=stock, compressed=True)
+    actual = rope_table(**common, rope=scaled, compressed=True)
+    assert torch.equal(prior[:, [0, 32]], actual[:, [0, 32]])
+    assert actual[-1, 31] == prior[-1, 31] * 8
+    angle = 16 * actual[-1, 31]
+    expected = torch.tensor([math.cos(angle.item()), math.sin(angle.item())], dtype=torch.float32)
+    # The CPU polar kernel and scalar libm may round the FP32 phase one bit apart.
+    torch.testing.assert_close(actual[16, [31, 63]], expected, rtol=torch.finfo(torch.float32).eps, atol=0)
 
 
 @pytest.mark.parametrize("dim", [128, 512])

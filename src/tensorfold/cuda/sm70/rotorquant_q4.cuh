@@ -334,19 +334,31 @@ __device__ __forceinline__ void store_encoded(Encoded item, int col, float* shar
 }
 
 // Codec 11: nibbles as store_encoded, then one word per 128 values holding both halves' FP16 scales.
+template<bool Mirror = false>
 __device__ __forceinline__ void store_encoded_halves(Encoded item, int col, float* shared, uint8_t* codes,
-                                                     float* scales, int64_t scalar_base, int dim, bool write) {
+                                                     float* scales, int64_t scalar_base, int dim, bool write,
+                                                     uint8_t* mirror_codes = nullptr, uint32_t* mirror_scales = nullptr) {
     shared[col] = float(item.code);
     __syncthreads();
-    if (write && col < dim && col % 2 == 0)
-        codes[(scalar_base + col) / 2] = uint8_t(int(shared[col]) | (int(shared[col + 1]) << 4));
+    if (write && col < dim && col % 2 == 0) {
+        const int64_t index = (scalar_base + col) / 2;
+        const uint8_t byte = uint8_t(int(shared[col]) | (int(shared[col + 1]) << 4));
+        codes[index] = byte;
+        if constexpr (Mirror) {
+            if (mirror_codes) mirror_codes[index] = byte;
+        }
+    }
     __syncthreads();
     shared[col] = item.scale;
     __syncthreads();
     if (write && col < dim && col % 128 == 0) {
         const uint32_t word = uint32_t(__half_as_ushort(__float2half_rn(shared[col])))
                             | uint32_t(__half_as_ushort(__float2half_rn(shared[col + 64]))) << 16;
-        reinterpret_cast<uint32_t*>(scales)[(scalar_base + col) / 128] = word;
+        const int64_t index = (scalar_base + col) / 128;
+        reinterpret_cast<uint32_t*>(scales)[index] = word;
+        if constexpr (Mirror) {
+            if (mirror_scales) mirror_scales[index] = word;
+        }
     }
     __syncthreads();
 }

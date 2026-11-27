@@ -3,7 +3,7 @@
 Reader threads ``preadv`` file ranges straight into pinned buffers (one kernel copy out of the page cache: no
 memory-map page faults, no intermediate host arrays), and the caller's thread issues each buffer's host-to-device
 copy asynchronously on the current stream. A buffer is refilled only after the event recorded behind its last copy
-has completed, so a copy never reads bytes being overwritten; the bytes uploaded are exactly the file's.
+has completed. Packed rows use disjoint input and output slices in the same staging buffer.
 """
 
 from __future__ import annotations
@@ -19,8 +19,11 @@ BUFFERS = 4               # staging buffers = reader threads
 
 
 class Staging:
-    def __init__(self, chunk: int = CHUNK, buffers: int = BUFFERS):
+    """One loader's staging ring. A failed copy ends the load and the caller closes the ring."""
+
+    def __init__(self, chunk: int = CHUNK, buffers: int = BUFFERS, *, open_fd=None):
         self.chunk = chunk
+        self.open_fd = open_fd
         self.buffers = [torch.empty(chunk, dtype=torch.uint8, pin_memory=True) for _ in range(buffers)]
         self.views = [memoryview(b.numpy()) for b in self.buffers]
         self.events: list[torch.cuda.Event | None] = [None] * buffers
@@ -31,10 +34,11 @@ class Staging:
     def _fd(self, path) -> int:
         fd = self.fds.get(path)
         if fd is None:
-            fd = self.fds[path] = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC) if self.open_fd is None else self.open_fd(path)
+            self.fds[path] = fd
         return fd
 
-    def _read(self, slot, fd, pieces, after):
+    def _read(self, slot, fd, pieces, after, pack):
         if after is not None:
             after.synchronize()                         # the buffer's previous copy has read it
         view, at = self.views[slot], 0
@@ -46,7 +50,9 @@ class Staging:
                     raise OSError(f"short read of the checkpoint at byte {offset + done}")
                 done += got
             at += n
-        return at
+        if pack is None:
+            return 0, at
+        return at, pack(self.buffers[slot], at)
 
     def copy(self, path, ranges, out: torch.Tensor) -> torch.Tensor:
         """Fill contiguous uint8 ``out`` with the file's byte ``ranges`` [(offset, nbytes)], concatenated in order."""
@@ -61,17 +67,40 @@ class Staging:
                 size += take
                 offset, n = offset + take, n - take
                 if size == self.chunk:
-                    batches.append((batch, size))
+                    batches.append(batch)
                     batch, size = [], 0
         if batch:
-            batches.append((batch, size))
-        fd = self._fd(path)
+            batches.append(batch)
+        self._copy_batches(self._fd(path), batches, flat)
+        return out
+
+    def copy_packed_rows(self, path, offset, source_row_bytes, out: torch.Tensor, pack) -> torch.Tensor:
+        """Read contiguous source rows and upload packed rows from a disjoint pinned slice."""
+        if offset < 0 or source_row_bytes <= 0 or out.ndim < 2 or out.dtype != torch.uint8 or not out.is_contiguous():
+            raise ValueError("packed staging requires a row layout and a contiguous uint8 destination")
+        row_bytes = out.shape[-1]
+        if not row_bytes or self.chunk < source_row_bytes + row_bytes:
+            raise ValueError("a source and packed row must fit in one staging buffer")
+        rows = out.numel() // row_bytes
+        per_batch = self.chunk // (source_row_bytes + row_bytes)
+        batches = [[(offset + first * source_row_bytes, min(rows - first, per_batch) * source_row_bytes)]
+                   for first in range(0, rows, per_batch)]
+
+        def transform(buffer, source_bytes):
+            packed_bytes = source_bytes // source_row_bytes * row_bytes
+            pack(buffer[:source_bytes], buffer[source_bytes:source_bytes + packed_bytes])
+            return packed_bytes
+
+        self._copy_batches(self._fd(path), batches, out.view(-1), transform)
+        return out
+
+    def _copy_batches(self, fd, batches, flat, pack=None):
         pending = deque()
 
         def submit(i):
             slot = self.next
             self.next = (slot + 1) % len(self.buffers)
-            pending.append((slot, self.pool.submit(self._read, slot, fd, batches[i][0], self.events[slot])))
+            pending.append((slot, self.pool.submit(self._read, slot, fd, batches[i], self.events[slot], pack)))
 
         ahead = min(len(batches), len(self.buffers))
         for i in range(ahead):
@@ -79,15 +108,14 @@ class Staging:
         position = 0
         for i in range(len(batches)):
             slot, future = pending.popleft()
-            n = future.result()
-            flat[position:position + n].copy_(self.buffers[slot][:n], non_blocking=True)
+            start, n = future.result()
+            flat[position:position + n].copy_(self.buffers[slot][start:start + n], non_blocking=True)
             event = torch.cuda.Event()
             event.record()
             self.events[slot] = event
             position += n
             if i + ahead < len(batches):
                 submit(i + ahead)
-        return out
 
     def close(self) -> None:
         """Waits for every copy, then releases the buffers (and torch's cached pinned blocks) and the files."""
