@@ -434,6 +434,50 @@ def test_engine_waits_for_exact_followers_before_completing_vector_commit(monkey
     assert all(row[2] == ((0, 0), (2, 3)) for row in commits)
 
 
+def test_grammar_verify_gathers_only_flagged_lane_rows_in_vector_order():
+    import array
+
+    from tensorfold.families.deepseek_v4.cuda.dspark_graph import VerifyOutput
+    from tensorfold.families.deepseek_v4.cuda.engine import (
+        DS41Engine, OP_DRAFT_COMMIT_BATCH, OP_DRAFT_VERIFY_BATCH, _HEAD,
+    )
+
+    local_logits = torch.arange(12, dtype=torch.float32).reshape(-1, 1)
+    result = VerifyOutput(torch.empty((8, 12, 3)), torch.empty((3, 3), dtype=torch.long), local_logits)
+    frames, gathers, checked = [], [], []
+
+    def verify(sequence, entries):
+        checked.append((sequence, [entry.slot for entry in entries]))
+        return result
+
+    def gather(local):
+        gathers.append(local.flatten().tolist())
+        return torch.cat([local, local + 100], dim=1)
+
+    def engine(rank):
+        owner = DS41Engine.__new__(DS41Engine)
+        owner.rank, owner.world, owner.part = rank, 8, None
+        owner._draft_verify = SimpleNamespace(bucket=3, depth=3, pending=None, verify_batch=verify)
+        owner.pipes = SimpleNamespace(send=frames.append)
+        owner.coll = SimpleNamespace(gather=gather)
+        return owner
+
+    leader, follower = engine(0), engine(1)
+    entries = (3, 24, 11, 2, 30, 12, 1, 16, 13)
+    output = leader.announce(OP_DRAFT_VERIFY_BATCH, 9, 3, 0b101, ids=entries)
+    payload = array.array("i", entries)
+    assert frames == [_HEAD.pack(OP_DRAFT_VERIFY_BATCH, 9, 3, 0b101, 0) + payload.tobytes()]
+    assert follower._run(*_HEAD.unpack_from(frames[0]), payload).constrained_logits is None
+    expected = [0., 1., 2., 3., 8., 9., 10., 11.]
+    assert output.constrained_logits.tolist() == [[value, value + 100] for value in expected]
+    assert gathers == [expected, expected] and checked == [(9, [3, 2, 1]), (9, [3, 2, 1])]
+    with pytest.raises(ValueError, match="control frame"):
+        leader.announce(OP_DRAFT_VERIFY_BATCH, 9, 3, 0b1000, ids=entries)
+    with pytest.raises(ValueError, match="control frame"):
+        leader.announce(OP_DRAFT_COMMIT_BATCH, 9, 3, 1, ids=(3, 1, 2, 1, 1, 1))
+    assert len(frames) == 1
+
+
 def test_exact_live_widths_share_one_pending_transaction():
     engine, head, spec, events = owners(torch.device("cpu"))
     shapes = tuple(SpecShape(engine, head, spec, width, 3, engine.context) for width in (1, 2, 3))
@@ -473,7 +517,8 @@ def test_fixed_scheduler_cancels_a_lane_and_publishes_only_after_commit():
     compact = torch.tensor([[[1., 10., 0.], [1., 11., 0.], [0., 0., 1.], [0., 0., 1.],
                              [1., 12., 0.], [1., 13., 0.], [1., 14., 0.], [1., 15., 0.]]])
 
-    def announce(op, seq, count, *, ids):
+    def announce(op, seq, count, grammar=0, *, ids):
+        assert grammar == 0
         sent.append((op, seq, count, tuple(ids)))
         assert emitted == []
         if op == OP_DRAFT_VERIFY_BATCH:
@@ -492,6 +537,120 @@ def test_fixed_scheduler_cancels_a_lane_and_publishes_only_after_commit():
     assert emitted == [(OP_DRAFT_COMMIT_BATCH, [10, 11])]
     assert (first.drafted, first.accepted, second.drafted) == (3, 2, 0)
     assert decoder.verify_rounds_by_active == [0, 0, 1, 0]
+
+
+def test_strict_dsml_speculation_masks_only_reachable_rows_and_commits_selected_tokens():
+    xgr = pytest.importorskip("xgrammar")
+
+    from tensorfold.cuda.streams import Stream
+    from tensorfold.engine.grammar import Grammars
+    from tensorfold.families.deepseek_v4.cuda.dspark_serving import decide_constrained
+    from tensorfold.families.deepseek_v4.cuda.engine import FixedDraftDecoder
+    from tensorfold.families.deepseek_v4.cuda.round_sampling import compact_packet, greedy_tokens
+    from tensorfold.families.deepseek_v4.strict_tools_v41 import CLOSE, INVOKE_END, OPEN, Plan
+
+    tools = [{"type": "function", "function": {"name": "now", "strict": True}}]
+    plan = Plan(tools, required=False, parallel=False)
+    header = plan.thinking_headers[0][len(OPEN):]
+    words = ["", "thinking\n", "</think>", OPEN, header, f"{INVOKE_END}\n{CLOSE}", "invalid"]
+    info = xgr.TokenizerInfo(words, xgr.VocabType.RAW, vocab_size=len(words), stop_token_ids=[0])
+    grammars = Grammars(info)
+    matcher = grammars.constraint(
+        grammars.compile(plan.spec), think_end=2, answer_start=3,
+        answer_opener=plan.opener, answer_headers=plan.thinking_headers,
+        decode=lambda ids, **_kwargs: "".join(words[t] for t in ids),
+    )
+    request = Stream([1] * 192, count=12, constraint=matcher)
+    request.forced = request.head = None
+    request.pos = 0
+    decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
+    decoder._admitted(request)
+    assert request.draft_seed
+    matcher.advance([1])
+    assert not matcher.active
+
+    logits = torch.full((4, len(words)), float("-inf"))
+    logits[0, 3] = logits[1, 4] = logits[2, 6] = 10.
+    logits[2, 5] = 5.
+    logits[3].fill_(float("nan"))  # follows an invalid proposal and is unreachable
+    choices = greedy_tokens(compact_packet(logits, 0).unsqueeze(0), 4)
+    chosen = decide_constrained(matcher, logits, choices, 1, [3, 4, 6], 8, (0,))
+    assert chosen == [3, 4, 5]
+    assert matcher.observed == 1 and not matcher.active    # speculative traversal rolled itself back
+    matcher.advance(chosen)
+    assert matcher.active and not matcher.finished
+    _, calls, complete = plan.parse_finished("".join(words[t] for t in chosen))
+    assert complete and calls[0]["function"]["name"] == "now"
+
+    logits = torch.full((4, len(words)), float("-inf"))
+    logits[0, 0] = 2.
+    logits[1:].fill_(float("nan"))  # a terminating proposal has no child row
+    choices = greedy_tokens(compact_packet(logits, 0).unsqueeze(0), 4)
+    chosen = decide_constrained(matcher, logits, choices, 5, [0, 6, 6], 8, (0,))
+    assert chosen == [0]
+    matcher.advance(chosen)
+    assert matcher.finished
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_constrained_verify_errors_and_cancellation_settle_only_the_affected_lane(monkeypatch, cancel):
+    from threading import Event
+
+    from tensorfold.cuda.streams import Stream
+    from tensorfold.families.deepseek_v4.cuda import dspark_serving as serving
+    from tensorfold.families.deepseek_v4.cuda.engine import (
+        FixedDraftDecoder, OP_DRAFT_COMMIT_BATCH, OP_DRAFT_VERIFY_BATCH,
+    )
+
+    decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
+    decoder.eos = (99,)
+    decoder.verify_rounds_by_active = [0] * 4
+    sent, emitted, advanced = [], [], []
+    first_constraint = SimpleNamespace(advance=lambda tokens: advanced.append((0, tokens)))
+    cancel_event = Event()
+    rejected = RuntimeError("a test grammar rejected a chosen token")
+
+    def last_advance(tokens):
+        assert not cancel
+        advanced.append((2, tokens))
+        raise rejected
+
+    last_constraint = SimpleNamespace(advance=last_advance)
+    streams = [Stream([1] * 10, 2, cancel=event, constraint=constraint, out=[slot + 5],
+                      emit=lambda tokens, lane=slot: emitted.append((lane, sent[-1][0], tokens)))
+               for slot, event, constraint in ((0, None, first_constraint), (1, None, None),
+                                                (2, cancel_event, last_constraint))]
+    compact = torch.tensor([[[1., float(index + 10), 0.] for index in range(12)]])
+    constrained_logits = torch.arange(8, dtype=torch.float32).view(-1, 1)
+
+    def decision(constraint, logits, choices, anchor, drafts, room, eos):
+        assert room == 1 and eos == (99,)
+        if constraint is first_constraint:
+            assert logits.flatten().tolist() == [0., 1., 2., 3.] and anchor == 5
+            return [10]
+        assert constraint is last_constraint and anchor == 7
+        assert logits.flatten().tolist() == [4., 5., 6., 7.]
+        if cancel:
+            cancel_event.set()
+        return [18]
+
+    def announce(op, sequence, count, grammar=0, *, ids):
+        sent.append((op, sequence, count, grammar, tuple(ids)))
+        assert not emitted
+        if op == OP_DRAFT_VERIFY_BATCH:
+            return SimpleNamespace(
+                compact=compact, drafts=torch.tensor([[10, 11, 12], [14, 15, 16], [18, 19, 20]]),
+                constrained_logits=constrained_logits,
+            )
+
+    monkeypatch.setattr(serving, "decide_constrained", decision)
+    decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(next_sequence=5, depth=3), announce=announce)
+    assert decoder._fixed_round(streams, [(0, 10, 5), (1, 10, 6), (2, 10, 7)]) == streams
+    assert sent == [(OP_DRAFT_VERIFY_BATCH, 5, 3, 0b101, (0, 10, 5, 1, 10, 6, 2, 10, 7)),
+                    (OP_DRAFT_COMMIT_BATCH, 5, 3, 0, (0, 1, 1, 1, 2, 0))]
+    assert advanced == ([(0, [10])] if cancel else [(0, [10]), (2, [18])])
+    assert streams[-1].error is (None if cancel else rejected)
+    assert emitted == [(0, OP_DRAFT_COMMIT_BATCH, [10]), (1, OP_DRAFT_COMMIT_BATCH, [14])]
 
 
 def test_fixed_scheduler_verifies_disjoint_lanes_through_a_paused_prompt(monkeypatch):
@@ -664,12 +823,12 @@ def test_draft_trace_distinguishes_shadow_admission_and_active_fallback(monkeypa
     assert hidden.draft_seed and "dspark_admission" not in hidden.stats()
 
     monkeypatch.setattr(engine, "TRACE_DRAFT", True)
-    excluded = stream(sampling=SimpleNamespace(temperature=float("nan")), constraint=object())
+    excluded = stream(sampling=SimpleNamespace(temperature=float("nan")))
     excluded.head, excluded.pos = object(), len(excluded.prompt)
     shadow = engine.Decoder.__new__(engine.Decoder)
     shadow._admitted(excluded)
     assert excluded.stats()["dspark_shadow"]
-    assert excluded.stats()["dspark_admission"] == ("grammar", "sampling", "exact_cache_hit")
+    assert excluded.stats()["dspark_admission"] == ("sampling", "exact_cache_hit")
 
     eligible = stream()
     decoder._admitted(eligible)
