@@ -544,6 +544,29 @@ def test_fixed_scheduler_verifies_disjoint_lanes_through_a_paused_prompt(monkeyp
     assert decoder.round() == [] and calls[-1] == "ordinary"
 
 
+def test_vision_prefill_uses_the_ordinary_target_round_in_d3_serving(monkeypatch):
+    from tensorfold.families.deepseek_v4.cuda.engine import Decoder, FixedDraftDecoder
+
+    decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
+    decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(bucket=3))
+    decoder._broken = decoder.inflight = decoder.finishing = None
+    options = dict(draft=True, background=False, owed=False, token_limit=None, head=None, pos=0, prompt=[1, 2],
+                   forced=None, constraint=None, history=None, probabilities=None, sampling=None, done=False)
+    text = SimpleNamespace(vision=None, **options)
+    image = SimpleNamespace(vision=object(), **options)
+    decoder._admitted(text)
+    decoder._admitted(image)
+    assert text.draft_seed and not image.draft_seed
+    decoder.streams, decoder.filling = {0: text}, [image]
+
+    def ordinary(active):
+        assert active is decoder and active.filling == [image]
+        return ["ordinary target result"]
+
+    monkeypatch.setattr(Decoder, "round", ordinary)
+    assert decoder.round() == ["ordinary target result"]
+
+
 def test_paused_prefill_disjointness_is_checked_before_vector_transport():
     from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine, OP_DRAFT_VERIFY_BATCH
 

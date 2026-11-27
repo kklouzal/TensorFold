@@ -8,9 +8,16 @@ from tensorfold.families import deepseek_v4
 
 @pytest.fixture
 def config(tmp_path):
+    from tensorfold.families.deepseek_v4.cuda.vision import IMAGE_TOKEN_ID, _VISION_CONFIG
+
     model = tmp_path / "model"
     model.mkdir()
-    (model / "config.json").write_text(json.dumps({"model_type": "deepseek_v41", "gguf_file": "backbone.gguf"}))
+    (model / "config.json").write_text(json.dumps({
+        "model_type": "deepseek_v41",
+        "gguf_file": "backbone.gguf",
+        "vision_config": _VISION_CONFIG,
+        "image_token_id": IMAGE_TOKEN_ID,
+    }))
     (model / "backbone.gguf").touch()
     draft = tmp_path / "dspark"
     draft.mkdir()
@@ -23,18 +30,21 @@ def command(model, draft):
             "--draft-method", "dspark", "--drafter", str(draft)]
 
 
-def test_full_window_d3_uses_the_local_draft_bundle(config, monkeypatch):
+@pytest.mark.parametrize("vision_flags", [[], ["--vision"], ["--vision", "--vision-max-images", "0"]])
+def test_full_window_d3_uses_the_local_draft_bundle(config, monkeypatch, vision_flags):
     from tensorfold.families.deepseek_v4.cuda import engine
 
     model, draft = config
-    args = cli.build_parser().parse_args([*command(model, draft), "--mtp-drafts", "3"])
+    args = cli.build_parser().parse_args([*command(model, draft), "--mtp-drafts", "3", *vision_flags])
     cli._check_serve_options(args, families.detect(model), "cuda", model)
     monkeypatch.setattr(engine, "DS41Engine", lambda path, **options: (path, options))
     path, options = deepseek_v4.cuda_engine(model, drafter=args.drafter, draft_method=args.draft_method,
                                             mtp_drafts=args.mtp_drafts, tp=8, context=args.context,
-                                            kv_full_windows=args.kv_full_windows, kv_dtype=args.kv_dtype)
+                                            kv_full_windows=args.kv_full_windows, kv_dtype=args.kv_dtype,
+                                            **cli._vision_options(args))
     assert path == model and options["context"] == 1048576
     assert options["draft_root"] == draft and options["draft_depth"] == 3
+    assert options["kv_full_windows"] == "auto" and options.get("vision", False) == bool(vision_flags)
 
 
 @pytest.mark.parametrize(("opts", "message"), [

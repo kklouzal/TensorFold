@@ -1,6 +1,7 @@
 """DeepSeek-V4.1 vision host pieces: resize plan, placeholder expansion, preprocessing and the vision bias file."""
 
 import hashlib
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -108,6 +109,38 @@ def test_preprocess_pads_grey_and_patchifies():
     from PIL import Image, ImageOps
     expected = np.asarray(ImageOps.pad(Image.fromarray(rgb), (best_w, best_h), color=V.PAD_COLOR)).transpose(2, 0, 1)
     assert np.array_equal(image, expected)
+
+
+@pytest.mark.parametrize(("limits", "message"), [
+    ({"max_visual_tokens": 919}, "the request's images take 920 visual tokens; at most 919"),
+    ({"max_prompt_tokens": 921, "max_visual_tokens": 920}, "context length exceeds 921 tokens"),
+])
+def test_prepare_rejects_over_budget_before_materializing_patches(limits, message):
+    frontend = V.Frontend.__new__(V.Frontend)
+    prompt = [5, *([V.IMAGE_TOKEN_ID] * 5), 8]
+    frontend.template = SimpleNamespace(encode=lambda _tokenizer, _rendered: prompt)
+    frontend.tokenizer = None
+
+    def premature_materialization():
+        pytest.fail("image patch preparation began before budget validation")
+
+    image = SimpleNamespace(width=448, height=448, to_pil=premature_materialization)
+    with pytest.raises(ValueError, match=message):
+        frontend.prepare("rendered", [image] * 5, **limits)
+
+
+def test_prepare_expands_five_images_at_the_exact_token_and_context_budgets():
+    pytest.importorskip("PIL")
+    from tensorfold.vision.images import ImageInput
+
+    frontend = V.Frontend.__new__(V.Frontend)
+    prompt = [5, *([V.IMAGE_TOKEN_ID] * 5), 8]
+    frontend.template = SimpleNamespace(encode=lambda _tokenizer, _rendered: prompt)
+    frontend.tokenizer = None
+    images = [ImageInput(1, 1, bytes((index, 0, 0))) for index in range(5)]
+    prepared = frontend.prepare("rendered", images, max_visual_tokens=920, max_prompt_tokens=922)
+    assert prepared.token_ids == (5,) + (V.IMAGE_TOKEN_ID,) * 920 + (8,)
+    assert prepared.image_hashes == tuple(image.content_hash for image in images)
 
 
 def _span(frame):
