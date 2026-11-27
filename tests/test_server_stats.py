@@ -326,6 +326,16 @@ def concurrent_app(tmp_path):
     return app
 
 
+def test_dspark_stats_include_committed_rounds_by_active_count(tmp_path):
+    app = concurrent_app(tmp_path)
+    assert "dspark" not in stats.snapshot(app)
+    counts = app.engine.scheduler.decoder.verify_rounds_by_active = [0, 9, 6, 3]
+    reading = stats.snapshot(app)
+    counts[3] += 1
+    assert reading["dspark"]["verify_rounds_by_active"] == {"1": 9, "2": 6, "3": 3}
+    assert stats.snapshot(app)["dspark"]["verify_rounds_by_active"]["3"] == 4
+
+
 def test_a_concurrent_engine_s_load_memory_and_prefix_cache(tmp_path):
     app = concurrent_app(tmp_path)
     body = stats.snapshot(app)

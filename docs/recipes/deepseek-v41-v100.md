@@ -169,6 +169,8 @@ Use the local 1017 FT bundle with its `official` and `ft` directories. Keep
 `--temperature 0` if you want omitted-temperature requests to be eligible for
 drafting. The experimental path targets one to three eligible greedy decode
 streams. Check the funded lane count and configured depth in `/v1/stats`.
+The `dspark.verify_rounds_by_active` counters count committed verification
+rounds by the number of active requests in the vector.
 Draft residency and graph captures consume VRAM. Native 1M validation and
 paired quality and throughput measurements are pending for this mode.
 
