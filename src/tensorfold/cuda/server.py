@@ -2403,10 +2403,16 @@ def print_done(request_id: str, prompt: int, cached: int, thinking: bool, out: l
     first, started = getattr(request, "first", None), getattr(request, "started", ended)
     decode = ended - first if first is not None else 0.0
     rate = (len(out) - 1) / decode if decode > 0 and len(out) > 1 else 0.0
+    draft_trace = ""
+    if (admission := stats.get("dspark_admission")) is not None:
+        eligibility = ",".join(admission) or "eligible"
+        draft_trace = f" dspark_admission={eligibility}"
+        if (fallback := stats.get("dspark_fallback")) is not None:
+            draft_trace += f" dspark_fallback={fallback}"
     print(f"[tensorfold] done {request_id} prompt={prompt} cached={cached} thinking={thinking} "
           f"tokens={len(out)} sha={token_sha(out)} finish={finish} tok/s={rate:.1f} "
           f"ttft={(first - started) if first is not None else -1:.2f}s prefill={stats.get('prefill_s', -1):.2f}s "
-          f"rounds={stats.get('rounds', 0)} accepted={stats.get('accepted', 0)}/{stats.get('drafted', 0)}",
+          f"rounds={stats.get('rounds', 0)} accepted={stats.get('accepted', 0)}/{stats.get('drafted', 0)}{draft_trace}",
           flush=True)
 
 

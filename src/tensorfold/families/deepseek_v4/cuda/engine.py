@@ -65,6 +65,27 @@ H64_128K_GRAPH_KEYS = (
 )
 H64_128K_GRAPH_BYTES = 1536 << 20
 TRACE = bool(os.environ.get("TENSORFOLD_DS41_SCHED_TRACE"))   # diagnostic: the Decoder's group plans and costs
+TRACE_DRAFT = os.environ.get("TENSORFOLD_DS41_DRAFT_TRACE") == "1"
+
+
+def draft_blockers(s) -> tuple[str, ...]:
+    """Request-local reasons D3 cannot seed a draft ring from this prompt."""
+    from .dspark_head import WINDOW
+
+    return tuple(reason for blocked, reason in (
+        (not s.draft, "draft_disabled"),
+        (s.vision is not None, "image_input"),
+        (s.background, "background"),
+        (bool(s.owed), "replay"),
+        (s.token_limit is not None, "token_limit"),
+        (s.forced is not None, "forced_tokens"),
+        (s.constraint is not None, "grammar"),
+        (s.history is not None, "penalties"),
+        (s.probabilities is not None, "probabilities"),
+        (s.sampling is not None and not s.sampling.temperature <= 0, "sampling"),
+        (s.head is not None, "exact_cache_hit"),
+        (s.head is None and s.pos > max(0, len(s.prompt) - WINDOW), "short_uncached_tail"),
+    ) if blocked)
 
 
 class DS41Engine:
@@ -784,10 +805,10 @@ class DS41Engine:
         if tap_from is not None:
             from .dspark_head import WINDOW
 
-            if (self._draft_verify is None or len(entries) != 1 or len(ids) < 2
+            if (self._draft_verify is None or len(entries) != 1
                     or entries[0][2] != len(ids) or not 0 <= tap_from < len(ids)
                     or len(ids) - tap_from > WINDOW or flags & (F_IMAGE | F_SCORE | F_COMPACT | F_FULL | F_AHEAD)):
-                raise ValueError("DeepSeek DSpark taps require an ordinary multirow text prompt tail")
+                raise ValueError("DeepSeek DSpark taps require an ordinary text prompt tail")
         device = self.target.device
         pool = self.target.pool
         positions, token_req, qsl = [], [], [0]
@@ -799,7 +820,8 @@ class DS41Engine:
         retain_routed = bool(flags & F_W576_FP32)
         if retain_routed and (not self._experimental_w576_fp32 or flags & (F_SCORE | F_LAST | F_IMAGE)):
             raise ValueError("experimental W576 FP32 is only for continuation frames")
-        if (stop == 0 and not flags & F_IMAGE and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
+        if (tap_from is None and stop == 0 and not flags & F_IMAGE and self.graphs is not None
+                and len(entries) <= self.graphs.sizes[-1]
                 and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
             compact = bool(flags & F_COMPACT)
             return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL),
@@ -1500,7 +1522,8 @@ class Decoder(PrefixOwner):
         self.filling.append(s)
 
     def _admitted(self, s):
-        pass
+        if TRACE_DRAFT:
+            s.dspark_admission = draft_blockers(s)
 
     def cancel(self, gone) -> list:
         """Filling requests whose clients left end now (their slots retire in ``finish``)."""
@@ -1947,13 +1970,12 @@ class FixedDraftDecoder(Decoder):
         self._draft_round_ms = None
 
     def _admitted(self, s):
-        from .dspark_head import WINDOW
-        from .round_sampling import plain
-
         # A kept prefix has target state only. Every row of the last draft
         # window must be recomputed for this slot before the first proposal.
-        s.draft_seed = (s.draft and s.vision is None and not s.background and not s.owed and s.token_limit is None
-                        and plain(s) and s.head is None and s.pos <= max(0, len(s.prompt) - WINDOW))
+        blockers = draft_blockers(s)
+        s.draft_seed = not blockers
+        if TRACE_DRAFT:
+            s.dspark_admission = blockers
 
     def _text_chunk(self, s, start, stop, last, flags, **options):
         if s.draft_seed:
@@ -1961,11 +1983,7 @@ class FixedDraftDecoder(Decoder):
 
             first = max(start, len(s.prompt) - WINDOW)
             if first < stop:
-                if stop - start == 1:
-                    # Keep the ordinary graph for a one-row prompt tail.
-                    s.draft_seed = False
-                else:
-                    options["tap_from"] = first - start
+                options["tap_from"] = first - start
         return super()._text_chunk(s, start, stop, last, flags, **options)
 
     def _fixed_entries(self, live):
@@ -1990,6 +2008,8 @@ class FixedDraftDecoder(Decoder):
     def _launch(self, live, pending):
         for s in live:
             # Ordinary continuation does not populate the draft ring.
+            if TRACE_DRAFT and s.draft_seed:
+                s.dspark_fallback = "ordinary_decode"
             s.draft_seed = False
         super()._launch(live, pending)
 

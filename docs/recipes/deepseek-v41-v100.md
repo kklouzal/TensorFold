@@ -175,6 +175,13 @@ The `dspark.verify_rounds_by_active` counters count committed verification
 rounds by the number of active requests in the vector. Image requests use target-only decoding.
 When a mixed batch cannot use the draft verifier, it uses the ordinary decode path.
 
+Set `TENSORFOLD_DS41_DRAFT_TRACE=1` to include DSpark admission reasons in
+completed-request logs, including on a target-only deployment. The trace
+records eligibility labels without recording prompt or tool content.
+When a D3 stream falls back after admission the log also records ordinary
+decoding. A one-token prompt chunk can supply its draft tap through the eager
+forward instead of losing the draft seed.
+
 On eight V100s at 185 W, a controlled short-prompt run verified D3 work at
 one, two and three active requests and ordinary decode at four. Draft
 residency and graph captures reduced funded 1,048,576-token lanes from nine
