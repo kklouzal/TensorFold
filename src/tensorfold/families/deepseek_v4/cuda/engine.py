@@ -1984,13 +1984,14 @@ class FixedDraftDecoder(Decoder):
         super().__init__(engine)
         self.verify_rounds_by_active = [0] * (engine._draft_verify.bucket + 1)
         self._draft_round_ms = None
-        self._last_draft_sid = -1
+        self._draft_turn = 0
 
     def _admitted(self, s):
         # A kept prefix has target state only. Every row of the last draft
         # window must be recomputed for this slot before the first proposal.
         blockers = draft_blockers(s)
         s.draft_seed = not blockers
+        s.draft_turn = self._draft_turn
         if TRACE_DRAFT:
             s.dspark_admission = blockers
 
@@ -2033,12 +2034,13 @@ class FixedDraftDecoder(Decoder):
         bucket = self.e._draft_verify.bucket
         if len(ready) > bucket:
             # A turn verifies one captured vector. Waiting draft lanes retain
-            # their rings and get the next turn by stream admission order.
-            ready.sort(key=lambda pair: pair[0].sid)
-            first = next((i for i, (s, _) in enumerate(ready) if s.sid > self._last_draft_sid), 0)
-            ready = (ready[first:] + ready[:first])[:bucket]
+            # their rings and run before lanes served or admitted more recently.
+            ready.sort(key=lambda pair: (pair[0].draft_turn, pair[0].sid))
+            ready = ready[:bucket]
         if ready:
-            self._last_draft_sid = ready[-1][0].sid
+            self._draft_turn += 1
+            for stream, _ in ready:
+                stream.draft_turn = self._draft_turn
         return ready, ordinary, cancelled
 
     def _launch(self, live, pending):
