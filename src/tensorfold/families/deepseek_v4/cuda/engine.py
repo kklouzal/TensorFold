@@ -1325,7 +1325,8 @@ class DS41Engine:
 
         def stop():
             nonlocal stopped
-            if self._draft_verify is not None and self._draft_verify.pending is not None:
+            verifier = getattr(self, "_draft_verify", None)
+            if verifier is not None and verifier.pending is not None:
                 raise RuntimeError("cannot stop DeepSeek DSpark with an unsettled verification")
             self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
             stopped = True
