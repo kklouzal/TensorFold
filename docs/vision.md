@@ -98,7 +98,9 @@ tensorfold serve TensorFold/GLM-5.3-Flash-MLX-4bit-MTP --vision --vision-max-ima
 
 DeepSeek-V4.1 CUDA also accepts `--vision-max-images 0`. The visual-token budget
 then governs how many images fit alongside the existing upload, pixel and context
-limits.
+limits. With `--vision-image-tokens 0`, image positions, text and the reply share
+the full context window. Image preprocessing still applies the checkpoint's per-image
+geometry.
 
 The count includes **all images in the submitted message history**, including images from earlier turns
 and tool results, in tool messages or sent as user image parts. Reading images one at a time can therefore

@@ -394,6 +394,9 @@ messages and tool results. The model directory's `config.json` names the mmproj 
   applied before the plan. `--vision-max-images 0` removes the separate image-count cap across the submitted
   history (default 4). The images then share the `--vision-image-tokens` budget (default 4096); request byte,
   decoded-pixel and prompt-plus-reply context limits also apply.
+  Set `--vision-image-tokens 0` to share the full context among image positions, text and the reply.
+  This keeps the model's 1,024-token maximum per image. For large requests, the frontend retains decoded
+  pixels when they occupy fewer bytes than the padded patches and materializes that frame when it is encoded.
 - Tower. The mmproj ViT (32 x 1024) and 3 x 3 aligner split their projection outputs across eight ranks. Gathers
   assemble FP16 features in input order, each GEMM accumulates its full input dimension in FP32, and the residual,
   norms and RoPE stay FP32. The deployment keeps the mmproj and vision bias files stable during loading. The tower

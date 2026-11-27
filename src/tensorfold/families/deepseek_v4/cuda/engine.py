@@ -1710,7 +1710,7 @@ class Decoder(PrefixOwner):
             _, handle, done = s.encoding
             end = LAYERS
             if self.streams:
-                block = e.tower_block_ms * frame.patches.shape[0] / e.tower_patches
+                block = e.tower_block_ms * (frame.n_vit_h * frame.n_vit_w) / e.tower_patches
                 target = group_target(self.GAP_MS, self.rounds.estimate(self._bucket(len(self.streams))))
                 end = min(LAYERS, done + max(1, int(target // max(block, 1e-3))))
             e.tower_run(handle, end)

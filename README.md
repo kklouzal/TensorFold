@@ -454,7 +454,7 @@ sequence, and generation rejects prompts that exceed the served context.
 | `--api-key KEY`, `--api-key-file FILE` | Require bearer authentication; repeat static keys or load a restricted-permission key file. Configuration is bound at startup; key-file contents reload during operation and invalid configuration refuses authenticated routes. Both backends. |
 | `--metrics-open` | Permit unauthenticated `/metrics` and `/stats` when keys are configured. |
 | `--name-priority ID=background` | Give CUDA requests for that served model ID background priority by default. |
-| `--vision-image-tokens N` | Explicit CUDA Qwen visual-token budget, 1 through 65,536; frontend image/resource limits remain active. Flash Next retains its 16,384-token default. |
+| `--vision-image-tokens N` | Explicit CUDA visual-token budget where supported, 1 through 65,536. DeepSeek-V4.1 CUDA accepts `0` to share the context with text and reply tokens. Frontend image/resource limits remain active. Flash Next retains its 16,384-token default. |
 | `--name`, `--alias` | Model's own name; aliases are repeatable additional IDs on both backends. |
 | `--max-http-connections N` | Unset: uncapped workers. Positive cap includes active/idle keepalive connections; at capacity acceptance pauses and connections wait in the existing listen backlog. |
 | `--max-pending-requests N` | Unset: uncapped. Positive cap counts unfinished logical generation requests, including preparation, queued/running work and work retained after cancellation. Excess receives HTTP 503 before a configured stream opens. |
@@ -530,7 +530,7 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 | `--mlx-cache-gib N` | MLX, default 8 GiB reusable freed-buffer cache. |
 | `--vision` | Off. GLM on MLX, Qwen dense on MLX/CUDA, Flash Next CUDA with parallel ≥2, and supported Gemma4 CUDA checkpoints. E2B includes qualified image/video/audio input; [validation scope](docs/gemma4-e2b-validation.md). |
 | `--vision-urls` | Off; image data URLs only by default. Opt in to public HTTP(S) URLs; URL safety policy still applies. |
-| `--vision-max-images N` | Effective default 4 across the full history. DeepSeek-V4.1 CUDA accepts `0` to use the visual-token budget without a separate image-count cap. Byte and pixel limits still apply. |
+| `--vision-max-images N` | Effective default 4 across the full history. DeepSeek-V4.1 CUDA accepts `0` to use the token budget without a separate image-count cap. Byte and pixel limits still apply. |
 
 Image input requires the `vision` extra in a source installation. The API accepts text/image parts; the E2B CUDA integration adds timestamped video and user `input_audio` parts. The CUDA Harness reports capabilities supported by the loaded frontend, including audio input for E2B. See [vision contracts and qualification](docs/vision.md) and the [Harness/deployment guide](deploy/gb10/README.md). Enabling vision can add workspace and reduce the room available for experts or context.
 

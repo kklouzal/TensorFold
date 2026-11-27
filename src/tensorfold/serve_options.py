@@ -369,17 +369,17 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         family.package.rope_parameters(config_dir, args.yarn_factor)
     if getattr(args, "vision_urls", False) and not getattr(args, "vision", False):
         raise ValueError("--vision-urls needs --vision")
+    deepseek_vision = backend == "cuda" and getattr(family, "model_type", "") == "deepseek_v41"
     images = getattr(args, "vision_max_images", None)
     if images is not None:
-        token_bounded = backend == "cuda" and getattr(family, "model_type", "") == "deepseek_v41"
-        if type(images) is not int or images < (0 if token_bounded else 1):
+        if type(images) is not int or images < (0 if deepseek_vision else 1):
             raise ValueError("--vision-max-images must be a positive integer, or 0 for DeepSeek-V4.1 CUDA")
         if not getattr(args, "vision", False):
             raise ValueError("--vision-max-images needs --vision")
     tokens = getattr(args, "vision_image_tokens", None)
     if tokens is not None:
-        if not isinstance(tokens, int) or isinstance(tokens, bool) or not 1 <= tokens <= 65536:
-            raise ValueError("--vision-image-tokens is a number of tokens from 1 to 65,536")
+        if type(tokens) is not int or not (0 if deepseek_vision else 1) <= tokens <= 65536:
+            raise ValueError("--vision-image-tokens must be from 1 to 65,536, or 0 for DeepSeek-V4.1 CUDA")
         if not getattr(args, "vision", False):
             raise ValueError("--vision-image-tokens needs --vision")
         if backend != "cuda":

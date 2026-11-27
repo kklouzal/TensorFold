@@ -569,6 +569,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         record_limits = getattr(args, "_api_record_limits", None)
         vision_max_images = getattr(args, "vision_max_images", None)
         vision_image_tokens = getattr(args, "vision_image_tokens", None)
+        if vision_image_tokens == 0:
+            vision_image_tokens = engine.context_window
         if vision_max_images == 0:
             from tensorfold.vision.images import DEFAULT_LIMITS
 

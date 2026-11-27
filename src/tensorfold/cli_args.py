@@ -173,7 +173,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                                "count limit; byte and pixel limits still apply")
     endpoint.add_argument("--vision-image-tokens", type=int, default=None,
                           help="visual tokens a CUDA request's images share (default: 4096 where supported, "
-                               "at most 65536); the model sets its per-image maximum")
+                               "at most 65536); DeepSeek-V4.1 CUDA accepts 0 to share the full context with text. "
+                               "The model sets its per-image maximum")
 
     generation = serve.add_argument_group("model defaults and generation")
     generation.add_argument("--context", type=int, default=None,
