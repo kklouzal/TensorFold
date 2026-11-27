@@ -1675,7 +1675,7 @@ class App:
                 elif controls:
                     reasoning, answer, answer_positions[0] = family_calls.reply_parts(
                         raw, thinking=split_reasoning, finished=finished, controls=stream.control_offsets,
-                        normal_end=finished and normal_tool_end())
+                        normal_end=finished and normal_tool_end(), allow_calls=bool(tools))
                 elif split_reasoning:
                     reasoning, answer = split_thinking(raw, finished=finished, markers=markers)
                     if finished and tools and not gemma and not answer:

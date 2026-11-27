@@ -522,6 +522,52 @@ def test_ordinary_spelling_of_dsml_closer_cannot_complete_a_call(model_dir):
 
 
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("index", [1, 2, 3, 6])
+def test_dsml_inner_delimiters_require_generated_tokens(model_dir, stream, index):
+    from tensorfold.server.prompt_literals import RenderedPrompt
+    from tensorfold.server.prompt_origin import OriginText
+
+    app = app_for(model_dir, step=1)
+    marker = native.dsml_token
+    parts = BLOCK.split(marker)
+    prefix, suffix = marker.join(parts[:index + 1]), marker.join(parts[index + 1:])
+    literal = app.template.encode(app.tok, RenderedPrompt(OriginText(marker), app.template.literals.literals))
+    ids = [*app.tok.encode(prefix, add_special_tokens=False).ids, *literal,
+           *app.tok.encode(suffix, add_special_tokens=False).ids]
+    assert app.tok.decode(ids, skip_special_tokens=False) == BLOCK
+    marker_id = app.tok.token_to_id(marker)
+    assert marker_id not in literal and ids.count(marker_id) == BLOCK.count(marker) - 1
+    app.engine.reply = ids
+    seen = []
+    result = app.run({"messages": [{"role": "user", "content": "Show the tool notation."}], "tools": TOOLS,
+                      "max_tokens": 4096, "stream": stream}, True, lambda d: seen.append(d) or True)
+    assert (result["content"], result["calls"], result["finish"]) == (BLOCK, None, "stop")
+    assert not reassemble(seen)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_plain_inner_delimiter_spellings_remain_exact_argument_data(model_dir, stream):
+    from tensorfold.server.prompt_literals import RenderedPrompt
+    from tensorfold.server.prompt_origin import OriginText
+
+    value = "Literal </｜DSML｜ parameter> and <｜DSML｜ invoke> examples."
+    app = app_for(model_dir, step=1)
+    prefix, suffix = BLOCK.split('Paris "<b>"')
+    literal = app.template.encode(app.tok, RenderedPrompt(OriginText(value), app.template.literals.literals))
+    assert app.tok.token_to_id(native.dsml_token) not in literal
+    app.engine.reply = [*app.tok.encode(prefix, add_special_tokens=False).ids, *literal,
+                        *app.tok.encode(suffix, add_special_tokens=False).ids]
+    seen = []
+    result = app.run({"messages": [{"role": "user", "content": "Look up a literal."}], "tools": TOOLS,
+                      "max_tokens": 4096, "stream": stream}, True, lambda d: seen.append(d) or True)
+    expected = [("weather", {"city": value, "days": 3}), EXPECTED[1]]
+    assert result["finish"] == "tool_calls"
+    assert [(call["function"]["name"], json.loads(call["function"]["arguments"])) for call in result["calls"]] == expected
+    if stream:
+        assert reassemble(seen) == expected
+
+
+@pytest.mark.parametrize("stream", [False, True])
 def test_completed_fenced_example_with_real_token_ids_remains_text(model_dir, stream):
     example = "Example:\n```text\n\n" + BLOCK + "\n```"
     app = app_for(model_dir, example, step=1)
@@ -545,6 +591,20 @@ def test_prose_recovery_waits_for_normal_end(model_dir):
                      True, lambda d: deltas.append(d) or True)
     assert not result["calls"] and result["finish"] == "length"
     assert not reassemble(deltas)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_thinking_without_tools_does_not_recover_dsml_as_answer(model_dir, stream):
+    thought = 'An unmatched quote: ".\n\n' + BLOCK
+    app = app_for(model_dir, thought, step=1, default_thinking=True)
+    assert app.tok.token_to_id(native.dsml_token) in app.tok.encode(thought, add_special_tokens=False).ids
+    seen = []
+    result = app.run({"messages": [{"role": "user", "content": "Think about the example."}],
+                      "max_tokens": 4096, "stream": stream}, True, lambda d: seen.append(d) or True)
+    assert (result["reasoning"], result["content"], result["calls"]) == (thought, "", None)
+    assert not reassemble(seen)
+    if stream:
+        assert "".join(d.get("reasoning_content", "") for d in [*seen, result["final"]] if d) == thought
 
 def strict_tools():
     weather, files = TOOLS

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from bisect import bisect_left
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,10 @@ from .prompts_v41 import SOURCE, render_literals
 from .vendor import encoding_dsv41 as native
 
 OPENER, CLOSER = DSML41_CALLS
+_PARAMETER_END = f"/{native.dsml_token}{native.tool_parameter_tag_name}"
+_TAG_SUFFIXES = tuple(name + following
+                     for name in (native.tool_calls_block_name, native.tool_call_tag_name,
+                                  native.tool_parameter_tag_name) for following in (" ", ">"))
 EFFORTS = frozenset(("low", "medium", "high", "xhigh", "max"))   # names the encoder hears (prompts_v41.EFFORTS)
 _SOURCES = ("prompts_v41.py", "literal_prompts_v41.py", "vendor/encoding_dsv41.py",
             "serving_v41.py", "../../server/messages.py")
@@ -39,6 +44,36 @@ _DESCRIPTION = (f"{SOURCE}: thinking by enable_thinking (chat_template_kwargs.th
 
 def _no_constant(name: str) -> Any:
     raise ValueError(f"{name} is not a JSON value")
+
+
+class _GeneratedBlock(str):
+    """Let the native parser find only generated DSML delimiters.
+
+    Its delimiter reader searches this whole block and takes ordinary string
+    slices for values. A slice keeps the original, unmodified argument bytes.
+    """
+
+    def __new__(cls, text, offsets):
+        block = super().__new__(cls, text)
+        block.offsets = frozenset(offsets)
+        block.tags = sorted(offset for offset in block.offsets
+                            if (text[offset - 1:offset] == "<" or text[offset - 2:offset] == "</")
+                            and text.startswith(_TAG_SUFFIXES, offset + len(native.dsml_token)))
+        return block
+
+    def find(self, value, start=0, end=None):
+        marker = value.find(native.dsml_token)
+        while (at := super().find(value, start, end)) >= 0:
+            if marker < 0 or at + marker in self.offsets:
+                if value == _PARAMETER_END:
+                    # Skipping a literal closer cannot swallow the next
+                    # generated parameter/invoke as part of the raw value.
+                    first = bisect_left(self.tags, start)
+                    if first < len(self.tags) and self.tags[first] < at + marker:
+                        raise ValueError("a generated DSML tag preceded the parameter closer")
+                return at
+            start = at + 1
+        return -1
 
 
 def decode_block(block: str) -> list[tuple[str, dict[str, Any]]] | None:
@@ -152,6 +187,14 @@ def _blocks(text: str, finished: bool, positions=None):
                 if region.kind == "call" and region.opener == OPENER)
 
 
+def _decode_region(text, region, positions):
+    block = text[region.start:region.end]
+    if positions is not None:
+        block = _GeneratedBlock(block, (offset - region.start for offset in positions
+                                        if region.start <= offset < region.end))
+    return decode_block(block)
+
+
 def parse(text: str, tools: list[dict[str, Any]], *, max_calls: int | None = None,
           finished: bool = True, positions=None) -> tuple[str, list[dict[str, Any]] | None]:
     """(content, OpenAI calls or None) of a finished reply's answer, as ``server.tools.parse_tool_calls_from_content``
@@ -170,7 +213,7 @@ def parse(text: str, tools: list[dict[str, Any]], *, max_calls: int | None = Non
         cursor = region.end
         if max_calls is not None and len(calls) >= max_calls:
             continue
-        found = decode_block(text[region.start:region.end])
+        found = _decode_region(text, region, positions)
         if not found or any(name.lower() not in known for name, _ in found):
             if max_calls is None:           # a malformed or unoffered block is the reply's content
                 residue.append(text[region.start:region.end])
@@ -199,13 +242,13 @@ def hide(text: str, *, finished: bool, positions=None) -> str:
     return "".join((*parts, tail))
 
 
-def reply_parts(text, *, thinking, finished, controls, normal_end=False):
+def reply_parts(text, *, thinking, finished, controls, normal_end=False, allow_calls=True):
     """Split generated control tokens and return DSML offsets in the answer."""
     from tensorfold.server.text import _partial_tag
 
     start = 0
     reasoning = ""
-    dsml = controls[native.dsml_token]
+    dsml = controls[native.dsml_token] if allow_calls else ()
     if thinking:
         close = next((p for p in controls[native.thinking_end_token]
                       if text.startswith(native.thinking_end_token, p)), None)
@@ -215,7 +258,7 @@ def reply_parts(text, *, thinking, finished, controls, normal_end=False):
         else:
             frame = next(_blocks(text, normal_end, dsml), None)
             if frame is None or (finished and not frame.complete):
-                held = 0 if finished else _partial_tag(text, OPENER)
+                held = _partial_tag(text, OPENER) if allow_calls and not finished else 0
                 return text[:len(text) - held], "", ()
             if not finished:
                 return text[:frame.start], "", ()
@@ -251,7 +294,7 @@ class CallStreamer:
             if not region.complete:
                 break
             self.pos = region.end
-            found = decode_block(text[region.start:region.end])
+            found = _decode_region(text, region, positions)
             if not found or any(name.lower() not in self.known for name, _ in found):
                 continue
             for name, arguments in found:

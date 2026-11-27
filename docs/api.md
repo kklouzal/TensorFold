@@ -313,9 +313,11 @@ function name. Existing qualified names such as `files::read` still round
 trip as qualified names. For unconstrained replies, the actual generated
 thinking and DSML control tokens establish framing, including after prose
 with an unmatched quote or fence. Ordinary token sequences that spell the
-same delimiters stay text. A call obscured by a prose quote or fence is read
+same delimiters stay text, including inside tool arguments. Both the outer
+call block and the inner invoke and parameter delimiters require generated
+control tokens. A call obscured by a prose quote or fence is read
 only when the model ends the reply normally with that block. A closed
-example stays text.
+example stays text. Tool-call recovery requires an offered tool.
 
 New function-tool definitions require a string name containing a non-whitespace
 character. Invalid definitions are rejected before rendering or generation on
