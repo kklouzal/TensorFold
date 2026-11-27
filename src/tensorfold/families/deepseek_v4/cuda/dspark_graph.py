@@ -183,9 +183,23 @@ class SpecShape:
         self.engine.comm.all_gather(packet, self.compact)
         return VerifyOutput(self.compact, drafts, logits)
 
-    def _commit_staged(self) -> None:
+    def _commit_staged(self, *, scratch_only=False) -> None:
         self.commit_slots.copy_(self._staged[4])
-        self.spec.commit(self.commit_slots, self._staged[3])
+        if scratch_only:
+            self.spec.commit(self.commit_slots, self._staged[3])
+        else:
+            self.commit_checked(self.commit_slots, self._staged[3])
+
+    def commit_checked(self, slots: torch.Tensor, counts: torch.Tensor) -> None:
+        """Fence this rank before writes and before its commit may be acknowledged."""
+        status = (self.target.hash_state.err, *(state.err for state in self.target.c2.values()))
+        before = torch.cat(status).tolist()
+        if any(before):
+            raise RuntimeError(f"DeepSeek DSpark refused a poisoned verification state: {before}")
+        self.spec.commit(slots, counts)
+        after = torch.cat(status).tolist()
+        if any(after):
+            raise RuntimeError(f"DeepSeek DSpark commit failed: {after}")
 
     def run(self, entries) -> VerifyOutput:
         """Commit the staged owners once, then enqueue this shape on the current stream."""
@@ -207,7 +221,7 @@ class SpecShape:
             # Use the live commit buffers, with every slot masked to scratch.
             # Prepare this separately so the first accepted block cannot JIT
             # compile a restore, and no commit is added to graph replay.
-            self._commit_staged()
+            self._commit_staged(scratch_only=True)
             self._body()
         torch.cuda.current_stream().wait_stream(stream)
         stream.synchronize()
@@ -264,9 +278,5 @@ class FixedVerifyOwner:
         self._host_counts[:n] = counts
         self._slots.copy_(torch.from_numpy(self._host_slots), non_blocking=True)
         self._counts.copy_(torch.from_numpy(self._host_counts), non_blocking=True)
-        target = self.shape.target
-        self.shape.spec.commit(self._slots, self._counts)
-        torch._assert_async(target.hash_state.err == 0, "invalid DSpark Engram verify state")
-        for state in target.c2.values():
-            torch._assert_async(state.err == 0, "invalid DSpark compressor verify state")
+        self.shape.commit_checked(self._slots, self._counts)
         self.pending = None

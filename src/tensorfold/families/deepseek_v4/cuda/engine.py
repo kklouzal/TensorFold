@@ -44,6 +44,7 @@ F_W576_FP32 = 1 << 28      # experimental continuation math, independent of outp
 # The TP8 vision tower's operations (``OP_TOWER``, kind in a; every rank runs its shard, ``DS41Engine._tower``)
 OP_TOWER = 32
 OP_EXPERT_PLACEMENT = 33
+OP_DRAFT_VERIFY_BATCH, OP_DRAFT_COMMIT_BATCH = 35, 36
 _EXPERT_EPOCH = struct.Struct("<q")
 T_BEGIN, T_RUN, T_SPAN, T_STAGE, T_FREE = range(5)
 SCORE_TOP = 20
@@ -252,6 +253,7 @@ class DS41Engine:
             )
         self.expert_observer = None
         self.expert_live = None
+        self._draft_verify = None
         if expert_balance_state is not None:
             key = "deepseek-v41/expert-history-startup-v1"
             if rank == 0:
@@ -811,6 +813,9 @@ class DS41Engine:
         return target.tolist(), (top - glse[:, None]).tolist(), index.gather(1, order).long().tolist()
 
     def _run(self, op, a, b, c, d, ids):
+        verifier = getattr(self, "_draft_verify", None)
+        if verifier is not None and verifier.pending is not None and op != OP_DRAFT_COMMIT_BATCH:
+            raise RuntimeError("DeepSeek DSpark must settle its pending vector before another control operation")
         if op == OP_ATTACH:
             return self._attach(a, b)
         if op == OP_DETACH:
@@ -830,6 +835,8 @@ class DS41Engine:
             if self.rank != 0:
                 self.pipes.acknowledge(receipt)
             return receipt
+        if op in (OP_DRAFT_VERIFY_BATCH, OP_DRAFT_COMMIT_BATCH):
+            return self._run_draft_vector(op, a, b, c, d, ids)
         if op in PREFIX_OPS:
             out = self.prefix.run(op, a, b, c, d, ids)
             if op == OP_GROW:                   # the slot gained pages: the graphs' device page table follows
@@ -837,7 +844,56 @@ class DS41Engine:
             return out
         raise RuntimeError(f"unknown DeepSeek-V4.1 control operation {op}")
 
+    def _check_draft_vector(self, op, sequence, count, c, d, ids):
+        verifier = getattr(self, "_draft_verify", None)
+        width = 3 if op == OP_DRAFT_VERIFY_BATCH else 2
+        if (verifier is None or not 1 <= count <= verifier.shape.bucket or sequence < 0
+                or c or d or len(ids) != count * width):
+            raise ValueError("invalid DeepSeek DSpark control frame")
+        if op == OP_DRAFT_VERIFY_BATCH and self.part is not None:
+            raise RuntimeError("DeepSeek DSpark verification requires a completed prefill")
+        return verifier, width
+
+    def _run_draft_vector(self, op, sequence, count, c, d, ids):
+        from .dspark_graph import VerifyEntry
+
+        verifier, width = self._check_draft_vector(op, sequence, count, c, d, ids)
+        rows = tuple(tuple(ids[i:i + width]) for i in range(0, len(ids), width))
+        if op == OP_DRAFT_VERIFY_BATCH:
+            return verifier.verify_batch(sequence, tuple(VerifyEntry(*row) for row in rows))
+        verifier.commit_batch(sequence, rows)
+        # commit_batch fences the local device and checks sticky errors first.
+        if self.rank != 0:
+            self.pipes.acknowledge(_HEAD.pack(op, sequence, count, c, d) + array.array("i", ids).tobytes())
+        return None
+
     def announce(self, op, a=0, b=0, c=0, d=0, ids=()):
+        verifier = getattr(self, "_draft_verify", None)
+        if verifier is not None and verifier.pending is not None and op != OP_DRAFT_COMMIT_BATCH:
+            raise RuntimeError("DeepSeek DSpark must settle its pending vector before another control operation")
+        if op in (OP_DRAFT_VERIFY_BATCH, OP_DRAFT_COMMIT_BATCH):
+            payload = array.array("i", ids)
+            self._check_draft_vector(op, a, b, c, d, payload)
+            frame = _HEAD.pack(op, a, b, c, d) + payload.tobytes()
+            try:
+                self.pipes.send(frame)
+                result = self._run(op, a, b, c, d, payload)
+                if op == OP_DRAFT_COMMIT_BATCH:
+                    # Publication is permitted only after all seven followers
+                    # echo the exact sequence and ordered slot/count payload.
+                    if self.pipes.acknowledgments() != [frame] * (self.world - 1):
+                        raise RuntimeError("invalid DeepSeek DSpark commit acknowledgment")
+                return result
+            except BaseException as primary:
+                from tensorfold.cuda.cohort import notify_failure
+                from tensorfold.cleanup import raise_failures
+
+                self.pipes.broken = True
+                try:
+                    notify_failure()
+                except BaseException as cleanup:
+                    raise_failures(primary, [cleanup])
+                raise
         self.pipes.send(_HEAD.pack(op, a, b, c, d) + array.array("i", ids).tobytes())
         return self._run(op, a, b, c, d, list(ids))
 
@@ -856,16 +912,23 @@ class DS41Engine:
                             pending = not torch.cuda.current_stream().query()
                         continue
                     if frame is None:
+                        verifier = getattr(self, "_draft_verify", None)
+                        if verifier is not None and verifier.pending is not None:
+                            raise RuntimeError("DeepSeek DSpark control peer departed with an unsettled vector")
                         return
                     op, a, b, c, d = _HEAD.unpack_from(frame)
                     if op == OP_STOP:
+                        verifier = getattr(self, "_draft_verify", None)
+                        if verifier is not None and verifier.pending is not None:
+                            raise RuntimeError("DeepSeek DSpark stopped with an unsettled verification vector")
                         return
                     payload = array.array("i")
                     payload.frombytes(frame[_HEAD.size:])
                     self._run(op, a, b, c, d, list(payload))
-                    pending = watch
+                    verifier = getattr(self, "_draft_verify", None)
+                    pending = watch or (verifier is not None and verifier.pending is not None)
         except BaseException as primary:
-            if watch or getattr(self, "expert_live", None) is not None:
+            if watch or getattr(self, "expert_live", None) is not None or getattr(self, "_draft_verify", None) is not None:
                 from tensorfold.cuda.cohort import notify_failure
                 from tensorfold.cleanup import raise_failures
 

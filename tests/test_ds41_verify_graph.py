@@ -24,7 +24,7 @@ def owners(device):
         units = 80
         index_context = context
         g = SimpleNamespace(hidden=2, head_dim=512)
-        hash_state = SimpleNamespace(max_tokens=16, err=torch.zeros((), dtype=torch.int32, device=device))
+        hash_state = SimpleNamespace(max_tokens=16, err=torch.zeros(1, dtype=torch.int32, device=device))
         c2 = {}
         pool = SimpleNamespace(owned=owned)
         w = SimpleNamespace(head=object())
@@ -334,3 +334,116 @@ def test_invalid_native_commit_does_not_read_an_unowned_candidate():
     _mu_commit_c2_accepted[(2,)](partial, positions, vectors, offsets, lengths, slots, counts, errors,
                                   S=2, J=candidates, D=width, BLOCK=width)
     assert (partial == 17).all() and (positions == 17).all() and errors.item() == ERR_CONTINUE
+
+
+@pytest.mark.parametrize("sticky_owner", ("engram", "compressor"))
+def test_verify_refuses_poisoned_rank_before_commit_writes(sticky_owner):
+    engine, head, spec, events = owners(torch.device("cpu"))
+    engine.target.c2[0] = SimpleNamespace(err=torch.zeros(1, dtype=torch.int32))
+    shape = SpecShape(engine, head, spec, 3, 3, engine.context)
+    owner = FixedVerifyOwner(shape)
+    owner.verify_batch(0, (VerifyEntry(0, 3, 11),))
+    events.clear()
+    error = engine.target.hash_state.err if sticky_owner == "engram" else engine.target.c2[0].err
+    error.fill_(4)
+
+    with pytest.raises(RuntimeError, match="poisoned verification state"):
+        owner.commit_batch(0, ((0, 0),))
+    assert owner.pending == (0, (0,)) and events == []
+    with pytest.raises(RuntimeError, match="poisoned verification state"):
+        shape.run([VerifyEntry(0, 3, 11, VerifyCommit(0, 4, 3))])
+    assert events == []
+
+
+def test_verify_commit_does_not_release_local_pending_on_post_commit_failure(monkeypatch):
+    engine, head, spec, events = owners(torch.device("cpu"))
+    owner = FixedVerifyOwner(SpecShape(engine, head, spec, 3, 3, engine.context))
+    owner.verify_batch(0, (VerifyEntry(0, 3, 11),))
+
+    def fail(*args):
+        engine.target.hash_state.err.fill_(4)
+
+    monkeypatch.setattr(spec, "commit", fail)
+    with pytest.raises(RuntimeError, match="DSpark commit failed"):
+        owner.commit_batch(0, ((0, 0),))
+    assert owner.pending == (0, (0,))
+
+
+@pytest.mark.parametrize("broken_ack", (False, True))
+def test_engine_waits_for_exact_followers_before_completing_vector_commit(monkeypatch, broken_ack):
+    import array
+
+    from tensorfold.cuda import cohort
+    from tensorfold.families.deepseek_v4.cuda.engine import (
+        _HEAD, DS41Engine, OP_ATTACH, OP_DRAFT_COMMIT_BATCH, OP_DRAFT_VERIFY_BATCH,
+    )
+
+    notices, echoes, commits = [], [], []
+    monkeypatch.setattr(cohort, "notify_failure", lambda: notices.append(True))
+    peers = []
+
+    def ack(payload):
+        echoes.append(payload)
+
+    class Verifier:
+        shape = SimpleNamespace(bucket=3)
+        pending = None
+
+        def __init__(self, rank):
+            self.rank = rank
+
+        def verify_batch(self, sequence, entries):
+            self.pending = sequence, tuple(entry.slot for entry in entries)
+            return self.pending
+
+        def commit_batch(self, sequence, rows):
+            assert self.pending == (sequence, tuple(slot for slot, _ in rows))
+            commits.append((self.rank, sequence, rows))
+            self.pending = None
+
+    def run_followers(frame):
+        payload = array.array("i")
+        payload.frombytes(frame[_HEAD.size:])
+        header = _HEAD.unpack_from(frame)
+        for peer in peers[1:]:
+            peer._run(*header, payload)
+
+    def join():
+        assert {row[0] for row in commits} == set(range(8))
+        assert all(frame == echoes[0] for frame in echoes)
+        return echoes[:-1] if broken_ack else echoes
+
+    for rank in range(8):
+        owner = DS41Engine.__new__(DS41Engine)
+        owner.rank, owner.world, owner.part = rank, 8, None
+        owner._draft_verify = Verifier(rank)
+        owner.pipes = SimpleNamespace(send=run_followers, acknowledge=ack, acknowledgments=join, broken=False)
+        peers.append(owner)
+    leader = peers[0]
+    assert leader.announce(OP_DRAFT_VERIFY_BATCH, 2, 2, ids=iter((0, 39, 4, 2, 18, 8))) == (2, (0, 2))
+    with pytest.raises(RuntimeError, match="pending vector"):
+        leader.announce(OP_ATTACH, 4)
+    if broken_ack:
+        with pytest.raises(RuntimeError, match="acknowledgment"):
+            leader.announce(OP_DRAFT_COMMIT_BATCH, 2, 2, ids=iter((0, 0, 2, 3)))
+        assert leader.pipes.broken and notices == [True]
+    else:
+        leader.announce(OP_DRAFT_COMMIT_BATCH, 2, 2, ids=iter((0, 0, 2, 3)))
+        assert not leader.pipes.broken and notices == []
+    assert all(row[2] == ((0, 0), (2, 3)) for row in commits)
+
+
+def test_engine_ordinary_announce_keeps_its_existing_wire(monkeypatch):
+    import array
+
+    from tensorfold.families.deepseek_v4.cuda.engine import _HEAD, DS41Engine, OP_ATTACH, OP_DRAFT_VERIFY_BATCH
+
+    engine = DS41Engine.__new__(DS41Engine)
+    sent = []
+    engine.pipes = SimpleNamespace(send=sent.append)
+    monkeypatch.setattr(engine, "_attach", lambda slot, tokens: (slot, tokens))
+    assert engine.announce(OP_ATTACH, 2, 64) == (2, 64)
+    assert sent == [_HEAD.pack(OP_ATTACH, 2, 64, 0, 0) + array.array("i").tobytes()]
+    with pytest.raises(ValueError, match="control frame"):
+        engine.announce(OP_DRAFT_VERIFY_BATCH, 0, 1, ids=(0, 1, 2))
+    assert len(sent) == 1
