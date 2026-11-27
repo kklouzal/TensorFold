@@ -140,9 +140,17 @@ def test_rope_table_matches_reviewed_official_function(compressed):
         1,
     )
     expected = torch.cat((reference.real, reference.imag), dim=-1)
-    torch.testing.assert_close(
-        rope_table(compressed=compressed, device="cpu"), expected, rtol=0, atol=0
-    )
+    # The V100 kernel appends a frequency row for positions beyond the table.
+    table = rope_table(max_length=expected.size(0), compressed=compressed, device="cpu")
+    assert table.shape == (expected.size(0) + 1, expected.size(1))
+    torch.testing.assert_close(table[:-1], expected, rtol=0, atol=0)
+    assert torch.count_nonzero(table[-1, 32:]) == 0
+    angles = table[-1, :32] * expected.size(0)
+    unit = torch.polar(torch.ones_like(angles), angles)
+    first_extended = scope["precompute_freqs_cis"](
+        64, expected.size(0) + 1, 65536 if compressed else 0, 160000 if compressed else 10000, 16, 32, 1
+    )[-1]
+    torch.testing.assert_close(unit, first_extended, rtol=0, atol=0)
 
 
 def test_yarn_factor_two_changes_compressed_low_frequencies_only():
