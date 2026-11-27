@@ -198,6 +198,8 @@ class V41ChatTemplate:
     # The native encoder drops older reasoning on plain requests and keeps it
     # when tools are advertised. Clients may discover before they add tools.
     reasoning_replay_routes = (False, True)
+    # The 1017 card recommends temperature 1.0 for minimal inference.
+    default_temperature = 1.0
     segment_opener = native.USER_SP_TOKEN
 
     @staticmethod

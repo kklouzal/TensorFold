@@ -25,6 +25,17 @@ python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backe
 This launch serves exact chat counting, the active renderer's capabilities, and telemetry through
 the standard [CUDA API](../api.md). Select the **TensorFold** provider in Harness.
 
+Absent request, launch or checkpoint overrides, this lane uses temperature 1.0
+and top-p 1.0 with or without tools. [1017 model card](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/blob/08c8657f02291e11b6f6b63e0e16014f8e748518/README.md)
+
+Set `temperature: 1.0` and `top_p: 0.95` explicitly, or launch with
+`--temperature 1.0 --top-p 0.95`, to use the reported coding-agent settings. [V4.1 technical report](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf)
+
+A shared runtime image can set `TENSORFOLD_DS41_EXPERIMENT_W576_FP32` or
+`TENSORFOLD_DS41_EXPERIMENT_SP_FP32` for the compact 128K RotorQuant profile
+and still launch the native FP8-window/FP4-compressed cache. Those settings
+apply only on RotorQuant, where the existing compact profile checks still run.
+
 Add `--expert-tensor-parallel-size 1` to choose ETP1 × EP8 at startup.
 Each GPU then holds 48 whole routed experts. Use `--expert-tensor-parallel-size 2`
 to choose ETP2 × EP4, with 96 routed experts per GPU sharded across each pair.

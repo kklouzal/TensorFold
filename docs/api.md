@@ -182,7 +182,10 @@ the request samples: booleans, non-finite numbers, non-numeric strings, non-inte
 `top_k` at zero or below disables top-k filtering, and null sampling fields retain server defaults. `top_p` 1
 disables the nucleus cut; `top_p` 0 keeps only the likeliest token, as Transformers' top-p filter always keeps one,
 so the reply is greedy. Fields that the request, the server flags and `generation_config.json` all leave unset
-fall back alike on both backends: temperature 0 (greedy), and top-k, top-p and min-p off.
+usually fall back to temperature 0 (greedy), with top-k, top-p and min-p off.
+Native CUDA DeepSeek-V4.1 defaults to temperature 1.0 and top-p 1.0 for both
+plain and tool requests. Request values, launch flags and checkpoint defaults
+take precedence for each field.
 The omitted reply limit uses the launch `--max-tokens`, then checkpoint
 `max_new_tokens`, then 4096. Reply EOS defaults also include the tokenizer's
 declared EOS; repeatable launch `--eos-token-id` replaces that set before engine

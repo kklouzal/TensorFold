@@ -45,6 +45,7 @@ def test_default_constructor_keeps_original_initialization(monkeypatch):
     ("TENSORFOLD_DS41_EXPERIMENT_SP_FP32", "sp_fp32"),
 ])
 def test_experimental_constructor_owns_startup_without_balance_state(monkeypatch, variable, flag):
+    from tensorfold.families.deepseek_v4 import ROTOR_KV_DTYPE
     from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine
     from tensorfold.families.deepseek_v4.cuda.startup import ExpertStartup
 
@@ -56,7 +57,30 @@ def test_experimental_constructor_owns_startup_without_balance_state(monkeypatch
         assert not arguments["expert_balance_live"]
 
     monkeypatch.setattr(DS41Engine, "_initialize", initialize)
-    DS41Engine("model", rank=0, tp=8, serve=(flag == "w576_fp32"), no_expert_balance=True)
+    DS41Engine("model", rank=0, tp=8, serve=(flag == "w576_fp32"),
+               no_expert_balance=True, kv_dtype=ROTOR_KV_DTYPE)
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_native_codec_skips_rotorquant_experiments_without_changing_live_balance(monkeypatch, live):
+    from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine
+    from tensorfold.families.deepseek_v4.cuda.startup import ExpertStartup
+
+    monkeypatch.setenv("TENSORFOLD_DS41_EXPERIMENT_SP_FP32", "1")
+    monkeypatch.setenv("TENSORFOLD_DS41_EXPERIMENT_W576_FP32", "1")
+    observed = []
+
+    def initialize(engine, model, *, startup, **options):
+        observed.append(options["kv_dtype"])
+        assert not options["sp_fp32"] and not options["w576_fp32"]
+        assert options["expert_balance_live"] is live
+        assert options["expert_balance_state"] == ("history.json" if live else None)
+        assert isinstance(startup, ExpertStartup) if live else startup is None
+
+    monkeypatch.setattr(DS41Engine, "_initialize", initialize)
+    DS41Engine("model", rank=0, tp=8, serve=True, kv_dtype="bf16", no_expert_balance=not live,
+               expert_balance_state="history.json" if live else None)
+    assert observed == ["bf16"]
 
 
 def test_wrong_agreed_host_tier_refused_before_pin_can_start(monkeypatch):

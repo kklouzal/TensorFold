@@ -621,8 +621,9 @@ class App:
         if fixed is not None:
             self.default_thinking = fixed
         self.reasoning_effort, self.thinking_budget = reasoning_effort, int(thinking_budget)   # the Mac's defaults
-        # what generation_config.json and the flags leave unset falls back as on the Mac (README): greedy, filters off
-        self.sampling = {"temperature": 0.0, "top_k": 0, "top_p": 1.0, **(sampling or {})}
+        # Checkpoint and launch defaults arrive together from the CLI.
+        self.sampling = {"temperature": getattr(self.template, "default_temperature", 0.0),
+                         "top_k": 0, "top_p": 1.0, **(sampling or {})}
         unapplied = unapplied_penalties(engine, self.sampling)
         if unapplied:
             print(f"[tensorfold] this engine does not apply penalties; not applying defaults {unapplied}",

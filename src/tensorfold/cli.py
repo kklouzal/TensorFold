@@ -589,10 +589,12 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         )
         owners["app"] = app
         _configure_api_records(args, app, owners)
+        model_sampling = getattr(app.template, "default_temperature", None) is not None
+        displayed = app.sampling if model_sampling else sampling
         shown = (
             "greedy"
-            if float(sampling.get("temperature", 1.0)) <= 0
-            else ", ".join(f"{k} {v}" for k, v in sampling.items())
+            if float(displayed.get("temperature", 1.0)) <= 0 or (model_sampling and displayed["top_p"] == 0)
+            else ", ".join(f"{k} {v}" for k, v in displayed.items())
         )
         effective_context = app.effective_context_window
         _show_model_bindings(engine.eos, app.template.provenance(), reply_tokens)

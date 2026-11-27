@@ -81,9 +81,14 @@ class DS41Engine:
                  expert_balance_sample_every: int = 64, expert_balance_half_life: int = 262_144,
                  no_expert_balance: bool = False,
                  **_options) -> None:
+        from .. import ROTOR_KV_DTYPE
+
         expert_balance_live = serve and not no_expert_balance
-        w576_fp32 = os.environ.get("TENSORFOLD_DS41_EXPERIMENT_W576_FP32") == "1"
-        sp_fp32 = os.environ.get("TENSORFOLD_DS41_EXPERIMENT_SP_FP32") == "1"
+        # The container may also serve the native codec. Its execution must
+        # skip the experiments scoped to the compact RotorQuant profile.
+        rotorquant = kv_dtype == ROTOR_KV_DTYPE
+        w576_fp32 = rotorquant and os.environ.get("TENSORFOLD_DS41_EXPERIMENT_W576_FP32") == "1"
+        sp_fp32 = rotorquant and os.environ.get("TENSORFOLD_DS41_EXPERIMENT_SP_FP32") == "1"
         if no_expert_balance and (expert_placement is not None or expert_balance_state is not None):
             raise ValueError("disabled expert balancing cannot accept a placement or history file")
         if not expert_balance_live and expert_balance_state is not None:

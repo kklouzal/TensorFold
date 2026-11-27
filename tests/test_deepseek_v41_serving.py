@@ -208,6 +208,54 @@ def test_native_cuda_tokenize_exposes_exact_count_and_deepseek_render_metadata(m
     assert not app.engine.prompts
 
 
+def test_v41_sampling_defaults_apply_to_plain_tools_and_raw_requests(model_dir):
+    from tensorfold.engine.exact_sampling import Sampling
+
+    app = app_for(model_dir)
+    body = {"messages": [{"role": "user", "content": "Paris weather?"}], "seed": 7}
+    for fields in ({}, {"tools": []}, {"tools": TOOLS}, {"tools": TOOLS, "tool_choice": "none"},
+                   {"tools": TOOLS, "temperature": None, "top_p": None}):
+        prepared = app.prepare_for_count({**body, **fields}, True)
+        try:
+            assert prepared.sampling == Sampling(7, 1.0, 0, 1.0)
+        finally:
+            prepared.close()
+    prepared = app.prepare_for_count({"prompt": "Paris weather?", "seed": 7}, False)
+    try:
+        assert prepared.sampling == Sampling(7, 1.0, 0, 1.0)
+    finally:
+        prepared.close()
+
+
+def test_v41_sampling_preserves_checkpoint_launch_and_request_priority(model_dir):
+    from tensorfold.cli import _sampling_defaults, build_parser
+    from tensorfold.engine.exact_sampling import Sampling
+
+    body = {"messages": [{"role": "user", "content": "Paris weather?"}], "tools": TOOLS, "seed": 7}
+
+    def configured(config, *flags):
+        (model_dir / "generation_config.json").write_text(json.dumps(config))
+        args = build_parser().parse_args(["serve", str(model_dir), *flags])
+        return app_for(model_dir, sampling=_sampling_defaults(args, model_dir))
+
+    def sampling(app, **overrides):
+        prepared = app.prepare_for_count({**body, **overrides}, True)
+        try:
+            return prepared.sampling
+        finally:
+            prepared.close()
+
+    assert sampling(configured({"temperature": 0.7})) == Sampling(7, 0.7, 0, 1.0)
+    assert sampling(configured({"top_p": 0.82})) == Sampling(7, 1.0, 0, 0.82)
+    assert sampling(configured({"do_sample": False, "temperature": 1.0, "top_p": 0.82})) is None
+    launch = configured({"do_sample": False, "top_p": 0.82, "top_k": 17},
+                        "--temperature", "0.6", "--top-p", "0.89")
+    assert sampling(launch) == Sampling(7, 0.6, 17, 0.89)
+    assert sampling(launch, temperature=0.3, top_p=1.0, top_k=0) == Sampling(7, 0.3, 0, 1.0)
+    assert sampling(launch, temperature=0) is None
+    assert sampling(launch, top_p=0) is None
+
+
 def test_v41_replay_metadata_retains_both_routes_without_changing_official_prompts(model_dir):
     app = app_for(model_dir, default_thinking=True)
     older, current = "reasoning from the first turn", "reasoning for the current tool call"
