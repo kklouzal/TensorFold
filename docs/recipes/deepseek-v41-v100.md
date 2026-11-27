@@ -182,6 +182,13 @@ When a D3 stream falls back after admission the log also records ordinary
 decoding. A one-token prompt chunk can supply its draft tap through the eager
 forward instead of losing the draft seed.
 
+On the eight-V100 native-context profile at source `9a23665e`, the
+8,193-token singleton-tail reproducer accepted 36 proposals and matched all
+48 target-only output tokens. The exact-cache repeat drafted zero. A cold
+189,326-token greedy request with thinking and an ordinary tool declaration
+accepted 32 of 48 proposals. This exercises those paths, with no claim of
+production throughput or general output equivalence.
+
 On eight V100s at 185 W, a controlled short-prompt run verified D3 work at
 one, two and three active requests and ordinary decode at four. Draft
 residency and graph captures reduced funded 1,048,576-token lanes from nine
