@@ -161,6 +161,17 @@ Long prefill bounds the per-head index score allocation by splitting the key
 range. The combined score plane still covers the whole range so hierarchical
 candidate selection and Top-K ordering use the same inputs.
 
+### Experimental DSpark D3 at native context
+
+On the full-window RotorQuant Q4 text profile at TP8/ETP4, replace `--no-drafts`
+with `--draft-method dspark --drafter /models/ds41-dspark-1017 --mtp-drafts 3`.
+Use the local 1017 FT bundle with its `official` and `ft` directories. Keep
+`--temperature 0` if you want omitted-temperature requests to be eligible for
+drafting. The experimental path targets one to three eligible greedy decode
+streams. Check the funded lane count and configured depth in `/v1/stats`.
+Draft residency and graph captures consume VRAM. Native 1M validation and
+paired quality and throughput measurements are pending for this mode.
+
 ### Experimental decode graph memory allowance
 
 The integrated candidate reserves 1,536 MiB per GPU for the exact ordered

@@ -195,6 +195,19 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         raise ValueError("--draft-method must be auto, none, mtp, dspark or dflash2")
     if method != "auto" and (backend != "cuda" or method not in getattr(family.package, "CUDA_DRAFT_METHODS", ())):
         raise ValueError("--draft-method requires a CUDA model with the selected proposal method")
+    if method == "dspark" and getattr(family, "model_type", "") == "deepseek_v41":
+        from tensorfold.families.deepseek_v4 import DS41_CUDA_DSPARK_DEPTH, ROTOR_KV_DTYPE
+
+        if getattr(args, "no_drafts", False) or getattr(args, "mtp_drafts", None) not in (None, DS41_CUDA_DSPARK_DEPTH):
+            raise ValueError("DeepSeek-V4.1 CUDA DSpark supports depth 3 and cannot use --no-drafts")
+        drafter = getattr(args, "drafter", "auto")
+        if not drafter or drafter in ("auto", "none") or not Path(drafter).expanduser().is_dir():
+            raise ValueError("DeepSeek-V4.1 CUDA DSpark requires --drafter with a local FT bundle directory")
+        if (getattr(args, "tp", 1) != 8 or etp not in (None, 4) or getattr(args, "kv_dtype", None) != ROTOR_KV_DTYPE
+                or getattr(args, "kv_full_windows", None) != "auto" or getattr(args, "no_graphs", False)
+                or getattr(args, "vision", False) or getattr(args, "yarn_factor", None) is not None):
+            raise ValueError("DeepSeek-V4.1 CUDA DSpark requires TP8/ETP4 RotorQuant Q4 text, "
+                             "native YaRN, CUDA graphs and --kv-full-windows auto")
     draft_rows = getattr(args, "draft_rows", None)
     if draft_rows is not None:
         if (backend != "cuda" or not getattr(family.package, "CUDA_DRAFT_ROWS", False)

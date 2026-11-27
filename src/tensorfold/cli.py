@@ -419,7 +419,10 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         print(use_tokenizer(args.tokenizer_file, model_dir).line(), flush=True)
     started = time.perf_counter()
     no_drafts = bool(args.no_drafts or getattr(args, "draft_method", "auto") == "none")
-    drafter = "" if no_drafts else _drafter(family, args.drafter, "cuda", model_dir=model_dir)
+    if getattr(family, "model_type", "") == "deepseek_v41" and getattr(args, "draft_method", "auto") == "dspark":
+        drafter = str(Path(args.drafter).expanduser().resolve(strict=True))
+    else:
+        drafter = "" if no_drafts else _drafter(family, args.drafter, "cuda", model_dir=model_dir)
     options: dict[str, Any] = {
         "drafter": drafter,
         "tp": int(args.tp),
