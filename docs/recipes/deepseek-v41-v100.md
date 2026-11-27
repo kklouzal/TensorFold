@@ -191,6 +191,17 @@ On the eight-V100 native-context profile at source `9a23665e`, the
 accepted 32 of 48 proposals. This exercises those paths, with no claim of
 production throughput or general output equivalence.
 
+The production admission trace found a grammar on six consecutive zero-draft
+requests at 217K–220K context. With grammar-aware verification at `57794eac`,
+four synthetic greedy strict-tool pairs on the same host and profile produced
+identical tool names and argument strings. Decode was 127.16–130.29 tok/s
+with DSpark and 60.23–60.96 tok/s without it across three 9.5K–9.7K cases.
+The 216,482-token pair decoded at 118.61 and 47.96 tok/s, respectively,
+with about 54.4 s of prefill in both runs. Two pairs differed in reasoning
+tokens, including the long pair. These checks establish tool-call parity
+for the fixtures only. Live throughput and broader output quality are
+separate checks.
+
 On eight V100s at 185 W, a controlled short-prompt run verified D3 work at
 one, two and three active requests and ordinary decode at four. Draft
 residency and graph captures reduced funded 1,048,576-token lanes from nine
