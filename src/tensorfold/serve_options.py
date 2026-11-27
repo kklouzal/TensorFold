@@ -300,9 +300,12 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             or _cuda_streams(getattr(args, "parallel", "auto")) <= windows):
         raise ValueError("--kv-short-window requires Flash Next CUDA GGUF GPU histories with --parallel P above "
                          "--kv-full-windows N")
-    if windows is not None:
+    if windows is not None and backend == "cuda" and getattr(family, "model_type", "") == "deepseek_v41":
+        if windows != "auto" or getattr(args, "tp", 1) != 8:
+            raise ValueError("DeepSeek-V4.1 supports only --kv-full-windows auto on CUDA --tp 8")
+    elif windows is not None:
         if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
-            raise ValueError("--kv-full-windows is supported by Flash Next CUDA only")
+            raise ValueError("--kv-full-windows requires Flash Next CUDA or DeepSeek-V4.1 CUDA with auto")
         from tensorfold.families.qwen4_exp.ram_experts import check_kv_full_windows
         from tensorfold.gguf_file import resolve_gguf
         resident_gguf = family_manifest is not None or config_dir is not None and resolve_gguf(config_dir) is not None

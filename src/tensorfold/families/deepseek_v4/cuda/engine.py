@@ -81,10 +81,14 @@ class DS41Engine:
                  expert_placement: Path | None = None, expert_balance_state: Path | None = None,
                  expert_balance_sample_every: int = 64, expert_balance_half_life: int = 262_144,
                  no_expert_balance: bool = False,
+                 kv_full_windows: str | None = None,
                  **_options) -> None:
         from .. import ROTOR_KV_DTYPE
 
         expert_balance_live = serve and not no_expert_balance
+        if kv_full_windows is not None and (kv_full_windows != "auto" or not serve):
+            raise ValueError("DeepSeek-V4.1 supports only --kv-full-windows auto in CUDA serving")
+        full_windows_auto = kv_full_windows == "auto"
         # The container may also serve the native codec. Its execution must
         # skip the experiments scoped to the compact RotorQuant profile.
         rotorquant = kv_dtype == ROTOR_KV_DTYPE
@@ -109,8 +113,8 @@ class DS41Engine:
                        expert_placement=expert_placement, expert_balance_state=expert_balance_state,
                        expert_balance_sample_every=expert_balance_sample_every,
                        expert_balance_half_life=expert_balance_half_life, expert_balance_live=expert_balance_live,
-                       w576_fp32=w576_fp32, sp_fp32=sp_fp32)
-        if expert_placement is None and expert_balance_state is None and not (w576_fp32 or sp_fp32):
+                       w576_fp32=w576_fp32, sp_fp32=sp_fp32, full_windows_auto=full_windows_auto)
+        if expert_placement is None and expert_balance_state is None and not (w576_fp32 or sp_fp32 or full_windows_auto):
             self._initialize(model_dir, startup=None, **options)
             return
 
@@ -127,7 +131,7 @@ class DS41Engine:
                     serve, queue_timeout_s, graphs, keep_slots, prefix_host_bytes, vision, vision_urls,
                     vision_offload, yarn_factor, kv_dtype, expert_tensor_parallel_size, expert_placement,
                     expert_balance_state, expert_balance_sample_every, expert_balance_half_life, expert_balance_live,
-                    w576_fp32, sp_fp32, startup):
+                    w576_fp32, sp_fp32, full_windows_auto, startup):
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -154,6 +158,8 @@ class DS41Engine:
             if type(parallel) is not int or not 1 <= parallel <= MAX_STREAMS:
                 raise ValueError(f"DeepSeek-V4.1 SM70 serves --parallel 1 to {MAX_STREAMS}")
             slots = parallel
+        elif full_windows_auto:
+            slots = MAX_STREAMS
         self.streams = slots
         raw = read_config(model_dir)
         self.geometry = g = W.Geometry.from_config(raw)
@@ -166,6 +172,10 @@ class DS41Engine:
         self.context = self.context_window = int(context or rope.context_limit)
         if not 1 <= self.context <= rope.context_limit:
             raise ValueError(f"DeepSeek-V4.1 context must be within the {rope.context_limit}-token YaRN window")
+        if full_windows_auto and (not rotorquant or vision or vision_offload or not graphs or yarn_factor is not None
+                                  or self.context != rope.context_limit or max_tokens != MAX_TOKENS or experiment):
+            raise ValueError("DeepSeek-V4.1 --kv-full-windows auto requires the native RotorQuant Q4 text context "
+                             "with decode graphs, the ordinary prompt chunk and native YaRN")
         self.rank, self.world = rank, tp
         self.vocab = g.vocab
         self.max_tokens = max_tokens
@@ -188,27 +198,32 @@ class DS41Engine:
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
             mode = (int(expert_balance_live) | (int(w576_fp32) << 1) | (int(sp_fp32) << 2)
-                    | (int(rotorquant) << 3))
+                    | (int(rotorquant) << 3) | (int(full_windows_auto) << 4))
             settings = [etp, int(expert_placement is not None), mode]
             local = torch.tensor(settings, dtype=torch.int64, device=device)
             agreed = torch.empty(tp * len(settings), dtype=torch.int64, device=device)
             self.comm.all_gather(local, agreed)
             if agreed.tolist() != settings * tp:
-                raise ValueError("DeepSeek-V4.1 ranks must agree on KV storage, ETP degree, expert placement and experimental math")
+                raise ValueError("DeepSeek-V4.1 ranks must agree on KV storage, full-window mode, ETP degree, expert placement and experimental math")
             del local, agreed
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
         from .prefix import HostSlab, default_keep_slots
+        requested_keep_slots = keep_slots
         if keep_slots is None:
             keep_slots = default_keep_slots(slots)
         if type(keep_slots) is not int or keep_slots < 0:
             raise ValueError("keep_slots must be a nonnegative integer")
+        if full_windows_auto and keep_slots >= 1 << 63:
+            raise ValueError("DeepSeek-V4.1 keep_slots cannot fit the rank capacity plan")
         self.keep_slots = keep_slots
         # Development smoke runs load only the first N decoder layers.
         smoke = int(os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS") or 0)
         if smoke > 0 and expert_balance_state is not None:
             raise ValueError("DeepSeek expert balancing requires all model layers")
         capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
+        if full_windows_auto and (not capture or smoke > 0):
+            raise ValueError("DeepSeek-V4.1 --kv-full-windows auto requires all decoder layers and CUDA graph capture")
         h64_text = rotorquant and not vision and capture and self.context <= 131_072 and max_tokens <= MAX_TOKENS
         from .graphs import shape_keys
         graph_keys = shape_keys(slots, self.context) if capture else ()
@@ -397,6 +412,8 @@ class DS41Engine:
         slab_started = time.perf_counter()
         if experiment:
             slab = HostSlab(self.comm, rank, tp, prefix_host_bytes, required_per_rank=2 << 30, startup=startup)
+        elif full_windows_auto:
+            slab = HostSlab(self.comm, rank, tp, prefix_host_bytes, startup=startup)
         else:
             slab = HostSlab(self.comm, rank, tp, prefix_host_bytes)
         # The lattice prefill experts' persistent canonical-bank workspace exists before the KV pool is
@@ -410,26 +427,44 @@ class DS41Engine:
                                                       intermediate=g.moe_inter // etp)
             torch.cuda.synchronize()
         free = torch.cuda.mem_get_info()[0]
-        mine = torch.tensor([free], dtype=torch.int64, device=device)
-        every = torch.empty(tp, dtype=torch.int64, device=device)
+        sizing_inputs = []
+        if full_windows_auto:
+            sizing_inputs = [self.context, slots, -1 if requested_keep_slots is None else requested_keep_slots]
+        mine = torch.tensor([free, *sizing_inputs], dtype=torch.int64, device=device)
+        every = torch.empty(tp * mine.numel(), dtype=torch.int64, device=device)
         self.comm.all_gather(mine, every)
         from .target import BLOCK, window_ring_bytes
         from .kernels.mu_packed import PackedLayout
         layout = PackedLayout({l: g.compress_ratios[l] for l in g.kv_sources}, BLOCK, rotorquant=rotorquant)
         page_bytes = layout.page_bytes
-        self.slots = slots + keep_slots + 1          # streams, kept chains, the scratch slot
-        ring_bytes = self.slots * g.layers * window_ring_bytes(rotorquant)
+        ring_bytes_per_slot = g.layers * window_ring_bytes(rotorquant)
         # The decode graphs are captured after the KV pool exists, so their memory comes out of the free memory too:
         # ~30 MiB per captured graph outside the torch pool (graph/NCCL resources) + ~40 MiB pool (ds41-graphs g2:
         # 606 MiB for 18 buckets on one capture stream).
         compact_128k = compact_profile and self.w.compact_expert_down and slab.per_rank == 2 << 30
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(graph_keys) if capture else 0
         prompt_reserve = RESERVE
-        if etp == W.ETP and h64_text:
-            prompt_reserve = H64_TEXT_RESERVE
-            if compact_128k:
-                graph_bytes = H64_128K_GRAPH_BYTES
-        pages = max(1, (int(every.min()) - prompt_reserve - graph_bytes - ring_bytes) // page_bytes)
+        funding = None
+        if full_windows_auto:
+            from .prefix import full_window_plan
+
+            records = every.view(tp, mine.numel()).tolist()
+            if any(row[1:] != sizing_inputs for row in records):
+                raise ValueError("DeepSeek-V4.1 ranks must agree on full-window sizing inputs")
+            funding = full_window_plan(min(row[0] for row in records), self.context, slots, requested_keep_slots,
+                                       layout, ring_bytes_per_slot, sum(g.compress_ratios[layer] == 2 for layer in g.kv_sources),
+                                       prompt_reserve=prompt_reserve, graph_fixed=GRAPH_BYTES, graph_each=GRAPH_EACH_BYTES)
+            slots, keep_slots = funding["funded_lanes"], funding["keep_slots"]
+            self.streams, self.keep_slots = slots, keep_slots
+            graph_keys, graph_bytes, pages = funding["graph_keys"], funding["graph_allowance_bytes"], funding["pool_pages"]
+        else:
+            if etp == W.ETP and h64_text:
+                prompt_reserve = H64_TEXT_RESERVE
+                if compact_128k:
+                    graph_bytes = H64_128K_GRAPH_BYTES
+            ring_bytes = (slots + keep_slots + 1) * ring_bytes_per_slot
+            pages = max(1, (int(every.min()) - prompt_reserve - graph_bytes - ring_bytes) // page_bytes)
+        self.slots = slots + keep_slots + 1          # streams, kept chains, the scratch slot
         target_started = time.perf_counter()
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device, lattice=lattice,
@@ -442,6 +477,14 @@ class DS41Engine:
         self.units = self.target.units      # pause points of a prompt forward (attention, experts per layer)
         from .prefix import SlotState
         self.prefix = SlotState(self.target)
+        if funding is not None:
+            pool = self.target.pool
+            if (pool.cache.nbytes != pages * page_bytes
+                    or sum(ring.nbytes for ring in pool.rings) != funding["ring_bytes"]
+                    or self.prefix.pages != funding["snapshot_pages_each"]
+                    or self.prefix.raw != funding["snapshot_raw_bytes"]
+                    or sum(part.nbytes for part in self.prefix._parts(0)) != self.prefix.raw):
+                raise RuntimeError("DeepSeek-V4.1 actual KV rings or snapshot layout differs from the full-window plan")
         self.layout = self.target.pool.layout
         self.token_bytes = self.layout.bytes_per_token
         self.snap_bytes = self.prefix.snap_bytes
@@ -457,7 +500,7 @@ class DS41Engine:
         self._warm()
         with clock.phase("slab-join"):
             self.host_per_rank, self.host_slab = slab.finish()
-            if experiment:
+            if experiment or full_windows_auto:
                 startup.retire_slab()
         clock.add("slab", slab_started, time.perf_counter() - slab_started)
         self.prefix.slab = self.host_slab
@@ -476,6 +519,10 @@ class DS41Engine:
                 raise RuntimeError(f"DeepSeek-V4.1 SM70 rank {rank}: decode graphs took {self.graphs.bytes >> 20} MiB "
                                    f"(sized {graph_bytes >> 20} MiB); {spare >> 20} MiB left for prompt transients, "
                                    f"{prompt_reserve >> 20} MiB required")
+            if funding is not None:
+                if self.graphs.keys != graph_keys:
+                    raise RuntimeError("DeepSeek-V4.1 actual graph catalogue differs from the full-window plan")
+                self.capacity_plan = funding
         elif rank == 0:
             print("[tensorfold] DeepSeek-V4.1 SM70: eager decode (" +
                   ("graphs disabled)" if not graphs else "TENSORFOLD_DS41_ENGRAM_TRACE set)"), flush=True)

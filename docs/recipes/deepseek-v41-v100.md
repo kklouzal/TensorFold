@@ -90,6 +90,7 @@ registered Engram table.
 | Flag | DeepSeek-V4.1 SM70 |
 | --- | --- |
 | `--parallel N` | 1-32 concurrent streams. Requests beyond N wait in the queue. |
+| `--kv-full-windows auto` | Experimental native-context RotorQuant Q4. The planner caps concurrency at the startup-funded number of full prompt-plus-reply windows. |
 | `--context N` | Admitted context per stream (default: the model's maximum). The text-only matrix at `--context 65536 --parallel 32` reported 7,775,360 tokens in the shared KV pool. |
 | `--prefix-host-bytes B` | Pinned host tier for evicted prefix points, shared across ranks (Gemma 4 SM70 sizing; `0` disables). |
 | `--kv-dtype rotorquant-iso64-norm4-h64` | RotorQuant Q4 for both sliding-window and compressed attention latents. DeepSeek stores one 272-byte row for shared K and V. The learned index rows retain their separate format. |
@@ -121,6 +122,44 @@ operand. The H64 ring and main cache encode the selected RotorQuant format
 directly. Learned index rows and compressed latent encoding retain their
 existing paths. Full-model throughput and quality of the grouping correction
 remain to be verified.
+
+### Experimental native-context window funding
+
+Use `--kv-dtype rotorquant-iso64-norm4-h64 --kv-full-windows auto` for TP8 text
+serving at the checkpoint's native context with native YaRN and decode graphs.
+The option works with ETP1/2/4 and honors the existing expert balancing opt-out.
+`--parallel N` caps the search, including `--parallel 1`. The ceiling is 32 when
+no numeric limit is supplied. The automatic keep-slot default uses the
+selected lane count. Leave the compact 128K-only W576 and SP FP32 experiments
+unset when launching this profile.
+
+The planner uses the minimum free device bytes across the eight ranks after
+model and persistent expert workspace loading. For each lane count it charges
+the window rings, the generic allowance for that count's actual graph keys,
+and the existing 3 GiB prompt reserve. The resulting shared pool must fund
+every selected full-context window and page-rounded stable prefix snapshots.
+Startup fails if it cannot fund one window or the actual capture violates its
+allowance. The pool does not prefill each lane's history at startup. Retained
+idle KV rows remain reclaimable and transient prefix copies still require
+room in the same pool.
+
+Check the effective lane count in `limits.lanes` and the budget in
+`capacity_plan` from `/v1/stats`. The option leaves the context unchanged.
+Without it, the existing shared-pool serving and diagnostic behavior applies.
+
+The tested ETP4 profile uses `--context 1048576 --parallel 32` with
+`--kv-full-windows auto`, `--temperature 0`, `--no-drafts`, and RotorQuant Q4. On eight 32 GiB V100s
+at 185 W per GPU, source `20862048` selected nine lanes and reported
+9,843,328 shared KV tokens. A private engine test reserved nine full windows,
+materialized one history through the last context position, and verified
+that eight peers advanced during a late prefill pause. The live API advertised
+1,048,576 tokens, tokenized a 140,004-token prompt, and passed short greedy
+generation and streaming checks. Full-length HTTP generation, live graph
+recapture at 1M, and long-context quality and throughput remain unmeasured.
+
+Long prefill bounds the per-head index score allocation by splitting the key
+range. The combined score plane still covers the whole range so hierarchical
+candidate selection and Top-K ordering use the same inputs.
 
 ### Experimental decode graph memory allowance
 

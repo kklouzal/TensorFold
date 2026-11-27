@@ -113,6 +113,36 @@ def default_keep_slots(streams: int) -> int:
     return max(8, streams)
 
 
+def kept_points(keep_slots: int) -> int:
+    return 6 * max(1, keep_slots)
+
+
+def full_window_plan(free_bytes, context, ceiling, keep_slots, layout, ring_bytes_per_slot, c2_sources, *,
+                     prompt_reserve, graph_fixed, graph_each):
+    """Choose the highest ceiling whose shared pool funds every window and stable prefix points."""
+    from .graphs import shape_keys
+
+    window_pages = -(-context // layout.block_size)
+    snapshot_raw = snapshot_bytes(ring_bytes_per_slot, c2_sources)
+    snapshot_pages = -(-snapshot_raw // layout.page_bytes)
+    for lanes in range(ceiling, 0, -1):
+        keep = default_keep_slots(lanes) if keep_slots is None else keep_slots
+        ring_bytes = (lanes + keep + 1) * ring_bytes_per_slot
+        keys = shape_keys(lanes, context)
+        graph_bytes = graph_fixed + graph_each * len(keys)
+        pages = (free_bytes - prompt_reserve - graph_bytes - ring_bytes) // layout.page_bytes
+        points = kept_points(keep)
+        if pages >= lanes * window_pages + points * snapshot_pages:
+            return {"policy": "deepseek-full-windows-auto-v1", "context_window": context, "requested_lanes": ceiling,
+                    "funded_lanes": lanes, "keep_slots": keep, "rank_min_free_bytes": free_bytes,
+                    "page_tokens": layout.block_size, "page_bytes": layout.page_bytes, "pool_pages": pages,
+                    "window_pages_each": window_pages, "stable_snapshot_points": points,
+                    "snapshot_raw_bytes": snapshot_raw, "snapshot_pages_each": snapshot_pages,
+                    "ring_bytes": ring_bytes, "prompt_reserve_bytes": prompt_reserve,
+                    "graph_allowance_bytes": graph_bytes, "graph_keys": keys}
+    raise ValueError(f"DeepSeek-V4.1 SM70 cannot fund one {context}-token window with --kv-full-windows auto")
+
+
 class HostSlab:
     """The host tier's pinned slab of this rank (Gemma 4 SM70's sizing: ``requested`` bytes across the ranks, unset:
     Flash Next's ``default_bytes``; a power of two per rank, agreed as the smallest rank's). The size is agreed at
@@ -206,7 +236,7 @@ class PrefixOwner(_gemma.PrefixOwner):
         self.kept: list = []
         self.used: dict[int, int] = {}
         self.clock = 0
-        self.keep = 6 * max(1, engine.keep_slots)        # kept points (a prompt: its splits and its end)
+        self.keep = kept_points(engine.keep_slots)      # kept points (a prompt: its splits and its end)
         self.depth = 0                                   # no drafter rows past the prompt
         self.prefix_counters = dict.fromkeys(prefixes.COUNTERS, 0)
         self.points = points

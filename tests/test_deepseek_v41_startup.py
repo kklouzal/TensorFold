@@ -79,6 +79,36 @@ def test_deepseek_serving_selects_expert_degree(tmp_path, degree):
         cli._check_serve_options(rejected, family, "cuda", tmp_path)
 
 
+def test_deepseek_cli_full_windows_is_opt_in_auto(tmp_path):
+    from tensorfold import cli, families
+
+    (tmp_path / "config.json").write_text('{"model_type":"deepseek_v41","gguf_file":"backbone.gguf"}')
+    (tmp_path / "backbone.gguf").touch()
+    command = ["serve", str(tmp_path), "--backend", "cuda", "--tp", "8", "--master", "127.0.0.1",
+               "--kv-dtype", "rotorquant-iso64-norm4-h64", "--parallel", "1"]
+    parser = cli.build_parser()
+    family = families.detect(tmp_path)
+    requested = parser.parse_args([*command, "--kv-full-windows", "auto"])
+    cli._check_serve_options(requested, family, "cuda", tmp_path)
+    numeric = parser.parse_args([*command, "--kv-full-windows", "1"])
+    with pytest.raises(ValueError, match="only --kv-full-windows auto"):
+        cli._check_serve_options(numeric, family, "cuda", tmp_path)
+
+
+def test_auto_full_windows_owns_startup_when_expert_balancing_is_disabled(tmp_path, monkeypatch):
+    from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine
+    from tensorfold.families.deepseek_v4.cuda.startup import ExpertStartup
+
+    options = []
+    monkeypatch.setattr(DS41Engine, "_initialize", lambda self, model, **kw: options.append(kw))
+    DS41Engine(tmp_path, rank=0, tp=8, serve=True, no_expert_balance=True)
+    assert options.pop()["startup"] is None
+    DS41Engine(tmp_path, rank=0, tp=8, serve=True, no_expert_balance=True, kv_full_windows="auto")
+    selected = options.pop()
+    assert selected["full_windows_auto"] and isinstance(selected["startup"], ExpertStartup)
+    assert not selected["expert_balance_live"] and selected["expert_balance_state"] is None
+
+
 @pytest.mark.parametrize("degree,experts,width,offsets,blocks", [
     (1, 48, 2304, (0,), 9),
     (2, 96, 1152, (0, 128), 5),

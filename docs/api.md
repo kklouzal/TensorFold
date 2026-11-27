@@ -733,7 +733,7 @@ Times are seconds, sizes bytes.
 | `model.kv_dtype`, `model.mtp_drafts` | The KV cache format (`KEY/VALUE` when they differ) and drafts a round, where the engine has them |
 | `model.yarn_factor` | The effective static YaRN factor, when reported by the engine |
 | `model.expert_tensor_parallel_size` | The effective routed-expert tensor parallel degree on DeepSeek-V4.1 CUDA |
-| `limits.lanes` | Allocated concurrent request slots (CUDA `--parallel`; 1 when one runs at a time; the Mac's batch). Adaptive resident capacity can exceed one execution microbatch; its effective admission ceiling and actual scheduled count are in `runtime` |
+| `limits.lanes` | Effective concurrent request slots (1 when one runs at a time; the Mac's batch). DeepSeek's `--kv-full-windows auto` reports the startup-funded lane count. Adaptive resident capacity can exceed one execution microbatch; its effective admission ceiling and actual scheduled count are in `runtime` |
 | `limits.pending_requests`, `limits.engine_calls`, `limits.http_connections` | `--max-pending-requests`, `--max-engine-calls`, `--max-http-connections`, or null when unset |
 | `limits.prefix_cache_entries` | Maximum kept prompt points where that backend uses an entry ceiling; null for the Gemma byte-budget archive |
 | `load.requests_in_flight` | Requests accepted and not finished (CUDA: queued ones included) |
@@ -742,7 +742,7 @@ Times are seconds, sizes bytes.
 | `load.held_for_memory` | A request waits, first in line, for memory to admit it |
 | `load.http_connections_in_use` | Accepted HTTP connections |
 | `load.stream_tokens` | Tokens each live stream's cache holds |
-| `capacity_plan` | Backend startup admission and allocation receipt, or null when unavailable; resident full-window reservations include each tensor-parallel rank's cache capacities and allocated bytes |
+| `capacity_plan` | Backend startup admission and allocation receipt, or null when unavailable. Resident full-window reservations include each tensor-parallel rank's cache capacities and allocated bytes. DeepSeek's `deepseek-full-windows-auto-v1` records the rank-min free bytes, selected lanes, shared pool pages, stable snapshot charge, ring bytes and graph allowance. |
 | `runtime` (adaptive engines only) | Host snapshot of configured/pending/effective execution settings, retained/active/queued sessions, actual fixed owner-map status and profile-manifest status; see the runtime control contract below |
 | `kv.budget_bytes`, `kv.held_bytes` | The memory the stream caches may grow into (less the reserve) and what they hold, kept prefix-cache slots included |
 | `kv.active_bytes`, `kv.usage_ratio` | What the running requests' slots hold beyond their first rows, and its share of the budget (vLLM's KV usage: kept entries count as free, as a request that needs room evicts them; one stream alone may pass 1) |
