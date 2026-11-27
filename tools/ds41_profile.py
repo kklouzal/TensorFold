@@ -1,6 +1,6 @@
 """DeepSeek-V4.1 SM70 per-kernel profile driver (development tool; one model load serves every case).
 
-usage: ds41_profile.py MODEL_DIR OUT_DIR [--cases 16384x32,16384x8,...] [--corpus TEXT_FILE]
+usage: ds41_profile.py MODEL_DIR OUT_DIR --corpus TEXT_FILE [--cases 16384x32,16384x8,...]
        [--kv-dtype rotorquant-iso64-norm4-h64] [--yarn-factor 2]
 
 Eight rank processes (CUDA_VISIBLE_DEVICES=r, as tools/launch_cuda_tp.py and harness/m2.py) build DS41Engine
@@ -356,7 +356,7 @@ if __name__ == "__main__":
     parser.add_argument("model")
     parser.add_argument("out")
     parser.add_argument("--cases", default="16384x32,16384x8,16384x1,4096x32,4096x8,4096x1")
-    parser.add_argument("--corpus", default="/home/kklouzal/build-cache/matrix-ds41/corpus-0913d721-ds41.txt")
+    parser.add_argument("--corpus", required=True, help="Path to the input text corpus for the profile")
     parser.add_argument("--kv-dtype", choices=("rotorquant-iso64-norm4-h64", "bf16"), default="rotorquant-iso64-norm4-h64")
     parser.add_argument("--yarn-factor", type=float, default=2.0)
     args = parser.parse_args()

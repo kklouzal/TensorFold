@@ -3,8 +3,12 @@
 TensorFold's CUDA lane for DeepSeek-V4.1-Flash-1017 on eight V100 (SM70) GPUs uses TP8 for attention,
 dense layers, and shared experts. Routed experts default to ETP4 × EP2. It serves the
 OpenAI-compatible server of the other V100 lanes.
-Status: development lane, qualified on one host only (SC117: 8x V100 32 GB, 180 W cap). Image
-`tensorfold-v100:py315-app-48c51356-pillow13` (`67b43e682057`).
+Source `4fc31cf2` was tested on SC117 with eight 32 GiB V100s at 185 W per GPU,
+using image `tensorfold-v100:py315-app-48c51356-pillow13` (`67b43e682057`). Both
+KV modes passed the same-image startup and API checks at TP8/ETP4, 128K context,
+and 32 lanes. The held-out RotorQuant quality comparison returned seven
+equivalent and five inconclusive results. The complete throughput matrix and
+native 1M serving remain unqualified by these checks.
 
 ## The model
 
@@ -37,9 +41,10 @@ replay uses a shorter history.
 The pool stores 8 KiB per row, or 256 KiB at decode bucket 32 and 64 MiB at an
 8,192-row prefill. A row-split source also gathers candidate IDs. The receive
 buffer is 64 MiB per rank for that prefill, plus 8 MiB for the local stripe.
-Ranking also uses temporary score tiles. Native graph capture and replay,
-128K and full-context memory and timing, and quality qualification are
-pending. The change introduces no KV format or graph-catalogue change.
+Ranking also uses temporary score tiles. The 128K checks exercised both cold
+prefill and decode beyond the 16K cutoff. They do not measure long-context
+quality or throughput. The held-out quality corpus stays below the cutoff.
+The change introduces no KV format or graph-catalogue change.
 
 ## Launch
 

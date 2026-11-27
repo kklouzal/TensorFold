@@ -1669,9 +1669,14 @@ All scoped candidate, source, build, native, packaging and fresh API gates are c
 #### DeepSeek-V4.1-Flash on eight V100s (2026-11-21)
 
 The SM70 target follows the checkpoint's hierarchical decoder indexer.
-Layer 20 publishes candidate blocks for later reindexing layers. Native
-graph, quality, and performance qualification for this change is pending.
+Layer 20 publishes candidate blocks for later reindexing layers. Source
+`4fc31cf2` passed native startup and cutoff checks for both KV modes on eight
+V100s at 185 W with ETP4 and 128K context. The RotorQuant quality comparison
+had seven equivalent and five inconclusive checks, with no established
+regression. The complete 8K throughput comparison was deferred.
 [Decoder indexing](docs/recipes/deepseek-v41-v100.md#decoder-indexing)
+
+The development profiler `tools/ds41_profile.py` takes its text input from `--corpus TEXT_FILE`.
 
 The expert-balancing development branch accepts an explicit per-layer placement
 for ETP1, ETP2, and ETP4 before startup graph capture. Native quality and
