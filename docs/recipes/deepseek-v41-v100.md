@@ -172,7 +172,9 @@ Use the local 1017 FT bundle with its `official` and `ft` directories. Keep
 drafting. The experimental path targets one to three eligible greedy decode
 streams. Check the funded lane count and configured depth in `/v1/stats`.
 The `dspark.verify_rounds_by_active` counters count committed verification
-rounds by the number of active requests in the vector. Image requests use target-only decoding.
+rounds by the number of active requests in the vector. Greedy structured output
+and strict tool calls apply the reply grammar to the target's verification rows.
+Image requests use target-only decoding.
 When a mixed batch cannot use the draft verifier, it uses the ordinary decode path.
 
 Set `TENSORFOLD_DS41_DRAFT_TRACE=1` to include DSpark admission reasons in

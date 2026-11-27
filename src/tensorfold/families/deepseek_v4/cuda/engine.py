@@ -79,7 +79,8 @@ def draft_blockers(s) -> tuple[str, ...]:
         (bool(s.owed), "replay"),
         (s.token_limit is not None, "token_limit"),
         (s.forced is not None, "forced_tokens"),
-        (s.constraint is not None, "grammar"),
+        (s.constraint is not None and not s.stop_eos, "grammar_without_eos"),
+        (s.constraint is not None and not callable(getattr(s.constraint, "window", None)), "grammar_without_window"),
         (s.history is not None, "penalties"),
         (s.probabilities is not None, "probabilities"),
         (s.sampling is not None and not s.sampling.temperature <= 0, "sampling"),
@@ -1000,7 +1001,8 @@ class DS41Engine:
         verifier = getattr(self, "_draft_verify", None)
         width = 3 if op == OP_DRAFT_VERIFY_BATCH else 2
         if (verifier is None or not 1 <= count <= verifier.bucket or sequence < 0
-                or c or d or len(ids) != count * width):
+                or d or len(ids) != count * width
+                or (not 0 <= c < (1 << count) if op == OP_DRAFT_VERIFY_BATCH else c != 0)):
             raise ValueError("invalid DeepSeek DSpark control frame")
         if op == OP_DRAFT_VERIFY_BATCH and self.part is not None:
             paused_slots = self.part[2]
@@ -1017,7 +1019,20 @@ class DS41Engine:
         verifier, width = self._check_draft_vector(op, sequence, count, c, d, ids)
         rows = tuple(tuple(ids[i:i + width]) for i in range(0, len(ids), width))
         if op == OP_DRAFT_VERIFY_BATCH:
-            return verifier.verify_batch(sequence, tuple(VerifyEntry(*row) for row in rows))
+            output = verifier.verify_batch(sequence, tuple(VerifyEntry(*row) for row in rows))
+            if c:
+                width = verifier.depth + 1
+                if c == (1 << count) - 1:
+                    local = output.local_logits[:count * width]
+                else:
+                    import torch
+
+                    local = torch.cat([output.local_logits[i * width:(i + 1) * width]
+                                       for i in range(count) if c & (1 << i)], dim=0)
+                full = self.coll.gather(local)
+                if self.rank == 0:
+                    output = output._replace(constrained_logits=full)
+            return output
         verifier.commit_batch(sequence, rows)
         # commit_batch fences the local device and checks sticky errors first.
         if self.rank != 0:
@@ -2062,24 +2077,37 @@ class FixedDraftDecoder(Decoder):
         return super()._prefill_round_ms()
 
     def _fixed_round(self, live, entries):
-        from .dspark_serving import decide
+        from .dspark_serving import decide, decide_constrained
         from .round_sampling import greedy_tokens
 
         e = self.e
         owner = e._draft_verify
         sequence, depth = owner.next_sequence, owner.depth
         count, width = len(entries), depth + 1
-        output = e.announce(OP_DRAFT_VERIFY_BATCH, sequence, count,
+        grammar = sum(1 << i for i, s in enumerate(live) if s.constraint is not None)
+        output = e.announce(OP_DRAFT_VERIFY_BATCH, sequence, count, grammar,
                             ids=(value for entry in entries for value in entry))
         choices = greedy_tokens(output.compact[:, :count * width].cpu(), count * width)
         proposals = output.drafts[:count].tolist()
         resolved = []
+        grammar_at = 0
         for i, (s, (_, _, anchor), drafts) in enumerate(zip(live, entries, proposals, strict=True)):
             chosen = error = None
+            rows = choices[i * width:(i + 1) * width]
+            logits = None
+            if s.constraint is not None:
+                logits = output.constrained_logits[grammar_at:grammar_at + width]
+                grammar_at += width
             if s.cancel is None or not s.cancel.is_set():
                 try:
-                    chosen = decide(choices[i * width:(i + 1) * width], anchor, drafts,
-                                    s.count - len(s.out), self._ends(s))
+                    room, eos = s.count - len(s.out), self._ends(s)
+                    if logits is None:
+                        chosen = decide(rows, anchor, drafts, room, eos)
+                    else:
+                        accepted = decide_constrained(s.constraint, logits, rows, anchor, drafts, room, eos)
+                        if s.cancel is None or not s.cancel.is_set():
+                            s.constraint.advance(accepted)
+                            chosen = accepted
                 except Exception as failed:  # Roll back this slot and settle the rest of the vector.
                     error = failed
             resolved.append((chosen, error))

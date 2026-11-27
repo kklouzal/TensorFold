@@ -1685,7 +1685,8 @@ streaming checks. [Native-context profile](docs/recipes/deepseek-v41-v100.md#exp
 
 The same full-window profile supports the TP8 vision tower. The planner
 sizes the pool after loading the tower and drafter. Experimental D3 DSpark
-remains available for eligible text requests. The eight-V100 vision deployment
+remains available for eligible greedy text requests, including grammar-constrained
+output. The eight-V100 vision deployment
 funded seven native-context lanes and passed a 25-image API smoke test with one
 shared context budget for image, text and reply tokens.
 [DSpark admission diagnostics](docs/recipes/deepseek-v41-v100.md#experimental-dspark-d3-at-native-context)
