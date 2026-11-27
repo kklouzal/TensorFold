@@ -291,6 +291,10 @@ def test_deepseek_q4_and_yarn_flags_are_family_bound(tmp_path, monkeypatch):
     rope = deepseek_v4.rope_parameters(tmp_path, args.yarn_factor)
     assert (args.kv_dtype, rope.factor, rope.context_limit) == ("rotorquant-iso64-norm4-h64", 2, 131_072)
     assert deepseek_v4.rope_parameters(tmp_path).factor == 16
+    native = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--tp", "8",
+                                             "--master", "127.0.0.1", "--kv-dtype", "fp8-window+fp4-compressed"])
+    assert native.kv_dtype == deepseek_v4.NATIVE_KV_DTYPE
+    cli._check_serve_options(native, family, "cuda", tmp_path)
     for invalid in (0.5, float("inf"), float("nan")):
         args.yarn_factor = invalid
         with pytest.raises(ValueError, match="YaRN factor"):

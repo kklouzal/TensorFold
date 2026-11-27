@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tensorfold import __version__
 from tensorfold.cuda.prompt_precision import FP8_BY_DEFAULT
+from tensorfold.families.deepseek_v4 import NATIVE_KV_DTYPE as DEEPSEEK_NATIVE_KV_DTYPE
 from tensorfold.families.qwen4_exp.kv_formats import DTYPES as FLASH_NEXT_KV_DTYPES
 
 
@@ -372,14 +373,15 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--master", default="", help="rank 0 rendezvous address; expert ranks require same-host loopback")
     cuda.add_argument("--master-port", type=int, default=29551,
                       help="rank 0 rendezvous port (1 to 65535, the same on every tensor/expert rank)")
-    cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16", action=_KVFormat,
+    cuda.add_argument("--kv-dtype", choices=(*FLASH_NEXT_KV_DTYPES, DEEPSEEK_NATIVE_KV_DTYPE),
+                      default="bf16", action=_KVFormat,
                       help="KV cache: bf16 (default; fp16 for Flash Next GGUF/SM70), fp16, int8, int4, or a RotorQuant format. "
                            "INT8/INT4 use one fp16 scale per 32 values. RotorQuant uses packed Lloyd-Max codes and "
                            "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA). "
                            "Gemma 4 on eight V100s (--tp 8): bf16 (FP16 caches), rotorquant8-norm or "
                            "rotorquant-iso64-norm4-h64 for its target full-attention caches; its sliding rings stay FP16. "
-                           "DeepSeek-V4.1 on eight V100s supports rotorquant-iso64-norm4-h64 for shared window and "
-                           "compressed attention KV. "
+                           "DeepSeek-V4.1 on eight V100s supports fp8-window+fp4-compressed (the native format, "
+                           "also selected by bf16) and rotorquant-iso64-norm4-h64. "
                            "GGUF/SM70 supports fp16, int8, rotorquant-signed128-4, rotorquant-signed64-norm4, "
                            "rotorquant8(-norm), rotorquant-planar4/iso4/iso64-norm4(-h64) and the compact "
                            "rotorquant-planar4-sm70-v1/iso4-sm70-v1 (the eight-bit and Planar/Iso formats on "

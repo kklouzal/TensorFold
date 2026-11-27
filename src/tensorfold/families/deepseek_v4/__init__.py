@@ -12,7 +12,8 @@ TITLE = "DeepSeek-V4-Flash"
 LANES = True
 CUDA_TP8 = True              # DeepSeek-V4.1 GGUF on eight V100s with TP8 attention and dense layers
 ROTOR_KV_DTYPE = "rotorquant-iso64-norm4-h64"
-CUDA_KV_DTYPES = ("bf16", ROTOR_KV_DTYPE)
+NATIVE_KV_DTYPE = "fp8-window+fp4-compressed"
+CUDA_KV_DTYPES = (NATIVE_KV_DTYPE, "bf16", ROTOR_KV_DTYPE)
 ROPE_BACKENDS = ("cuda",)
 # affine 4-bit groups of 64, routed experts in mxfp4 (DeepSeek's own FP4 bytes)
 MODELS = ("mlx-community/DeepSeek-V4-Flash-4bit",)

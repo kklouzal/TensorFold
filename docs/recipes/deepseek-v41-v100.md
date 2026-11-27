@@ -51,6 +51,7 @@ registered Engram table.
 | `--context N` | Admitted context per stream (default: the model's maximum). The text-only matrix at `--context 65536 --parallel 32` reported 7,775,360 tokens in the shared KV pool. |
 | `--prefix-host-bytes B` | Pinned host tier for evicted prefix points, shared across ranks (Gemma 4 SM70 sizing; `0` disables). |
 | `--kv-dtype rotorquant-iso64-norm4-h64` | RotorQuant Q4 for both sliding-window and compressed attention latents. DeepSeek stores one 272-byte row for shared K and V. The learned index rows retain their separate format. |
+| `--kv-dtype fp8-window+fp4-compressed` | DeepSeek's native cache path uses FP8-quantized sliding-window values and packed FP4 compressed attention latents. The historical `bf16` value selects this same path. |
 | `--yarn-factor F` | Overrides the checkpoint's static YaRN factor on compressed layers. Window-only layers retain plain RoPE. |
 | `--queue-timeout-s S` | Bounds the queue wait (503 after). |
 | `--no-graphs` | Eager decode, for A/B checks only. |
