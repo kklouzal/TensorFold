@@ -39,6 +39,41 @@ def test_mismatched_route_controls_and_replay_are_never_shared():
     assert caps == {}  # default alone would falsely advertise both capabilities
 
 
+def test_declared_replay_policies_advertise_the_client_union_only_after_both_match():
+    default = SOURCE.replace('PRESERVE', 'false')
+    tools = SOURCE.replace('PRESERVE', 'true')
+    render = renderer(default, tools)
+    generic, _ = discover_chat_capabilities(render)
+    assert 'reasoning_replay_field' not in generic and 'preserve_reasoning' not in generic
+    caps, proof = discover_chat_capabilities(render, reasoning_replay_routes=(False, True))
+    assert caps['reasoning_replay_field'] == 'reasoning_content' and caps['preserve_reasoning'] is True
+    assert [route['preserve_reasoning'] for route in proof['routes']] == [False, True]
+    for changed_route in (renderer(default, default), renderer(tools, tools)):
+        caps, _ = discover_chat_capabilities(changed_route, reasoning_replay_routes=(False, True))
+        assert 'reasoning_replay_field' not in caps and 'preserve_reasoning' not in caps
+
+
+@pytest.mark.parametrize('probe_failure', ['ignore', 'refuse', 'unstable'])
+def test_declared_replay_does_not_replace_failed_route_evidence(probe_failure):
+    ordinary = renderer(SOURCE.replace('PRESERVE', 'false'), SOURCE.replace('PRESERVE', 'true'))
+    calls = 0
+
+    def render(messages, *, tools, enable_thinking):
+        nonlocal calls
+        if tools is None and len(messages) > 1:
+            if probe_failure == 'ignore':
+                return 'no reasoning channel'
+            if probe_failure == 'refuse':
+                raise TemplateError('unsupported history')
+            calls += 1
+            return str(calls)
+        return ordinary(messages, tools=tools, enable_thinking=enable_thinking)
+
+    caps, proof = discover_chat_capabilities(render, reasoning_replay_routes=(False, True))
+    assert 'reasoning_replay_field' not in caps and 'preserve_reasoning' not in caps
+    assert not proof['routes'][0]['replay_field_verified'] and proof['routes'][1]['replay_field_verified']
+
+
 def test_unconditional_fixed_switch_is_not_advertised_even_if_other_output_varies():
     source = SOURCE.replace('PRESERVE', 'false')
     caps, _ = discover_chat_capabilities(renderer(source), fixed=(None, True))
@@ -72,3 +107,7 @@ def test_fixed_route_shape_does_not_coerce_absent_false_and_invalid_values():
         discover_chat_capabilities(renderer('text'), fixed=(None,))
     with pytest.raises(ValueError):
         discover_chat_capabilities(renderer('text'), fixed=(None, 'false'))
+
+    for routes in ((False,), (False, None), (1, True), [False, True]):
+        with pytest.raises(ValueError, match="two boolean route policies"):
+            discover_chat_capabilities(renderer('text'), reasoning_replay_routes=routes)

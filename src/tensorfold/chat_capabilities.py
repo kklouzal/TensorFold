@@ -39,15 +39,21 @@ def _history(variant):
     return messages
 
 
-def discover_chat_capabilities(render, *, fixed=(None, None)):
+def discover_chat_capabilities(render, *, fixed=(None, None), reasoning_replay_routes=None):
     """Return common verified facts plus bounded, synthetic-probe diagnostics.
 
     Harness discovers without tools and applies the answer to tool requests.
-    Therefore a shared fact must agree across BOTH captured render routes.
-    Missing/unstable/unsupported evidence omits that fact, never guesses it.
+    The default requires agreement on both routes. A native renderer may
+    declare separate older-reasoning policies. Then both observed policies
+    must match the declaration before advertising the retention needed by
+    either route. Prompt rendering still applies its original policy.
     """
     if len(fixed) != 2 or any(value is not None and type(value) is not bool for value in fixed):
         raise ValueError("both template routes require a boolean or unknown fixed-thinking fact")
+    if reasoning_replay_routes is not None and (
+            type(reasoning_replay_routes) is not tuple or len(reasoning_replay_routes) != 2
+            or any(type(value) is not bool for value in reasoning_replay_routes)):
+        raise ValueError("native reasoning replay requires two boolean route policies")
     tools_spec = [{"type": "function", "function": {"name": "tf_capability_probe",
                    "description": "A deterministic capability-discovery probe.",
                    "parameters": {"type": "object", "properties": {}, "required": [],
@@ -66,7 +72,8 @@ def discover_chat_capabilities(render, *, fixed=(None, None)):
         preserve = None
         if replay:
             older = (_OLDER[0] in first, _OLDER[1] in second)
-            if older[0] == older[1]:
+            if older[0] == older[1] and (reasoning_replay_routes is None or (
+                    _OLDER[1] not in first and _OLDER[0] not in second)):
                 preserve = older[0]
         routes.append({"thinking_control": bool(switch), "fixed_thinking": forced,
                        "switch_samples": [on_state, off_state], "replay_samples": [item[1] for item in samples],
@@ -75,9 +82,13 @@ def discover_chat_capabilities(render, *, fixed=(None, None)):
     if len(routes) == 2 and all(route["thinking_control"] for route in routes):
         capabilities["thinking_control"] = {"keyword": "enable_thinking", "on_value": True,
                                             "off_value": False, "top_level": False}
-    if (len(routes) == 2 and all(route["replay_field_verified"] for route in routes)
-            and routes[0]["preserve_reasoning"] is not None
-            and routes[0]["preserve_reasoning"] is routes[1]["preserve_reasoning"]):
-        capabilities["reasoning_replay_field"] = "reasoning_content"
-        capabilities["preserve_reasoning"] = routes[0]["preserve_reasoning"]
+    if all(route["replay_field_verified"] for route in routes):
+        policies = tuple(route["preserve_reasoning"] for route in routes)
+        if reasoning_replay_routes is None:
+            verified = policies[0] is not None and policies[0] is policies[1]
+        else:
+            verified = policies == reasoning_replay_routes
+        if verified:
+            capabilities["reasoning_replay_field"] = "reasoning_content"
+            capabilities["preserve_reasoning"] = any(policies)
     return capabilities, {"method": "stable_model_render_probes_v1", "routes": routes}

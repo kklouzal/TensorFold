@@ -1698,6 +1698,11 @@ Development source also accepts strict function tool schemas in the native DSML 
 the standard CUDA API. Full-checkpoint serving verification is pending.
 [Strict function tools](docs/api.md#strict-function-tools)
 
+The native DeepSeek-V4.1 renderer tells clients discovering through
+`/v1/tokenize` to retain assistant `reasoning_content` when both replay routes
+verify. Plain thinking requests still prune older reasoning, while requests
+that advertise tools keep it. [CUDA tokenizer discovery](docs/api.md)
+
 On the same eight-V100 setup, fixed-order prefill RMS raised geometric mean prefill throughput **1.21%** across
 the ten text cells against `aef6e42a`. Target log probabilities matched bit for bit across all twelve scoring
 checks. The accepted C1/16K median decode tradeoff was **0.13% slower** over eight matched sessions. The C32/16K decode

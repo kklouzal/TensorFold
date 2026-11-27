@@ -183,6 +183,8 @@ def test_native_cuda_tokenize_exposes_exact_count_and_deepseek_render_metadata(m
     assert result["harness_tokenizer_version"] == 1
     assert result["chat_template_sha256"] == app.template.provenance()["sha256"]
     assert result["capabilities"]["thinking_control"]["keyword"] == "enable_thinking"
+    assert result["capabilities"]["reasoning_replay_field"] == "reasoning_content"
+    assert result["capabilities"]["preserve_reasoning"] is True
     count = app.tokenize({**body, "return_tokens": False})
     assert count["count"] == result["count"] and "tokens" not in count and "prompt" not in count
     raw = app.tokenize({"prompt": "Paris"})
@@ -203,6 +205,31 @@ def test_native_cuda_tokenize_exposes_exact_count_and_deepseek_render_metadata(m
             client.close()
             listener.shutdown()
             server.join()
+    assert not app.engine.prompts
+
+
+def test_v41_replay_metadata_retains_both_routes_without_changing_official_prompts(model_dir):
+    app = app_for(model_dir, default_thinking=True)
+    older, current = "reasoning from the first turn", "reasoning for the current tool call"
+    messages = [
+        {"role": "user", "content": "First question."},
+        {"role": "assistant", "content": "First answer.", "reasoning_content": older},
+        {"role": "user", "content": "What is the weather in Paris?"},
+        {"role": "assistant", "content": "", "tool_calls": [CALL], "reasoning_content": current},
+        {"role": "tool", "content": "sunny", "tool_call_id": "c1"},
+    ]
+    for advertised in (False, True):
+        body = {"messages": messages, "return_prompt": True, "return_tokens": False}
+        reference = messages
+        if advertised:
+            body["tools"] = TOOLS
+            reference = [{"role": "system", "content": "", "tools": TOOLS}, *messages]
+        expected = native.encode_messages(reference, thinking_mode="thinking")
+        results = app.tokenize(body)
+        assert results["prompt"] == expected
+        assert current in expected and (older in expected) is advertised
+        assert results["capabilities"]["reasoning_replay_field"] == "reasoning_content"
+        assert results["capabilities"]["preserve_reasoning"] is True
     assert not app.engine.prompts
 
 

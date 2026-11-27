@@ -195,6 +195,9 @@ class V41ChatTemplate:
 
     options = (None, None)           # no --chat-template selection: the encoder is the only renderer
     calls = Calls
+    # The native encoder drops older reasoning on plain requests and keeps it
+    # when tools are advertised. Clients may discover before they add tools.
+    reasoning_replay_routes = (False, True)
     segment_opener = native.USER_SP_TOKEN
 
     @staticmethod

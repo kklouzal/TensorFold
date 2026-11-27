@@ -1205,7 +1205,10 @@ class App:
         from tensorfold.chat_capabilities import discover_chat_capabilities
 
         fixed = tuple(self._fixed_thinking(tools) for tools in (False, True))
-        observed, _ = discover_chat_capabilities(self.template.render, fixed=fixed)
+        observed, _ = discover_chat_capabilities(
+            self.template.render, fixed=fixed,
+            reasoning_replay_routes=getattr(self.template, "reasoning_replay_routes", None),
+        )
         observed.update(
             structured_output=(find_spec("xgrammar") is not None
                                and "constraint" in inspect.signature(self.engine.generate).parameters

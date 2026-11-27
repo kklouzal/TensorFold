@@ -57,8 +57,13 @@ decoded render, including special tokens. Prompt inspection is bounded by the re
 budget. These options do not alter prompt preparation or token counts.
 
 Discovery probes the active default and tool renderers. Stable agreement on both routes governs
-the advertised `thinking_control`, `reasoning_replay_field` and `preserve_reasoning` fields.
-The fingerprint identifies the captured renderer source.
+the advertised `thinking_control`, `reasoning_replay_field` and `preserve_reasoning` fields by
+default. The native DeepSeek-V4.1 renderer verifies that both routes read
+`reasoning_content` and match their declared policies. It then advertises
+`preserve_reasoning: true` so clients can retain history before choosing a
+route. The encoder still drops older reasoning for plain thinking requests
+and keeps it for requests that advertise tools. The fingerprint identifies
+the captured renderer source.
 
 Late system-message discovery checks distinct prior-user, assistant, late-system
 and following-user markers in rendered order. A template that hoists system text
