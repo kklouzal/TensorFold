@@ -175,7 +175,12 @@ The `dspark.verify_rounds_by_active` counters count committed verification
 rounds by the number of active requests in the vector. Greedy structured output
 and strict tool calls apply the reply grammar to the target's verification rows.
 Image requests use target-only decoding.
-When a mixed batch cannot use the draft verifier, it uses the ordinary decode path.
+When eligible foreground streams share a turn with ordinary streams, the
+decoder verifies one vector of up to three draft streams, then launches an
+ordinary batch for the other decoding streams. Additional eligible streams
+rotate through the draft vector without losing their seeded history.
+Background decoding stays ordinary so a yielded request can replay the
+tokens it already delivered.
 
 Set `TENSORFOLD_DS41_DRAFT_TRACE=1` to include DSpark admission reasons in
 completed-request logs, including on a target-only deployment. The trace

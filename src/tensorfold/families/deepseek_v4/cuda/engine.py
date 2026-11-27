@@ -1984,6 +1984,7 @@ class FixedDraftDecoder(Decoder):
         super().__init__(engine)
         self.verify_rounds_by_active = [0] * (engine._draft_verify.bucket + 1)
         self._draft_round_ms = None
+        self._last_draft_sid = -1
 
     def _admitted(self, s):
         # A kept prefix has target state only. Every row of the last draft
@@ -2002,67 +2003,90 @@ class FixedDraftDecoder(Decoder):
                 options["tap_from"] = first - start
         return super()._text_chunk(s, start, stop, last, flags, **options)
 
-    def _fixed_entries(self, live):
+    def _draft_entry(self, s):
         from .dspark_weights import BLOCK as DRAFT_BLOCK
         from .target import BLOCK
 
         e = self.e
-        owner = e._draft_verify
-        if not 1 <= len(live) <= owner.bucket:
-            return ()
-        entries = []
-        for s in live:
-            if not s.draft_seed or not s.out or (s.cancel is not None and s.cancel.is_set()):
-                return ()
-            at = len(s.prompt) + len(s.out) - 1
-            if (at + DRAFT_BLOCK > e.context
-                    or at + owner.depth + 1 > len(e.target.pool.owned[s.slot]) * BLOCK):
-                return ()
-            entries.append((s.slot, at, s.out[-1]))
-        return entries
+        at = len(s.prompt) + len(s.out) - 1
+        if (at + DRAFT_BLOCK > e.context
+                or at + e._draft_verify.depth + 1 > len(e.target.pool.owned[s.slot]) * BLOCK):
+            if TRACE_DRAFT:
+                s.dspark_fallback = "insufficient_draft_room"
+            return None
+        return s.slot, at, s.out[-1]
+
+    def _decode_groups(self):
+        ready, ordinary, cancelled = [], [], []
+        for s in self.streams.values():
+            if s.done:
+                continue
+            if s.cancel is not None and s.cancel.is_set():
+                s.done, s.finished = True, time.perf_counter()
+                cancelled.append(s)
+                continue
+            entry = self._draft_entry(s) if s.draft_seed and s.out else None
+            if entry is None:
+                ordinary.append(s)
+            else:
+                ready.append((s, entry))
+        bucket = self.e._draft_verify.bucket
+        if len(ready) > bucket:
+            # A turn verifies one captured vector. Waiting draft lanes retain
+            # their rings and get the next turn by stream admission order.
+            ready.sort(key=lambda pair: pair[0].sid)
+            first = next((i for i, (s, _) in enumerate(ready) if s.sid > self._last_draft_sid), 0)
+            ready = (ready[first:] + ready[:first])[:bucket]
+        if ready:
+            self._last_draft_sid = ready[-1][0].sid
+        return ready, ordinary, cancelled
 
     def _launch(self, live, pending):
         for s in live:
             # Ordinary continuation does not populate the draft ring.
-            if TRACE_DRAFT and s.draft_seed:
+            if TRACE_DRAFT and s.draft_seed and getattr(s, "dspark_fallback", None) is None:
                 s.dspark_fallback = "ordinary_decode"
             s.draft_seed = False
         super()._launch(live, pending)
 
     def round(self):
         self._check()
-        if self.inflight is not None:
-            return super().round()
-        live = [s for s in self.streams.values() if not s.done]
-        # Consume a completed chunk before choosing the live width. For an
-        # unfinished prompt, verify and settle the other slots before its
-        # next bounded layer group. Never wait for a filling lane to join.
-        filling = self.filling
         finishing = self.finishing
-        if (len(live) + len(filling) > self.e._draft_verify.bucket
-                or any(not s.draft_seed for s in filling)
-                or live and not self._fixed_entries(live)
-                or not (live or finishing is not None and finishing[0] is not None)):
+        joining = finishing[0] if finishing is not None else None
+        if not ((joining is not None and joining.draft_seed)
+                or any(s.draft_seed and not s.done for s in self.streams.values())):
+            # Preserve the target-only run-ahead path when no draft lane can
+            # join this turn.
             return super().round()
         import torch
 
         try:
             with torch.inference_mode():
                 done = []
+                if self.inflight is not None:
+                    for s, chosen in self._collect():
+                        if chosen is not None:
+                            s.take(chosen, self._ends(s))
+                        if s.done:
+                            done.append(s)
                 if finishing is not None:
                     self.finishing = None
-                    if finishing[0] is not None:
+                    if joining is not None:
                         done += self._filled(*finishing)
-                        live = [s for s in self.streams.values() if not s.done]
-                entries = self._fixed_entries(live)
-                if entries:
-                    start = time.perf_counter() if self.filling else None
+                ready, ordinary, cancelled = self._decode_groups()
+                done.extend(cancelled)
+                filling = bool(self.filling) or self.split is not None
+                if ready:
+                    live, entries = zip(*ready, strict=True)
+                    start = time.perf_counter() if filling else None
                     done += self._fixed_round(live, entries)
                     if start is not None:
                         self._draft_round_ms = (time.perf_counter() - start) * 1000
-                elif live:
-                    self._launch(live, {})
-                if self.filling:
+                        if ordinary:
+                            self._draft_round_ms += self.rounds.estimate(self._bucket(len(ordinary)))
+                if ordinary:
+                    self._launch(ordinary, {})
+                if filling:
                     done += self._fill()
                 return done
         except BaseException as error:
