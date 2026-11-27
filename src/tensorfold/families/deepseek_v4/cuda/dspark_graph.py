@@ -72,6 +72,8 @@ class SpecShape:
         self.scratch = engine.slots - 1
         self._page_table = engine.slot_pages.table
         device = target.device
+        if spec._target is not target:
+            raise ValueError("DSpark verify state belongs to another target")
         if (spec.slots != self.scratch
                 or self._page_table.shape != (engine.slots, engine.slot_pages.width)
                 or self._page_table.dtype != torch.int32 or self._page_table.device != device
@@ -230,17 +232,24 @@ class SpecShape:
 
 
 class FixedVerifyOwner:
-    """One prepared vector shape and one unresolved verification per rank.
+    """One unresolved verification per rank across prepared vector shapes.
 
     The future engine transport must submit identical frames on every rank
     and join the commit acknowledgments before publishing output or reusing
     state. A failed CUDA submission poisons the cohort.
     """
 
-    def __init__(self, shape: SpecShape):
+    def __init__(self, shape: SpecShape, *, narrower: tuple[SpecShape, ...] = ()):
         if not shape.depth:
             raise ValueError("fixed DSpark verification needs a positive depth")
         self.shape = shape
+        self.bucket, self.depth, self.head = shape.bucket, shape.depth, shape.head
+        self.shapes = (*narrower, shape)
+        if narrower and (tuple(s.bucket for s in self.shapes) != tuple(range(1, shape.bucket + 1))
+                         or any(s.spec is not shape.spec or s.head is not shape.head
+                                or s.depth != shape.depth or s.index_context != shape.index_context
+                                for s in narrower)):
+            raise ValueError("DSpark catalogue requires consecutive widths and shared device state")
         self.next_sequence = 0
         self.pending: tuple[int, tuple[int, ...]] | None = None
         self._host_slots = np.full(shape.bucket, shape.scratch, dtype=np.int32)
@@ -250,12 +259,29 @@ class FixedVerifyOwner:
         # Warm the separately aligned serving ABI with no live destination.
         shape.spec.commit(self._slots, self._counts)
 
+    def release_graphs(self) -> None:
+        """Release drained captures while retaining per-slot draft context."""
+        if self.pending is not None:
+            raise RuntimeError("cannot release DSpark graphs with a pending verification")
+        for shape in self.shapes:
+            shape.graph = shape._graph_out = None
+
+    def capture(self) -> None:
+        stream = torch.cuda.Stream()
+        for shape in self.shapes:
+            # Serving can replay the widths in any order. Each graph owns
+            # its private temporary storage, while its inputs share owners.
+            shape.capture(torch.cuda.graph_pool_handle(), stream)
+        torch.cuda.synchronize()
+
     def verify_batch(self, sequence: int, entries: tuple[VerifyEntry, ...]) -> VerifyOutput:
+        count = len(entries)
         if (self.pending is not None or type(sequence) is not int or sequence != self.next_sequence
-                or not 1 <= len(entries) <= self.shape.bucket
+                or not 1 <= count <= self.bucket
                 or any(type(entry) is not VerifyEntry or entry.pending is not None for entry in entries)):
             raise ValueError("invalid fixed DSpark verify sequence or owner count")
-        output = self.shape.run(entries)
+        shape = self.shapes[count - 1] if len(self.shapes) > 1 else self.shape
+        output = shape.run(entries)
         self.pending = sequence, tuple(entry.slot for entry in entries)
         self.next_sequence += 1
         return output

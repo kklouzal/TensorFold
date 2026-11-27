@@ -41,6 +41,7 @@ F_IMAGE = 1 << 24          # a prompt chunk with image rows: their features are 
 F_AHEAD = 1 << 25          # run-ahead round: token ids from the previous replay's device greedy tokens (graphs.py)
 EXPERT_SAMPLE_SHIFT = 26   # OP_STEP: 0 off, 1 prefill, 2 decode, visible only to the rank-zero observer
 F_W576_FP32 = 1 << 28      # experimental continuation math, independent of output packet format
+F_DRAFT_TAPS = 1 << 29     # OP_STEP appends the first local row to tap in an ordinary prompt forward
 # The TP8 vision tower's operations (``OP_TOWER``, kind in a; every rank runs its shard, ``DS41Engine._tower``)
 OP_TOWER = 32
 OP_EXPERT_PLACEMENT = 33
@@ -54,6 +55,7 @@ RESERVE = 3 << 30          # bytes left free per rank for prompt transients, aft
 H64_TEXT_RESERVE = 5 << 29
 GRAPH_EACH_BYTES = 40 << 20 # decode graph memory per captured bucket (sizing bound; measured ~30 MiB)
 GRAPH_BYTES = 128 << 20     # + the graphs' shared torch pool (measured ~40 MiB)
+DRAFT_BUCKETS = (1, 2, 3)
 # Experimental compact ETP4 allowance for these exact, ordered 128K H64 keys.
 # Keep the catalogue independent of shape_keys so edits use the generic allowance
 # until requalified. See docs/recipes/deepseek-v41-v100.md.
@@ -82,6 +84,7 @@ class DS41Engine:
                  expert_balance_sample_every: int = 64, expert_balance_half_life: int = 262_144,
                  no_expert_balance: bool = False,
                  kv_full_windows: str | None = None,
+                 draft_root: Path | None = None, draft_depth: int | None = None,
                  **_options) -> None:
         from .. import ROTOR_KV_DTYPE
 
@@ -89,6 +92,9 @@ class DS41Engine:
         if kv_full_windows is not None and (kv_full_windows != "auto" or not serve):
             raise ValueError("DeepSeek-V4.1 supports only --kv-full-windows auto in CUDA serving")
         full_windows_auto = kv_full_windows == "auto"
+        if ((draft_root is None) != (draft_depth is None)
+                or draft_depth is not None and (type(draft_depth) is not int or draft_depth != 3 or not full_windows_auto)):
+            raise ValueError("DeepSeek DSpark requires an FT bundle and depth 3 with --kv-full-windows auto")
         # The container may also serve the native codec. Its execution must
         # skip the experiments scoped to the compact RotorQuant profile.
         rotorquant = kv_dtype == ROTOR_KV_DTYPE
@@ -113,7 +119,8 @@ class DS41Engine:
                        expert_placement=expert_placement, expert_balance_state=expert_balance_state,
                        expert_balance_sample_every=expert_balance_sample_every,
                        expert_balance_half_life=expert_balance_half_life, expert_balance_live=expert_balance_live,
-                       w576_fp32=w576_fp32, sp_fp32=sp_fp32, full_windows_auto=full_windows_auto)
+                       w576_fp32=w576_fp32, sp_fp32=sp_fp32, full_windows_auto=full_windows_auto,
+                       draft_root=draft_root, draft_depth=draft_depth)
         if expert_placement is None and expert_balance_state is None and not (w576_fp32 or sp_fp32 or full_windows_auto):
             self._initialize(model_dir, startup=None, **options)
             return
@@ -131,7 +138,7 @@ class DS41Engine:
                     serve, queue_timeout_s, graphs, keep_slots, prefix_host_bytes, vision, vision_urls,
                     vision_offload, yarn_factor, kv_dtype, expert_tensor_parallel_size, expert_placement,
                     expert_balance_state, expert_balance_sample_every, expert_balance_half_life, expert_balance_live,
-                    w576_fp32, sp_fp32, full_windows_auto, startup):
+                    w576_fp32, sp_fp32, full_windows_auto, draft_root, draft_depth, startup):
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -146,6 +153,8 @@ class DS41Engine:
         if tp != W.WORLD or not 0 <= rank < tp:
             raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8")
         etp = W.checked_etp(expert_tensor_parallel_size)
+        if draft_root is not None and etp != W.ETP:
+            raise ValueError("DeepSeek DSpark requires ETP4 × EP2")
         self._experimental_w576_fp32 = w576_fp32
         experiment = w576_fp32 or sp_fp32
         if expert_balance_state is not None:
@@ -198,13 +207,13 @@ class DS41Engine:
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
             mode = (int(expert_balance_live) | (int(w576_fp32) << 1) | (int(sp_fp32) << 2)
-                    | (int(rotorquant) << 3) | (int(full_windows_auto) << 4))
+                    | (int(rotorquant) << 3) | (int(full_windows_auto) << 4) | (int(draft_root is not None) << 5))
             settings = [etp, int(expert_placement is not None), mode]
             local = torch.tensor(settings, dtype=torch.int64, device=device)
             agreed = torch.empty(tp * len(settings), dtype=torch.int64, device=device)
             self.comm.all_gather(local, agreed)
             if agreed.tolist() != settings * tp:
-                raise ValueError("DeepSeek-V4.1 ranks must agree on KV storage, full-window mode, ETP degree, expert placement and experimental math")
+                raise ValueError("DeepSeek-V4.1 ranks must agree on KV storage, full-window and draft mode, ETP degree, expert placement and experimental math")
             del local, agreed
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
@@ -426,6 +435,15 @@ class DS41Engine:
                 lattice = ds41_lattice_moe.Workspace(device, tile=len(self.w.local_experts),
                                                       intermediate=g.moe_inter // etp)
             torch.cuda.synchronize()
+        draft_weights = None
+        if draft_root is not None:
+            from .dspark_weights import load_ft
+
+            with clock.phase("dspark-weights"):
+                draft_weights = load_ft(draft_root, g, rank=rank, world=tp, vocab_first=self.w.embed_first,
+                                        device=device)
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
         free = torch.cuda.mem_get_info()[0]
         sizing_inputs = []
         if full_windows_auto:
@@ -445,6 +463,19 @@ class DS41Engine:
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(graph_keys) if capture else 0
         prompt_reserve = RESERVE
         funding = None
+        draft_budget = {}
+        c2_sources = sum(g.compress_ratios[layer] == 2 for layer in g.kv_sources)
+        if draft_weights is not None:
+            from .dspark_weights import RING, STAGES
+            from .kernels.kv_pack import ROTOR_ROW
+            from .speculation import Speculation
+
+            def draft_state(physical_slots):
+                ring = physical_slots * STAGES * RING * g.head_dim * 2
+                return ring + Speculation.state_bytes(physical_slots - 1, g.layers, c2_sources, ROTOR_ROW)
+
+            draft_budget = dict(draft_graph_bytes=len(DRAFT_BUCKETS) * (GRAPH_BYTES + GRAPH_EACH_BYTES),
+                                draft_state_bytes=draft_state, min_lanes=DRAFT_BUCKETS[-1])
         if full_windows_auto:
             from .prefix import full_window_plan
 
@@ -452,8 +483,9 @@ class DS41Engine:
             if any(row[1:] != sizing_inputs for row in records):
                 raise ValueError("DeepSeek-V4.1 ranks must agree on full-window sizing inputs")
             funding = full_window_plan(min(row[0] for row in records), self.context, slots, requested_keep_slots,
-                                       layout, ring_bytes_per_slot, sum(g.compress_ratios[layer] == 2 for layer in g.kv_sources),
-                                       prompt_reserve=prompt_reserve, graph_fixed=GRAPH_BYTES, graph_each=GRAPH_EACH_BYTES)
+                                       layout, ring_bytes_per_slot, c2_sources,
+                                       prompt_reserve=prompt_reserve, graph_fixed=GRAPH_BYTES, graph_each=GRAPH_EACH_BYTES,
+                                       **draft_budget)
             slots, keep_slots = funding["funded_lanes"], funding["keep_slots"]
             self.streams, self.keep_slots = slots, keep_slots
             graph_keys, graph_bytes, pages = funding["graph_keys"], funding["graph_allowance_bytes"], funding["pool_pages"]
@@ -526,6 +558,21 @@ class DS41Engine:
         elif rank == 0:
             print("[tensorfold] DeepSeek-V4.1 SM70: eager decode (" +
                   ("graphs disabled)" if not graphs else "TENSORFOLD_DS41_ENGRAM_TRACE set)"), flush=True)
+        if draft_weights is not None:
+            from .dspark_serving import prepare_verifier
+
+            self._draft_graph_budget = funding["draft_graph_allowance_bytes"]
+            with clock.phase("dspark-capture"):
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+                before = torch.cuda.mem_get_info()[0]
+                self._draft_verify = prepare_verifier(self, draft_weights, DRAFT_BUCKETS, draft_depth)
+                spec = self._draft_verify.shape.spec
+                state = self._draft_verify.head.ring.nbytes + spec.nbytes
+                if state != funding["draft_state_bytes"]:
+                    raise RuntimeError("DeepSeek DSpark state differs from the full-window plan")
+                self._capture_draft_graphs(prompt_reserve, before=before, state=state)
+            self.depth = draft_depth
         if expert_balance_live:
             from .expert_live import LiveExpertPlacement
 
@@ -562,7 +609,7 @@ class DS41Engine:
             from tensorfold.token_metadata import load_tokenizer
             from ..prompts_v41 import message_points
             self.points = message_points(load_tokenizer(model_dir).token_to_id)
-            self.decoder = Decoder(self)
+            self.decoder = FixedDraftDecoder(self) if self._draft_verify is not None else Decoder(self)
             # Requests beyond --parallel wait in the scheduler's queue; --queue-timeout-s bounds that wait (503 after).
             options = {}
             if self.expert_live is not None:
@@ -710,6 +757,8 @@ class DS41Engine:
         self.target.pool.detach(slot)
         self.slot_pages.set(slot, self.target.pool.attach(slot, tokens))
         self.target.reset_slot(slot)
+        if self._draft_verify is not None:
+            self._draft_verify.head.reset_slot(slot)
 
     def _detach(self, slot):
         self.target.pool.detach(slot)
@@ -719,7 +768,7 @@ class DS41Engine:
         """Ledger bytes of a slot holding ``capacity`` positions: its pages."""
         return -(-capacity // 64) * self.page_bytes
 
-    def _step(self, entries, ids, logits_rows, stop=0):
+    def _step(self, entries, ids, logits_rows, stop=0, tap_from=None):
         flags, stop = stop & ~0xFFFF, stop & 0xFFFF
         """entries: [(slot, start, count)] in row order; ids: the tokens; logits_rows: token rows to score.
         Returns rank 0's full-vocabulary FP32 logits [len(logits_rows), vocab] (None elsewhere). With
@@ -729,6 +778,13 @@ class DS41Engine:
         startup graph; ``stop`` = units runs the same forward eagerly."""
         import torch
         from .target import Step, DECODE_MAX
+        if tap_from is not None:
+            from .dspark_head import WINDOW
+
+            if (self._draft_verify is None or len(entries) != 1 or len(ids) < 2
+                    or entries[0][2] != len(ids) or not 0 <= tap_from < len(ids)
+                    or len(ids) - tap_from > WINDOW or flags & (F_IMAGE | F_SCORE | F_COMPACT | F_FULL | F_AHEAD)):
+                raise ValueError("DeepSeek DSpark taps require an ordinary multirow text prompt tail")
         device = self.target.device
         pool = self.target.pool
         positions, token_req, qsl = [], [], [0]
@@ -791,6 +847,13 @@ class DS41Engine:
             step.expert_prefill_phase = expert_sample - 1
         del rows
         state = self.target.begin(step)
+        if tap_from is not None:
+            from .target import DRAFT_TAP_LAYERS
+
+            indices = torch.arange(tap_from, len(ids), dtype=torch.long, device=device)
+            taps = torch.empty((len(indices), len(DRAFT_TAP_LAYERS) * self.geometry.hidden), dtype=torch.float16,
+                               device=device)
+            state["draft_context"] = (entries[0][0], indices, taps)
         if flags & F_SCORE:                # logits_rows carries each row's next token: score all rows
             rows = (logits_rows, bool(flags & F_LAST))
         else:
@@ -800,10 +863,23 @@ class DS41Engine:
             if self.part is not None:
                 raise RuntimeError("a DeepSeek-V4.1 prompt forward began while another one is paused")
             self.part = (state, rows)
-            self.target.layers(state, stop, marks)
+            self._advance_layers(state, stop, marks)
             return None
-        self.target.layers(state, self.units, marks)
+        self._advance_layers(state, self.units, marks)
         return self._end(state, rows)
+
+    def _advance_layers(self, state, stop, marks):
+        context = state.get("draft_context") if self._draft_verify is not None else None
+        if context is None:
+            self.target.layers(state, stop, marks)
+            return
+        import torch
+
+        slot, indices, taps = context
+        self.target.layers_with_draft_taps(state, stop, indices, taps, marks)
+        if stop == self.units:
+            positions = state["step"].positions.index_select(0, indices)
+            self._draft_verify.head.insert_context(torch.full_like(positions, slot), taps, positions)
 
     def _layers(self, stop):
         """Advance the paused prompt forward to unit ``stop`` (< 0: drop it); at the last unit finish it. Decode
@@ -812,7 +888,7 @@ class DS41Engine:
             self.part = None
             return None
         state, rows = self.part
-        self.target.layers(state, stop, self.layer_marks)
+        self._advance_layers(state, stop, self.layer_marks)
         if stop < self.units:
             return None
         self.part = None
@@ -872,6 +948,10 @@ class DS41Engine:
             entries = [tuple(ids[i:i + 3]) for i in range(0, n, 3)]
             tokens = ids[n:n + b]
             rows = ids[n + b:n + b + c]
+            if d & F_DRAFT_TAPS:
+                if len(ids) != n + b + c + 1:
+                    raise ValueError("invalid DeepSeek DSpark tap frame")
+                return self._step(entries, tokens, rows, d & ~F_DRAFT_TAPS, ids[-1])
             return self._step(entries, tokens, rows, d)
         if op == OP_LAYERS:
             return self._layers(a)
@@ -894,7 +974,7 @@ class DS41Engine:
     def _check_draft_vector(self, op, sequence, count, c, d, ids):
         verifier = getattr(self, "_draft_verify", None)
         width = 3 if op == OP_DRAFT_VERIFY_BATCH else 2
-        if (verifier is None or not 1 <= count <= verifier.shape.bucket or sequence < 0
+        if (verifier is None or not 1 <= count <= verifier.bucket or sequence < 0
                 or c or d or len(ids) != count * width):
             raise ValueError("invalid DeepSeek DSpark control frame")
         if op == OP_DRAFT_VERIFY_BATCH and self.part is not None:
@@ -1048,9 +1128,30 @@ class DS41Engine:
         if (tuple(self.graphs.keys) != self._expert_graph_keys or self.graphs.bytes > self._expert_graph_bytes
                 or spare < self._expert_prompt_reserve):
             raise RuntimeError("rebuilt expert graphs do not meet the original catalogue and memory budget")
+        if self._draft_verify is not None:
+            self._capture_draft_graphs(self._expert_prompt_reserve)
 
-    def step(self, entries, ids, logits_rows, stop=0):
+    def _capture_draft_graphs(self, prompt_reserve, *, before=None, state=0):
+        import torch
+
+        if before is None:
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            before = torch.cuda.mem_get_info()[0]
+        self._draft_verify.capture()
+        torch.cuda.empty_cache()
+        spare = torch.cuda.mem_get_info()[0]
+        used = before - spare - state
+        if used > self._draft_graph_budget or spare < prompt_reserve:
+            raise RuntimeError(f"DeepSeek DSpark rank {self.rank}: B1/B2/B3 captures took {used >> 20} MiB "
+                               f"(sized {self._draft_graph_budget >> 20} MiB); {spare >> 20} MiB left, "
+                               f"{prompt_reserve >> 20} MiB required for prompt transients")
+
+    def step(self, entries, ids, logits_rows, stop=0, *, tap_from=None):
         payload = [v for e in entries for v in e] + list(ids) + list(logits_rows)
+        if tap_from is not None:
+            stop |= F_DRAFT_TAPS
+            payload.append(tap_from)
         observer = self.expert_observer
         if observer is not None:
             # Polling history can fail. Prepare the sample before notifying peers to enter the TP8 forward.
@@ -1110,7 +1211,7 @@ class DS41Engine:
         options = {"background": True} if background else {}
         if penalties is not None and penalties.active:
             options["penalties"] = penalties
-        # ``draft`` carries prompt-prefix eligibility (no drafter yet), as the Gemma 4 SM70 Decoder reads it
+        # This flag carries both draft and prompt reuse eligibility in the CUDA scheduler.
         return self.scheduler.submit(list(prompt), max_tokens, sampling, bool(draft and cache_prompt), on_tokens,
                                      stop_eos=stop_eos, vision=vision,
                                      constraint=constraint, probabilities=probabilities, progress=progress, **options)
@@ -1201,6 +1302,7 @@ class DS41Engine:
             # graphs, pinned history snapshots, or the Engram map. A failed fence retains their owners.
             torch.cuda.synchronize()
             self.graphs = None
+            self._draft_verify = None
             operations = []
             if self.expert_observer is not None:
                 operations.append(self.expert_observer.finish)
@@ -1223,6 +1325,8 @@ class DS41Engine:
 
         def stop():
             nonlocal stopped
+            if self._draft_verify is not None and self._draft_verify.pending is not None:
+                raise RuntimeError("cannot stop DeepSeek DSpark with an unsettled verification")
             self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
             stopped = True
 
@@ -1383,7 +1487,11 @@ class Decoder(PrefixOwner):
         s.history = (History(s.penalties, list(s.prompt if s.vision is None else s.vision.token_ids))
                      if s.penalties is not None and s.penalties.active else None)
         s.forced = getattr(s.probabilities, "forced", None)
+        self._admitted(s)
         self.filling.append(s)
+
+    def _admitted(self, s):
+        pass
 
     def cancel(self, gone) -> list:
         """Filling requests whose clients left end now (their slots retire in ``finish``)."""
@@ -1528,8 +1636,7 @@ class Decoder(PrefixOwner):
             out = e.step([(s.slot, start, stop - start)], s.prompt[start:stop], s.prompt[start + 1:stop] + [after],
                          layer | F_SCORE | (F_LAST if last else 0))
         else:
-            out = e.step([(s.slot, start, stop - start)], s.prompt[start:stop], [stop - start - 1] if last else [],
-                         layer | image)
+            out = self._text_chunk(s, start, stop, last, layer | image)
         s.prefill_s += time.perf_counter() - t0
         if unit < e.units:
             self.split = (s, (start, stop, last, sink, True), unit)
@@ -1537,6 +1644,10 @@ class Decoder(PrefixOwner):
         self._timed()
         self.finishing = (s, (start, stop, last, sink, True), out)
         return []
+
+    def _text_chunk(self, s, start, stop, last, flags, **options):
+        return self.e.step([(s.slot, start, stop - start)], s.prompt[start:stop],
+                           [stop - start - 1] if last else [], flags, **options)
 
     def _filled(self, s, chunk, out) -> list:
         """Prompt chunk ``chunk`` (start, stop, last, scoring sink, computed: False for an exact repeat's kept
@@ -1813,3 +1924,138 @@ class Decoder(PrefixOwner):
         sink.add([nxt], [token], [float(lp[token])], [tops], [topv])
         if hasattr(sink, "origins"):
             sink.origins([nxt], ["prompt-end" if nxt == len(s.prompt) else (0, 1)])
+
+
+class FixedDraftDecoder(Decoder):
+    """D3 serving with one complete verify and commit per scheduler turn."""
+
+    def __init__(self, engine):
+        super().__init__(engine)
+        self.verify_rounds_by_active = [0] * (engine._draft_verify.bucket + 1)
+
+    def _admitted(self, s):
+        from .dspark_head import WINDOW
+        from .round_sampling import plain
+
+        # A kept prefix has target state only. Every row of the last draft
+        # window must be recomputed for this slot before the first proposal.
+        s.draft_seed = (s.draft and s.vision is None and not s.background and not s.owed and s.token_limit is None
+                        and plain(s) and s.head is None and s.pos <= max(0, len(s.prompt) - WINDOW))
+
+    def _text_chunk(self, s, start, stop, last, flags, **options):
+        if s.draft_seed:
+            from .dspark_head import WINDOW
+
+            first = max(start, len(s.prompt) - WINDOW)
+            if first < stop:
+                if stop - start == 1:
+                    # Keep the ordinary graph for a one-row prompt tail.
+                    s.draft_seed = False
+                else:
+                    options["tap_from"] = first - start
+        return super()._text_chunk(s, start, stop, last, flags, **options)
+
+    def _fixed_entries(self, live):
+        from .dspark_weights import BLOCK as DRAFT_BLOCK
+        from .target import BLOCK
+
+        e = self.e
+        owner = e._draft_verify
+        if not 1 <= len(live) <= owner.bucket:
+            return ()
+        entries = []
+        for s in live:
+            if not s.draft_seed or not s.out or (s.cancel is not None and s.cancel.is_set()):
+                return ()
+            at = len(s.prompt) + len(s.out) - 1
+            if (at + DRAFT_BLOCK > e.context
+                    or at + owner.depth + 1 > len(e.target.pool.owned[s.slot]) * BLOCK):
+                return ()
+            entries.append((s.slot, at, s.out[-1]))
+        return entries
+
+    def _launch(self, live, pending):
+        for s in live:
+            # Ordinary continuation does not populate the draft ring.
+            s.draft_seed = False
+        super()._launch(live, pending)
+
+    def round(self):
+        self._check()
+        if self.inflight is not None or self.split is not None:
+            return super().round()
+        live = [s for s in self.streams.values() if not s.done]
+        # A whole prefill group's completed result is safe to retire before
+        # verification. A paused forward (including any long newcomer after
+        # its first group) goes through the unchanged ordinary round instead.
+        filling = self.filling
+        finishing = self.finishing
+        if (len(live) + len(filling) > self.e._draft_verify.bucket
+                or any(not s.draft_seed for s in filling)
+                or live and not self._fixed_entries(live)
+                or not (live or finishing is not None and finishing[0] is not None)):
+            return super().round()
+        import torch
+
+        try:
+            with torch.inference_mode():
+                done = []
+                if finishing is not None:
+                    self.finishing = None
+                    if finishing[0] is not None:
+                        done += self._filled(*finishing)
+                        live = [s for s in self.streams.values() if not s.done]
+                entries = self._fixed_entries(live)
+                if entries:
+                    done += self._fixed_round(live, entries)
+                elif live:
+                    self._launch(live, {})
+                if self.filling:
+                    done += self._fill()
+                return done
+        except BaseException as error:
+            self.broken = error
+            raise
+
+    def _fixed_round(self, live, entries):
+        from .dspark_serving import decide
+        from .round_sampling import greedy_tokens
+
+        e = self.e
+        owner = e._draft_verify
+        sequence, depth = owner.next_sequence, owner.depth
+        count, width = len(entries), depth + 1
+        output = e.announce(OP_DRAFT_VERIFY_BATCH, sequence, count,
+                            ids=(value for entry in entries for value in entry))
+        choices = greedy_tokens(output.compact[:, :count * width].cpu(), count * width)
+        proposals = output.drafts[:count].tolist()
+        resolved = []
+        for i, (s, (_, _, anchor), drafts) in enumerate(zip(live, entries, proposals, strict=True)):
+            chosen = error = None
+            if s.cancel is None or not s.cancel.is_set():
+                try:
+                    chosen = decide(choices[i * width:(i + 1) * width], anchor, drafts,
+                                    s.count - len(s.out), self._ends(s))
+                except Exception as failed:  # Roll back this slot and settle the rest of the vector.
+                    error = failed
+            resolved.append((chosen, error))
+        for i, s in enumerate(live):
+            if s.cancel is not None and s.cancel.is_set():
+                resolved[i] = (None, None)
+        e.announce(OP_DRAFT_COMMIT_BATCH, sequence, count,
+                   ids=(value for (slot, _, _), (chosen, _) in zip(entries, resolved, strict=True)
+                        for value in (slot, len(chosen) if chosen is not None else 0)))
+        self.verify_rounds_by_active[count] += 1
+
+        finished = []
+        for s, (chosen, error), drafts in zip(live, resolved, proposals, strict=True):
+            if chosen is None:
+                s.error, s.done, s.finished = error, True, time.perf_counter()
+            else:
+                if len(chosen) <= depth and chosen[-1] == drafts[len(chosen) - 1]:
+                    s.accepted += 1
+                s.counted(width)
+                s.take(chosen, self._ends(s))
+            if s.done:
+                finished.append(s)
+        return finished

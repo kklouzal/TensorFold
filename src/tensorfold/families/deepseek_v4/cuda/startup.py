@@ -184,6 +184,7 @@ class ExpertStartup:
 
                 torch.cuda.synchronize()
                 engine.graphs = None
+                engine._draft_verify = None
                 if self.engram is not None:
                     self.engram.close()
 

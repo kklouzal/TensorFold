@@ -68,6 +68,7 @@ def owners(device):
 
     spec = Spec()
     spec.slots = scratch
+    spec._target = target
 
     class Head:
         ring = torch.full((slots, 3, 256, 512), -1, dtype=torch.float16, device=device)
@@ -386,7 +387,7 @@ def test_engine_waits_for_exact_followers_before_completing_vector_commit(monkey
         echoes.append(payload)
 
     class Verifier:
-        shape = SimpleNamespace(bucket=3)
+        bucket = 3
         pending = None
 
         def __init__(self, rank):
@@ -431,6 +432,111 @@ def test_engine_waits_for_exact_followers_before_completing_vector_commit(monkey
         leader.announce(OP_DRAFT_COMMIT_BATCH, 2, 2, ids=iter((0, 0, 2, 3)))
         assert not leader.pipes.broken and notices == []
     assert all(row[2] == ((0, 0), (2, 3)) for row in commits)
+
+
+def test_exact_live_widths_share_one_pending_transaction():
+    engine, head, spec, events = owners(torch.device("cpu"))
+    shapes = tuple(SpecShape(engine, head, spec, width, 3, engine.context) for width in (1, 2, 3))
+    owner = FixedVerifyOwner(shapes[2], narrower=shapes[:2])
+    entries = tuple(VerifyEntry(slot, 3, 11 + slot) for slot in (0, 2, 3))
+    for sequence, count in enumerate((2, 1, 3, 1)):
+        out = owner.verify_batch(sequence, entries[:count])
+        assert out.drafts.shape == (count, 3)
+        assert events[-1] == ("begin", engine.context, list(range(0, 4 * count + 1, 4)))
+        with pytest.raises(RuntimeError, match="pending verification"):
+            owner.release_graphs()
+        owner.commit_batch(sequence, tuple((entry.slot, 0) for entry in entries[:count]))
+    assert owner.next_sequence == 4 and owner.pending is None
+    owner.release_graphs()
+
+
+def test_fixed_scheduler_cancels_a_lane_and_publishes_only_after_commit():
+    from threading import Event
+    from tensorfold.cuda.streams import Stream
+    from tensorfold.families.deepseek_v4.cuda.engine import (
+        FixedDraftDecoder, OP_DRAFT_COMMIT_BATCH, OP_DRAFT_VERIFY_BATCH,
+    )
+
+    decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
+    decoder.eos = (99,)
+    decoder.verify_rounds_by_active = [0] * 4
+    sent, emitted = [], []
+    cancel = Event()
+    first = Stream([1] * 10, 3, cancel=Event(), out=[5],
+                   emit=lambda tokens: emitted.append((sent[-1][0], tokens)))
+    second = Stream([1] * 10, 6, cancel=cancel, out=[6])
+    for slot, stream in enumerate((first, second)):
+        stream.slot = slot
+        stream.draft_seed = True
+    # Row 2/3 are not reachable on the first stream due to the cap. The
+    # second stream cancels after the vector starts, before any commit.
+    compact = torch.tensor([[[1., 10., 0.], [1., 11., 0.], [0., 0., 1.], [0., 0., 1.],
+                             [1., 12., 0.], [1., 13., 0.], [1., 14., 0.], [1., 15., 0.]]])
+
+    def announce(op, seq, count, *, ids):
+        sent.append((op, seq, count, tuple(ids)))
+        assert emitted == []
+        if op == OP_DRAFT_VERIFY_BATCH:
+            cancel.set()
+            return SimpleNamespace(compact=compact, drafts=torch.tensor([[10, 11, 12], [12, 13, 14]]))
+
+    decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(next_sequence=7, depth=3, bucket=3), context=32,
+                                target=SimpleNamespace(pool=SimpleNamespace(owned={0: [0], 1: [1]})),
+                                announce=announce)
+    lanes = [first, second]
+    entries = decoder._fixed_entries(lanes)
+    assert entries == [(0, 10, 5), (1, 10, 6)]
+    assert decoder._fixed_round(lanes, entries) == lanes
+    assert sent == [(OP_DRAFT_VERIFY_BATCH, 7, 2, (0, 10, 5, 1, 10, 6)),
+                    (OP_DRAFT_COMMIT_BATCH, 7, 2, (0, 2, 1, 0))]
+    assert emitted == [(OP_DRAFT_COMMIT_BATCH, [10, 11])]
+    assert (first.drafted, first.accepted, second.drafted) == (3, 2, 0)
+    assert decoder.verify_rounds_by_active == [0, 0, 1, 0]
+
+
+def test_fixed_scheduler_promotes_complete_short_prefill_and_never_waits_for_paused_newcomer(monkeypatch):
+    from tensorfold.families.deepseek_v4.cuda.engine import Decoder, FixedDraftDecoder
+
+    calls = []
+    decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
+    decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(bucket=3))
+    decoder._broken = decoder.inflight = decoder.split = None
+    decoder.streams = {}
+    decoder.filling = [SimpleNamespace(sid=i, draft_seed=True, done=False) for i in range(3)]
+    first, second, third = decoder.filling
+    decoder.finishing = (first, ())
+
+    def filled(stream, _result):
+        decoder.filling.remove(stream)
+        decoder.streams[stream.sid] = stream
+        calls.append(("publish-first", stream.sid))
+        return []
+
+    def fill():
+        stream = decoder.filling[0]
+        calls.append(("one-prompt-group", stream.sid))
+        decoder.finishing = (stream, ())
+        return []
+
+    def fixed(live, entries):
+        assert entries == tuple(s.sid for s in live)
+        calls.append(("verify-and-commit", len(live)))
+        return []
+
+    decoder._filled = filled
+    decoder._fill = fill
+    decoder._fixed_entries = lambda live: tuple(s.sid for s in live)
+    decoder._fixed_round = fixed
+    monkeypatch.setattr(Decoder, "round", lambda _self: calls.append("ordinary") or [])
+
+    for _ in range(3):
+        assert decoder.round() == []
+    assert calls == [("publish-first", first.sid), ("verify-and-commit", 1), ("one-prompt-group", second.sid),
+                     ("publish-first", second.sid), ("verify-and-commit", 2), ("one-prompt-group", third.sid),
+                     ("publish-first", third.sid), ("verify-and-commit", 3)]
+    # No next output waits for another unit of a long partially run prompt.
+    decoder.split = (third, (), 6)
+    assert decoder.round() == [] and calls[-1] == "ordinary"
 
 
 def test_engine_ordinary_announce_keeps_its_existing_wire(monkeypatch):
