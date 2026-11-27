@@ -20,7 +20,7 @@ _TOOL_FUNCTION_BLOCK_RE = re.compile(r"^\s*<function=([^>\s]+)>\s*(.*?)\s*</func
 class StreamDecoder:
     """Decode a shared token window to preserve leading spaces and byte boundaries, deferring incomplete characters."""
 
-    def __init__(self, tok, skip: tuple[int, ...] = (), *, literal: bool = False):
+    def __init__(self, tok, skip: tuple[int, ...] = (), *, literal: bool = False, controls=()):
         self.tok = tok
         # Structured output is data: only its actual stop IDs are framing.
         # Keep the same incremental UTF8 decoder, without presentation cleanup.
@@ -31,15 +31,30 @@ class StreamDecoder:
         self.text = ""
         self.prefix = 0             # window start
         self.read = 0               # tokens already reflected in ``text``
+        self._controls = {token: text for text in controls if (token := tok.token_to_id(text)) is not None}
+        self.control_offsets = {text: [] for text in controls}
 
     def _decode(self, ids: list[int]) -> str:
         return self.tok.decode(ids, skip_special_tokens=False)
+
+    def _record_controls(self, before, after):
+        if self._controls:
+            for index in range(self.read, len(self.ids)):
+                marker = self._controls.get(self.ids[index])
+                if marker is not None:
+                    offset = len(self._decode(self.ids[self.prefix:index]))
+                    position = len(self.text) + offset - len(before)
+                    if after.startswith(marker, offset) and offset >= len(before):
+                        offsets = self.control_offsets[marker]
+                        if not offsets or offsets[-1] < position:
+                            offsets.append(position)
 
     def add(self, new: list[int]) -> str:
         self.ids.extend(t for t in new if t not in self.skip)
         before = self._decode(self.ids[self.prefix:self.read])
         after = self._decode(self.ids[self.prefix:])
         if len(after) > len(before) and not after.endswith("\ufffd"):
+            self._record_controls(before, after)
             self.text += after[len(before):]
             self.prefix, self.read = self.read, len(self.ids)
         return self.text
@@ -48,7 +63,9 @@ class StreamDecoder:
         """Everything, including a trailing partial character (as decoding it all at once gives)."""
 
         before = self._decode(self.ids[self.prefix:self.read])
-        return self.text + self._decode(self.ids[self.prefix:])[len(before):]
+        after = self._decode(self.ids[self.prefix:])
+        self._record_controls(before, after)
+        return self.text + after[len(before):]
 
 
 class StopStrings:

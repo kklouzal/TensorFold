@@ -56,7 +56,7 @@ _VISUAL = ("image_url", "image", "video_url", "video")      # a video part reach
 
 def normalize_messages(messages: list[dict[str, Any]], *, late_system: str = "system",
                        allow_images: bool = False, allow_audio: bool = False,
-                       audio_placeholders: bool = False) -> list[dict[str, Any]]:
+                       audio_placeholders: bool = False, preserve_text_parts: bool = False) -> list[dict[str, Any]]:
     """Merge leading instructions as system text and retain later instructions as ``late_system`` so earlier conversation tokens stay unchanged."""
 
     if not isinstance(messages, list) or not messages:
@@ -96,7 +96,8 @@ def normalize_messages(messages: list[dict[str, Any]], *, late_system: str = "sy
                 if not isinstance(part.get("text"), str):
                     raise RequestError("a text content part must contain a text string")
                 text.append(part["text"])
-            content = "".join(text)
+            if not preserve_text_parts or role not in _IMAGE_ROLES:
+                content = "".join(text)
         elif content is None:
             content = ""
         elif not isinstance(content, str):

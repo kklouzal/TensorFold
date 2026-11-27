@@ -481,6 +481,7 @@ def _accepted_tool_delta(calls, delta):
             if "id" not in part or "name" not in part.get("function", {}):
                 raise RuntimeError("tool stream arguments preceded their call head")
             calls.append({"id": part["id"], "type": "function",
+                          **({"namespace": part["namespace"]} if "namespace" in part else {}),
                           "function": {"name": part["function"]["name"], "arguments": []}})
         function = part.get("function", {})
         fragment = function.get("arguments", "")
@@ -489,7 +490,7 @@ def _accepted_tool_delta(calls, delta):
 
 
 def _finished_wire_calls(calls):
-    return [{"id": call["id"], "type": call["type"], "function": {
+    return [{**call, "function": {
         "name": call["function"]["name"], "arguments": "".join(call["function"]["arguments"])}}
         for call in calls]
 
@@ -976,7 +977,8 @@ class App:
         ignore_eos, stop = stop_options(body)
         max_tokens = self._requested_tokens(body)
         try:
-            tools = active_tool_specs(body.get("tools"), body.get("tool_choice"))
+            tool_name = getattr(getattr(self.template, "calls", None), "tool_name", tool_spec_name)
+            tools = active_tool_specs(body.get("tools"), body.get("tool_choice"), tool_name=tool_name)
         except ValueError as exc:
             raise RequestError(str(exc)) from None
         kwargs = body.get("chat_template_kwargs")
@@ -1544,7 +1546,8 @@ class App:
                         chars, parts = wire_chars, wire_parts
                         for call in delta["tool_calls"]:
                             function = call.get("function", {})
-                            chars += len(call.get("id", "")) + len(function.get("name", "")) + len(function.get("arguments", ""))
+                            chars += (len(call.get("id", "")) + len(call.get("namespace", ""))
+                                      + len(function.get("name", "")) + len(function.get("arguments", "")))
                             parts += 8 + len(call) + len(function)
                         credit = canonical_capture.credit
                         bound = (_CanonicalCredits.render_bound(chars, parts) if isinstance(credit, _CanonicalCredits)
@@ -1576,16 +1579,19 @@ class App:
             sent = {"reasoning": 0, "content": 0}
             stopped = {"client": False, "stop": False}
             failed: list[Exception | None] = [None]  # preallocated callback failure cell; no append on exhaustion
-            stream = StreamDecoder(self.tok, ends, literal=gemma and split_reasoning)
             # streamed calls go out as argument deltas while written (as on the Mac); one-call requests keep the end parser
             strict = prepared.calls
             family_calls = getattr(self.template, "calls", None)   # a renderer's own call grammar (DeepSeek-V4.1 DSML)
+            controls = (() if strict is not None or prepared.grammar is not None or not (split_reasoning or tools)
+                        else getattr(family_calls, "controls", ()))
+            stream = StreamDecoder(self.tok, ends, literal=gemma and split_reasoning, controls=controls)
             calls_stream = ((strict.reader() if strict is not None else
                              family_calls.streamer(tools) if family_calls is not None else ToolCallStreamer(tools))
                             if tools and not policy.single and body.get("stream")
                             and (prepared.grammar is None or strict is not None)
                             and (strict is not None or not gemma) else None)
             answer_raw = [""]
+            answer_positions = [()]
             native_starts = tuple(t for t in (self.tok.token_to_id("<|channel>"), self.tok.token_to_id("<|think|>"))
                                   if t is not None) if gemma else ()
             grammar_state = [None]  # request-owned boundary, independent of producer/rank matcher copies
@@ -1666,6 +1672,9 @@ class App:
                             reasoning = prefix
                     else:
                         reasoning = ""
+                elif controls:
+                    reasoning, answer, answer_positions[0] = family_calls.reply_parts(
+                        raw, thinking=split_reasoning, finished=finished, controls=stream.control_offsets)
                 elif split_reasoning:
                     reasoning, answer = split_thinking(raw, finished=finished, markers=markers)
                     if finished and tools and not gemma and not answer:
@@ -1684,7 +1693,8 @@ class App:
 
                     answer = hide_gemma_calls(answer, finished=finished)
                 elif tools and prepared.grammar is None:
-                    answer = (policy.content(answer, finished=finished) if policy.single else
+                    answer = (family_calls.hide(answer, finished=finished, positions=answer_positions[0]) if controls else
+                              policy.content(answer, finished=finished) if policy.single else
                               family_calls.hide(answer, finished=finished) if family_calls is not None
                               else hide_tool_calls(answer, finished=finished))
                 if tools and (prepared.grammar is None or strict is not None):
@@ -1771,7 +1781,9 @@ class App:
                         if not emit(None):
                             stopped["client"] = True
                     if calls_stream is not None and not stopped["client"]:
-                        for call_delta in calls_stream.feed(answer_raw[0]):   # never the reasoning
+                        call_deltas = (calls_stream.feed(answer_raw[0], positions=answer_positions[0]) if controls
+                                       else calls_stream.feed(answer_raw[0]))
+                        for call_delta in call_deltas:   # never the reasoning
                             if not emit(call_delta):
                                 stopped["client"] = True
                                 break
@@ -2051,7 +2063,9 @@ class App:
                         # Only a normal actual terminal resolves malformed-JSON
                         # raw fallback. Never finalize on cancel/error/reply cap
                         # or a user stop that can cut a still-valid call short.
-                        for call_delta in calls_stream.feed(answer_raw[0], finished=True):
+                        call_deltas = (calls_stream.feed(answer_raw[0], finished=True, positions=answer_positions[0])
+                                       if controls else calls_stream.feed(answer_raw[0], finished=True))
+                        for call_delta in call_deltas:
                             if not emit(call_delta):
                                 stopped["client"] = True
                                 raise RequestCancelled("the client left during the terminal tool reply")
@@ -2060,13 +2074,17 @@ class App:
                         final["reasoning_content"] = reasoning[sent["reasoning"]:]
                     from tensorfold.token_metadata import decode_presentation
 
-                    raw_text = (stream.final() if gemma and split_reasoning else
+                    raw_text = (stream.final() if controls or (gemma and split_reasoning) else
                                 decode_presentation(self.tok, [t for t in out if t not in ends]))
                     text = stops.visible(raw_text)
                     calls_complete = True
                     if strict is not None:          # a strict reply's calls follow its grammar exactly: read as written
                         raw_answer = answer_raw[0] if prepared.grammar is not None or (gemma and split_reasoning) else text
                         content, calls, calls_complete = strict.parse_finished(raw_answer, max_calls=policy.max_calls)
+                    elif tools and controls:
+                        content, calls = family_calls.parse(answer_raw[0], tools, max_calls=policy.max_calls,
+                                                            finished=normal_tool_end(), positions=answer_positions[0])
+                        calls_complete = family_calls.complete(answer_raw[0], answer_positions[0])
                     elif tools and prepared.grammar is None:
                         if not gemma:
                             text = normalize_qwen_tool_markup(text, finished=normal_tool_end())
@@ -2089,7 +2107,7 @@ class App:
                         content = visible_tool_prose(content, calls=bool(calls))
                     # the calls already sent as deltas; the handler sends the rest (a call the streamer could not follow)
                     streamed = calls_stream.index + 1 if calls_stream is not None and calls_stream.streamed else 0
-                    if streamed > len(calls or ()):
+                    if not controls and streamed > len(calls or ()):
                         hide = family_calls.hide if family_calls is not None else hide_tool_calls
                         content = hide(content, finished=True).strip()   # those calls are the streamed deltas
                     sent_text = answer[:sent["content"]]

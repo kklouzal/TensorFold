@@ -10,7 +10,9 @@ from tensorfold.markup_lex import DSML41_CALLS
 from tensorfold.server import strict_tools as common
 from tensorfold.server.errors import RequestError
 from tensorfold.server.text import _partial_tag
-from tensorfold.server.tools import stream_tool_call_deltas, tool_spec_name
+from tensorfold.server.tools import stream_tool_call_deltas
+
+from .serving_v41 import tool_name, wire_name
 
 
 OPEN, CLOSE = DSML41_CALLS
@@ -86,12 +88,16 @@ class Plan:
     def __init__(self, tools, *, required, parallel, offered=None):
         self.parallel = parallel
         self.tools = set()
+        self.wire_names = {}
         tags = []
         indices = {id(tool): i for i, tool in reversed(list(enumerate(offered or ())))}
         size = 0
         for i, tool in enumerate(tools):
             where = f"tools[{indices.get(id(tool), i)}].function"
-            name = tool_spec_name(tool)
+            try:
+                name = tool_name(tool)
+            except ValueError as exc:
+                raise RequestError(str(exc)) from exc
             if not NAME.fullmatch(name) or name in self.tools:
                 raise RequestError(f"{where}.name cannot identify a unique DSML tool")
             parameters = common._function(tool).get("parameters")
@@ -109,6 +115,7 @@ class Plan:
                 raise common._too_large()
             tags.append(tag)
             self.tools.add(name)
+            self.wire_names[name] = wire_name(tool, name)
         invokes = {"type": "tags_with_separator", "tags": tags, "separator": "\n",
                    "at_least_one": True, "stop_after_first": not parallel}
         block = {"type": "tag", "begin": OPEN + "\n", "content": common._seq(invokes, common._const("\n")), "end": CLOSE}
@@ -133,7 +140,7 @@ class Plan:
         reader = self.reader()
         reader.read(answer, finished=True)
         parsed = reader.calls if max_calls is None else reader.calls[:max_calls]
-        calls = [_call(name, arguments) for name, arguments in parsed]
+        calls = [_call(self.wire_names[name], arguments) for name, arguments in parsed]
         return "".join(reader.text).strip(), calls or None, not reader.unfinished
 
     def content(self, answer, *, finished):
@@ -176,10 +183,14 @@ def _ignore_number(_):
 _JSON = json.JSONDecoder(parse_int=_ignore_number, parse_float=_ignore_number, parse_constant=_non_json_number)
 
 
-def _call(name, arguments):
+def _call(wire, arguments):
+    name, namespace = wire
     args = ",".join(json.dumps(key, ensure_ascii=False) + ":" + value for key, value in arguments.items())
-    return {"id": f"call_{uuid4().hex[:24]}", "type": "function",
+    call = {"id": f"call_{uuid4().hex[:24]}", "type": "function",
             "function": {"name": name, "arguments": "{" + args + "}"}}
+    if namespace is not None:
+        call["namespace"] = namespace
+    return call
 
 
 def _block(text, start, tools):
@@ -270,7 +281,7 @@ class Reader:
     def feed(self, answer):
         before = len(self.calls)
         self.read(answer)
-        deltas = stream_tool_call_deltas([_call(name, args) for name, args in self.calls[before:]])
+        deltas = stream_tool_call_deltas([_call(self.plan.wire_names[name], args) for name, args in self.calls[before:]])
         for delta in deltas:
             for part in delta["tool_calls"]:
                 part["index"] += before

@@ -23,14 +23,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tensorfold.markup_lex import DSML41_CALLS, markup_regions
+from tensorfold.markup_lex import DSML41_CALLS, _call_end, markup_regions
 
 from .prompts_v41 import SOURCE, render_literals
 from .vendor import encoding_dsv41 as native
 
 OPENER, CLOSER = DSML41_CALLS
 EFFORTS = frozenset(("low", "medium", "high", "xhigh", "max"))   # names the encoder hears (prompts_v41.EFFORTS)
-_SOURCES = ("prompts_v41.py", "literal_prompts_v41.py", "vendor/encoding_dsv41.py")
+_SOURCES = ("prompts_v41.py", "literal_prompts_v41.py", "vendor/encoding_dsv41.py",
+            "serving_v41.py", "../../server/messages.py")
 # what the server's startup note and late-system probe read in place of Jinja source
 _DESCRIPTION = (f"{SOURCE}: thinking by enable_thinking (chat_template_kwargs.thinking), reasoning_effort "
                 "none/low/medium/high/xhigh/max or 1-100")
@@ -66,23 +67,87 @@ def decode_block(block: str) -> list[tuple[str, dict[str, Any]]] | None:
     return calls
 
 
-def _known(tools: list[dict[str, Any]] | None) -> dict[str, str]:
+def _namespace(tool):
+    function = tool.get("function", tool)
+    if not isinstance(function, dict):
+        raise ValueError("a DSML tool requires a function object")
+    namespace = tool.get("namespace")
+    if namespace is None:
+        namespace = function.get("namespace")
+    if isinstance(namespace, dict):
+        namespace = namespace.get("name")
+        if namespace is None:
+            raise ValueError("a DSML namespace object requires a name")
+    if namespace is not None and (not isinstance(namespace, str) or not namespace or "::" in namespace):
+        raise ValueError("a DSML namespace requires a nonempty unqualified name")
+    return namespace
+
+
+def tool_name(tool):
+    """The qualified name written by the native tool renderer."""
     from tensorfold.server.tools import tool_spec_name
 
-    return {tool_spec_name(tool).lower(): tool_spec_name(tool) for tool in tools or ()}
+    try:
+        return native._tool_name_for_encoding({"name": tool_spec_name(tool), "namespace": _namespace(tool)})
+    except AssertionError as exc:
+        raise ValueError(str(exc)) from exc
 
 
-def _blocks(text: str, finished: bool):
-    return [region for region in markup_regions(text, finished=finished)
-            if region.kind == "call" and region.opener == OPENER]
+def wire_name(tool, qualified):
+    """Keep explicit protocol namespaces and existing qualified OpenAI names."""
+    namespace = _namespace(tool)
+    return (qualified if namespace is None else qualified.split("::", 1)[1]), namespace
+
+
+def _known(tools: list[dict[str, Any]] | None):
+    result = {}
+    for tool in tools or ():
+        name = tool_name(tool)
+        if name.lower() in result:
+            raise ValueError("offered DSML tool names must be unique")
+        result[name.lower()] = wire_name(tool, name)
+    return result
+
+
+def _call(name, arguments, known):
+    from tensorfold.server.tools import _openai_tool_call
+
+    wire, namespace = known[name.lower()]
+    result = _openai_tool_call(name, arguments, {name.lower(): wire})
+    if namespace is not None:
+        result["namespace"] = namespace
+    return result
+
+
+def _blocks(text: str, finished: bool, positions=None):
+    if positions is not None:
+        end = 0
+        unquoted = None
+        for token in positions:
+            start = token - 1
+            if start < end or not text.startswith(OPENER, start):
+                continue
+            if start and not text.endswith("\n\n", 0, start):
+                # Keep existing unquoted inline calls. Only the official
+                # line framing can override an unmatched prose quote/fence.
+                if unquoted is None:
+                    unquoted = {region.start for region in _blocks(text, finished)}
+                if start not in unquoted:
+                    continue
+            frame = _call_end(text, start, OPENER, CLOSER, False, repeated=False, finished=finished)
+            if frame.complete and frame.payload_end + 2 not in positions:
+                continue
+            yield frame
+            end = frame.end
+        return
+    yield from (region for region in markup_regions(text, finished=finished)
+                if region.kind == "call" and region.opener == OPENER)
 
 
 def parse(text: str, tools: list[dict[str, Any]], *, max_calls: int | None = None,
-          finished: bool = True) -> tuple[str, list[dict[str, Any]] | None]:
+          finished: bool = True, positions=None) -> tuple[str, list[dict[str, Any]] | None]:
     """(content, OpenAI calls or None) of a finished reply's answer, as ``server.tools.parse_tool_calls_from_content``
     reads other formats: content is the text outside the parsed blocks; a one-call request keeps the first call."""
-
-    from tensorfold.server.tools import _openai_tool_call
 
     if not tools:
         return text, None
@@ -90,7 +155,7 @@ def parse(text: str, tools: list[dict[str, Any]], *, max_calls: int | None = Non
     calls: list[dict[str, Any]] = []
     residue: list[str] = []
     cursor = 0
-    for region in _blocks(text, finished):
+    for region in _blocks(text, finished, positions):
         if not region.complete:
             continue
         residue.append(text[cursor:region.start])
@@ -104,17 +169,57 @@ def parse(text: str, tools: list[dict[str, Any]], *, max_calls: int | None = Non
             continue
         for name, arguments in found:
             if max_calls is None or len(calls) < max_calls:
-                calls.append(_openai_tool_call(name, arguments, known))
+                calls.append(_call(name, arguments, known))
     residue.append(text[cursor:])
     return "".join(residue).strip(), calls or None
 
 
-def hide(text: str, *, finished: bool) -> str:
+def hide(text: str, *, finished: bool, positions=None) -> str:
     """The answer without its DSML blocks; while streaming, a tail that may begin one is held back."""
 
-    from tensorfold.server.text import hide_tool_calls
+    from tensorfold.server.text import _partial_tag, hide_tool_calls
 
-    return hide_tool_calls(text, finished=finished, openers=(OPENER, OPENER.lower()))
+    if positions is None:
+        return hide_tool_calls(text, finished=finished, openers=(OPENER, OPENER.lower()))
+    parts, cursor = [], 0
+    for region in _blocks(text, finished, positions):
+        parts.append(text[cursor:region.start])
+        cursor = region.end
+    tail = text[cursor:]
+    if not finished:
+        tail = tail[:len(tail) - _partial_tag(tail, OPENER)]
+    return "".join((*parts, tail))
+
+
+def reply_parts(text, *, thinking, finished, controls):
+    """Split generated control tokens and return DSML offsets in the answer."""
+    from tensorfold.server.text import _partial_tag
+
+    start = 0
+    reasoning = ""
+    dsml = controls[native.dsml_token]
+    if thinking:
+        close = next((p for p in controls[native.thinking_end_token]
+                      if text.startswith(native.thinking_end_token, p)), None)
+        if close is not None:
+            reasoning = text[:close]
+            start = close + len(native.thinking_end_token)
+        else:
+            frame = next(_blocks(text, finished, dsml), None)
+            if frame is None or (finished and not frame.complete):
+                held = 0 if finished else _partial_tag(text, OPENER)
+                return text[:len(text) - held], "", ()
+            if not finished:
+                return text[:frame.start], "", ()
+            reasoning = text[:frame.start]
+            start = frame.start
+        while start < len(text) and text[start] == "\n":
+            start += 1
+    return reasoning, text[start:], tuple(p - start for p in dsml if start <= p < len(text))
+
+
+def complete(text, positions):
+    return all(frame.complete for frame in _blocks(text, True, positions))
 
 
 class CallStreamer:
@@ -128,11 +233,11 @@ class CallStreamer:
         self.index = -1              # the last call sent
         self.streamed = False
 
-    def feed(self, text: str, *, finished: bool = False) -> list[dict[str, Any]]:
-        from tensorfold.server.tools import _openai_tool_call, stream_tool_call_deltas
+    def feed(self, text: str, *, finished: bool = False, positions=None) -> list[dict[str, Any]]:
+        from tensorfold.server.tools import stream_tool_call_deltas
 
         out: list[dict[str, Any]] = []
-        for region in _blocks(text, finished):
+        for region in _blocks(text, finished, positions):
             if region.start < self.pos:
                 continue
             if not region.complete:
@@ -144,7 +249,7 @@ class CallStreamer:
             for name, arguments in found:
                 self.index += 1
                 self.streamed = True
-                for delta in stream_tool_call_deltas([_openai_tool_call(name, arguments, self.known)]):
+                for delta in stream_tool_call_deltas([_call(name, arguments, self.known)]):
                     for part in delta["tool_calls"]:
                         part["index"] = self.index
                     out.append(delta)
@@ -157,6 +262,10 @@ class Calls:
     parse = staticmethod(parse)
     hide = staticmethod(hide)
     streamer = CallStreamer
+    controls = (native.thinking_end_token, native.dsml_token)
+    reply_parts = staticmethod(reply_parts)
+    complete = staticmethod(complete)
+    tool_name = staticmethod(tool_name)
 
 
 @dataclass(frozen=True)
@@ -249,13 +358,14 @@ class V41ChatTemplate:
             raise TemplateError("DeepSeek-V4.1 takes no audio inputs")
         # leading instructions merged; later system turns kept; image parts only where the server's vision frontend
         # asks (``allow_images``: it expands each image's one placeholder)
-        messages = normalize_messages(messages, allow_images=bool(allow_images))
+        messages = normalize_messages(messages, allow_images=bool(allow_images), preserve_text_parts=True)
         limit = MAX_RENDER_BYTES if max_render_bytes is None else max_render_bytes
         try:
             if extra is not None and not isinstance(extra, dict):
                 raise PromptEncodingError("chat template kwargs must be a mapping")
             if type(add_generation_prompt) is not bool:
                 raise PromptEncodingError("generation prompt mode must be a boolean")
+            _known(tools)
             if render_credit is not None:
                 render_credit(0, 0)
             text = render_literals(messages, self.literals, tools=tools or None, thinking=bool(enable_thinking),

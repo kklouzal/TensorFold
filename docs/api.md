@@ -306,6 +306,15 @@ render a later system message, the server renders it as a user message. Text con
 in order. Caller messages are not mutated.
 Changing earlier rendered tokens can reduce prefix reuse.
 
+DeepSeek-V4.1 CUDA Chat Completions keeps user and tool-result text parts
+separate for its native encoder, which joins the parts with blank lines. It
+accepts an explicit function namespace and returns it alongside the bare
+function name. Existing qualified names such as `files::read` still round
+trip as qualified names. For unconstrained replies, the actual generated
+thinking and DSML control tokens establish framing, including after prose
+with an unmatched quote or fence. Ordinary token sequences that spell the
+same delimiters stay text.
+
 New function-tool definitions require a string name containing a non-whitespace
 character. Invalid definitions are rejected before rendering or generation on
 both endpoints; names are not accepted by converting numbers or objects to text.
