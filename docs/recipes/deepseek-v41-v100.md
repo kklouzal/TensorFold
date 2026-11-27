@@ -411,6 +411,14 @@ messages and tool results. The model directory's `config.json` names the mmproj 
 
 ### TP8 serving qualification
 
+With `--vision-image-tokens 0`, source `7be9d01b` on the same eight-V100
+hardware, image, checkpoint and profile below funded the same seven full
+windows. A 25-image request used 4,645 prompt tokens and correctly identified
+the last image. An image-and-text prompt with a requested reply budget totaling
+exactly 1,048,576 tokens was accepted. Increasing the reply budget by one was
+refused. This exercised admission and a short reply. Full-window image-heavy
+prefill, sustained mixed traffic and resize latency remain unmeasured.
+
 On eight 32 GiB V100s at 185 W, source `dc9f220a` on image `67b43e682057`
 served the 1017 checkpoint with TP8/ETP4, RotorQuant Q4, native 1,048,576-token
 context, `--kv-full-windows auto`, DSpark D3, `--vision` and `--vision-max-images 0`.
