@@ -129,6 +129,7 @@ def split_images(messages: list[dict[str, Any]], *, limits: ImageLimits = DEFAUL
     if not isinstance(messages, list) or not messages:
         raise ImageInputError("messages must be a non-empty list")
     output, sources = [], []
+    image_count = 0
     for message in messages:
         if not isinstance(message, dict):
             raise ImageInputError("each message must be an object")
@@ -181,10 +182,11 @@ def split_images(messages: list[dict[str, Any]], *, limits: ImageLimits = DEFAUL
                     raise ImageInputError("image_url parts are supported only in user and tool messages")
                 if any(part.get(key) for key in _MEDIA - {"image_url"}):
                     raise ImageInputError("image_url parts cannot contain other media")
-                if sum(isinstance(s, ImageSource) for s in sources) >= limits.max_images:
+                if image_count >= limits.max_images:
                     raise _count_error(limits)
                 source = _source(part.get("image_url"), limits, allow_urls)
                 sources.append(source)
+                image_count += 1
                 parts.append({"type": "image", "detail": source.detail})
             else:
                 raise ImageInputError("content parts must be text, image_url or video_url; audio is unsupported"

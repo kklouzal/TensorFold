@@ -391,8 +391,9 @@ messages and tool results. The model directory's `config.json` names the mmproj 
   the message's parts joined with `\n\n`. Request text that spells the placeholder is refused. Each placeholder
   expands to the image's span, `[START] ([IMAGE] * w + [NEWLINE]) * h + [END]`, at most 1024 tokens per image
   (upstream's resize plan, Pillow `ImageOps.pad` with grey 127). Unlike the friend's server, EXIF orientation is
-  applied before the plan. `--vision-max-images` (default 4) and `--vision-image-tokens` (default 4096) bound a
-  request.
+  applied before the plan. `--vision-max-images 0` removes the separate image-count cap across the submitted
+  history (default 4). The images then share the `--vision-image-tokens` budget (default 4096); request byte,
+  decoded-pixel and prompt-plus-reply context limits also apply.
 - Tower. The mmproj ViT (32 x 1024) and 3 x 3 aligner split their projection outputs across eight ranks. Gathers
   assemble FP16 features in input order, each GEMM accumulates its full input dimension in FP32, and the residual,
   norms and RoPE stay FP32. The deployment keeps the mmproj and vision bias files stable during loading. The tower

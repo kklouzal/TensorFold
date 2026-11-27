@@ -169,10 +169,11 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                                "each image pays the copy)")
     endpoint.add_argument("--vision-max-images", type=int, default=None,
                           help="with --vision, maximum images across the full request history (default: 4); "
-                               "byte, pixel and visual-token limits still apply")
+                               "DeepSeek-V4.1 CUDA accepts 0 to use the visual-token budget without a separate "
+                               "count limit; byte and pixel limits still apply")
     endpoint.add_argument("--vision-image-tokens", type=int, default=None,
-                          help="with --vision on CUDA Qwen checkpoints, the visual tokens a request's images share "
-                               "(default: 4096, at most 65536); each image keeps at most 4096")
+                          help="visual tokens a CUDA request's images share (default: 4096 where supported, "
+                               "at most 65536); the model sets its per-image maximum")
 
     generation = serve.add_argument_group("model defaults and generation")
     generation.add_argument("--context", type=int, default=None,

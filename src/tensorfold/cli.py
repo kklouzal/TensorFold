@@ -567,6 +567,16 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
 
         app_class = getattr(family.package, "CUDA_APP", None) or App
         record_limits = getattr(args, "_api_record_limits", None)
+        vision_max_images = getattr(args, "vision_max_images", None)
+        vision_image_tokens = getattr(args, "vision_image_tokens", None)
+        if vision_max_images == 0:
+            from tensorfold.vision.images import DEFAULT_LIMITS
+
+            if vision_image_tokens is None:
+                vision_image_tokens = DEFAULT_LIMITS.max_visual_tokens
+            # Every image uses at least one visual token. This parser bound cannot
+            # exclude a request that fits the visual-token budget.
+            vision_max_images = vision_image_tokens
         app = app_class(
             engine,
             model_dir,
@@ -577,9 +587,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             context_window=context if context is not None else args.context,
             reasoning_effort=args.reasoning_effort,
             thinking_budget=int(args.thinking_budget),
-            vision_max_images=getattr(args, "vision_max_images", None),
-            **({"vision_image_tokens": args.vision_image_tokens}
-               if getattr(args, "vision_image_tokens", None) is not None else {}),
+            vision_max_images=vision_max_images,
+            **({"vision_image_tokens": vision_image_tokens} if vision_image_tokens is not None else {}),
             aliases=list(args.alias),
             background_ids=frozenset(_name_priority(args)),
             max_pending_requests=getattr(args, "max_pending_requests", None),

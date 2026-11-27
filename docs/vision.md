@@ -96,6 +96,10 @@ image-count limit when serving with `--vision`, on both backends:
 tensorfold serve TensorFold/GLM-5.3-Flash-MLX-4bit-MTP --vision --vision-max-images 8
 ```
 
+DeepSeek-V4.1 CUDA also accepts `--vision-max-images 0`. The visual-token budget
+then governs how many images fit alongside the existing upload, pixel and context
+limits.
+
 The count includes **all images in the submitted message history**, including images from earlier turns
 and tool results, in tool messages or sent as user image parts. Reading images one at a time can therefore
 reach the limit. Once that history exceeds it, even a text-only follow-up is refused if the client resends

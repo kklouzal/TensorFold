@@ -371,8 +371,9 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         raise ValueError("--vision-urls needs --vision")
     images = getattr(args, "vision_max_images", None)
     if images is not None:
-        if not isinstance(images, int) or isinstance(images, bool) or images < 1:
-            raise ValueError("--vision-max-images must be a positive integer")
+        token_bounded = backend == "cuda" and getattr(family, "model_type", "") == "deepseek_v41"
+        if type(images) is not int or images < (0 if token_bounded else 1):
+            raise ValueError("--vision-max-images must be a positive integer, or 0 for DeepSeek-V4.1 CUDA")
         if not getattr(args, "vision", False):
             raise ValueError("--vision-max-images needs --vision")
     tokens = getattr(args, "vision_image_tokens", None)

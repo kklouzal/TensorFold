@@ -530,7 +530,7 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 | `--mlx-cache-gib N` | MLX, default 8 GiB reusable freed-buffer cache. |
 | `--vision` | Off. GLM on MLX, Qwen dense on MLX/CUDA, Flash Next CUDA with parallel ≥2, and supported Gemma4 CUDA checkpoints. E2B includes qualified image/video/audio input; [validation scope](docs/gemma4-e2b-validation.md). |
 | `--vision-urls` | Off; image data URLs only by default. Opt in to public HTTP(S) URLs; URL safety policy still applies. |
-| `--vision-max-images N` | Effective default 4 across the full history; byte, pixel and visual-token limits also apply. |
+| `--vision-max-images N` | Effective default 4 across the full history. DeepSeek-V4.1 CUDA accepts `0` to use the visual-token budget without a separate image-count cap. Byte and pixel limits still apply. |
 
 Image input requires the `vision` extra in a source installation. The API accepts text/image parts; the E2B CUDA integration adds timestamped video and user `input_audio` parts. The CUDA Harness reports capabilities supported by the loaded frontend, including audio input for E2B. See [vision contracts and qualification](docs/vision.md) and the [Harness/deployment guide](deploy/gb10/README.md). Enabling vision can add workspace and reduce the room available for experts or context.
 
