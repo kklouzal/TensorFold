@@ -8,13 +8,10 @@ from typing import NamedTuple
 import numpy as np
 import torch
 
+from .dspark_weights import BLOCK as DRAFT_BLOCK, RING as DRAFT_RING
 from .graphs import shape_keys
 from .round_sampling import compact_packet
 from .target import BLOCK, DRAFT_TAP_LAYERS, Step
-
-
-DRAFT_BLOCK = 5
-DRAFT_RING = 256
 
 
 @dataclass(frozen=True)
