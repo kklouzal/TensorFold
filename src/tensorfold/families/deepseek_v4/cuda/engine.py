@@ -131,7 +131,7 @@ class DS41Engine:
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
         from tensorfold.cuda.control_pipes import ControlPipes
-        from .. import CUDA_KV_DTYPES, ROTOR_KV_DTYPE
+        from .. import CUDA_KV_DTYPES, NATIVE_KV_DTYPE, ROTOR_KV_DTYPE
         from . import weights as W
         from .engram import HostEngram
         from .collectives import Collectives
@@ -159,7 +159,7 @@ class DS41Engine:
         if kv_dtype not in CUDA_KV_DTYPES:
             raise ValueError(f"DeepSeek-V4.1 does not support --kv-dtype {kv_dtype!r}")
         rotorquant = kv_dtype == ROTOR_KV_DTYPE
-        self.model_kv_dtype = kv_dtype if rotorquant else "fp8-window+fp4-compressed"
+        self.model_kv_dtype = ROTOR_KV_DTYPE if rotorquant else NATIVE_KV_DTYPE
         rope = g.rope_parameters(yarn_factor)
         self.yarn_factor = rope.factor
         self.context = self.context_window = int(context or rope.context_limit)
@@ -186,13 +186,14 @@ class DS41Engine:
         prebuild.wait(small_gather.__name__)
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
-            mode = int(expert_balance_live) | (int(w576_fp32) << 1) | (int(sp_fp32) << 2)
+            mode = (int(expert_balance_live) | (int(w576_fp32) << 1) | (int(sp_fp32) << 2)
+                    | (int(rotorquant) << 3))
             settings = [etp, int(expert_placement is not None), mode]
             local = torch.tensor(settings, dtype=torch.int64, device=device)
             agreed = torch.empty(tp * len(settings), dtype=torch.int64, device=device)
             self.comm.all_gather(local, agreed)
             if agreed.tolist() != settings * tp:
-                raise ValueError("DeepSeek-V4.1 ranks must agree on ETP degree, expert placement and experimental math")
+                raise ValueError("DeepSeek-V4.1 ranks must agree on KV storage, ETP degree, expert placement and experimental math")
             del local, agreed
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
