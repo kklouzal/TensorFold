@@ -310,16 +310,35 @@ def select_rows_split(q, weights, keys, positions, valid, ratio, *, first_positi
             last = first + span
             width = min(keys.shape[0], max(top_k, max(lengths[first:last])))
         n = last - first
-        scores = torch.mm(mine_q[first:last].reshape(-1, 128), keys[:width].T).view(n, all_heads, width)
-        combined = torch.empty(n, width, dtype=torch.float16, device=q.device)
-        _pf_combine[(n, triton.cdiv(width, 1024))](scores, mine_w[first:last], combined, width, combined.stride(0),
-                                                    GROUPS=world, BLOCK=1024, num_warps=4)
-        del scores
+        key_tile = _ROW_TILE_BYTES // (n * all_heads * 2)
+        queries = mine_q[first:last].reshape(-1, 128)
+        head_weights = mine_w[first:last]
+        if width <= key_tile:
+            scores = torch.mm(queries, keys[:width].T).view(n, all_heads, width)
+            combined = torch.empty(n, width, dtype=torch.float16, device=q.device)
+            _pf_combine[(n, triton.cdiv(width, 1024))](scores, head_weights, combined, width, combined.stride(0),
+                                                        GROUPS=world, BLOCK=1024, num_warps=4)
+            del scores
+        else:
+            # Keep one global score plane for hierarchy and Top-K selection.
+            # The intermediate per-head scores only need one range of keys.
+            combined = torch.empty(n, width, dtype=torch.float16, device=q.device)
+            for start in range(0, width, key_tile):
+                stop = min(start + key_tile, width)
+                columns = stop - start
+                scores = torch.mm(queries, keys[start:stop].T).view(n, all_heads, columns)
+                _pf_combine[(n, triton.cdiv(columns, 1024))](
+                    scores, head_weights, combined[:, start:stop], columns, combined.stride(0),
+                    GROUPS=world, BLOCK=1024, num_warps=4,
+                )
+                del scores
         if hierarchy is None:
             index_topk(picked[first:last], combined, pos_mine[first:last], val_mine[first:last], ratio, top_k)
         else:
             select_ranked(picked[first:last], combined, pos_mine[first:last], val_mine[first:last],
                           ratio, index_topk, candidates=mine_candidates[first:last], block=block, publish=publish)
+        if width > key_tile:
+            del combined
         first = last
     def restore_order(local, out=None):
         width = local.shape[1]

@@ -148,6 +148,9 @@ Check the effective lane count in `limits.lanes` and the budget in
 Without it, the existing shared-pool serving and diagnostic behavior applies.
 Full-window admission at the native context, mixed traffic, and live
 recapture still need physical qualification for each degree.
+Long prefill bounds the per-head index score allocation by splitting the key
+range. The combined score plane still covers the whole range so hierarchical
+candidate selection and Top-K ordering use the same inputs.
 
 ### Experimental decode graph memory allowance
 

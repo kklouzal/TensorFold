@@ -27,8 +27,11 @@ def _reference(q, w, keys, positions, valid, ratio):
     return ops.index_topk(out, total.half().contiguous(), positions, valid, ratio, 512)
 
 
-@pytest.mark.parametrize("tokens,first,ratio", [(300, 2000, 4), (256, 2100, 4), (700, 1500, 2)])
-def test_row_split_selections_equal_the_tp8_reference(tokens, first, ratio):
+@pytest.mark.parametrize("tokens,first,ratio,key_tile", [
+    (300, 2000, 4, False), (256, 2100, 4, False), (700, 1500, 2, False),
+    (257, 2500, 1, True),
+])
+def test_row_split_selections_equal_the_tp8_reference(tokens, first, ratio, key_tile, monkeypatch):
     g = torch.Generator(device="cpu").manual_seed(tokens)
     # FP4-like grid values: every FP32 dot is exact (as for the model's FP4-QDQ'd queries and keys), so scores do
     # not depend on the GEMM's blocking
@@ -38,6 +41,8 @@ def test_row_split_selections_equal_the_tp8_reference(tokens, first, ratio):
     keys = (torch.randint(-6, 7, (max(end, 512), 128), generator=g) * 0.25).half().to(DEVICE)
     positions = torch.arange(first, first + tokens, device=DEVICE)
     valid = torch.ones(tokens, dtype=torch.bool, device=DEVICE)
+    if key_tile:
+        valid[2::17] = False
     want = _reference(q, w, keys, positions, valid, ratio)
 
     picks = {}
@@ -59,6 +64,30 @@ def test_row_split_selections_equal_the_tp8_reference(tokens, first, ratio):
         return ops.select_rows_split(q[:, 4 * rank:4 * rank + 4].contiguous(), w[:, 4 * rank:4 * rank + 4].contiguous(),
                                      keys, positions, valid, ratio, first_position=first, rank=rank, world=WORLD,
                                      all_gather=all_gather)
+
+    if key_tile:
+        # Capture one rank's complete combined score planes before top-k.
+        # A small budget forces several writes with a nonzero column offset,
+        # a short final tile and an interleave group containing invalid rows.
+        stock, bounded = [], []
+        topk = ops.index_topk
+
+        def capture(records):
+            def with_score_bits(out, scores, *args):
+                records.append(scores.view(torch.int16).clone())
+                return topk(out, scores, *args)
+            return with_score_bits
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(ops, "index_topk", capture(stock))
+            run(0, 0)
+            scoped.setattr(ops, "_ROW_TILE_BYTES", 1 << 20)
+            scoped.setattr(ops, "index_topk", capture(bounded))
+            run(0, 0)
+            assert len(stock) == 1 and len(bounded) == 2
+            assert torch.equal(stock[0][:32, :bounded[0].shape[1]], bounded[0])
+            assert torch.equal(stock[0][32:, :], bounded[1])
+        monkeypatch.setattr(ops, "_ROW_TILE_BYTES", 1 << 20)
 
     for rank in range(WORLD):
         run(rank, 0)
