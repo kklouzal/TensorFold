@@ -2406,7 +2406,8 @@ def print_done(request_id: str, prompt: int, cached: int, thinking: bool, out: l
     draft_trace = ""
     if (admission := stats.get("dspark_admission")) is not None:
         eligibility = ",".join(admission) or "eligible"
-        draft_trace = f" dspark_admission={eligibility}"
+        phase = "shadow" if stats.get("dspark_shadow") else "active"
+        draft_trace = f" dspark_mode={phase} dspark_admission={eligibility}"
         if (fallback := stats.get("dspark_fallback")) is not None:
             draft_trace += f" dspark_fallback={fallback}"
     print(f"[tensorfold] done {request_id} prompt={prompt} cached={cached} thinking={thinking} "

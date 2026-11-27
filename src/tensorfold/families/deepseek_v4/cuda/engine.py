@@ -1524,6 +1524,7 @@ class Decoder(PrefixOwner):
     def _admitted(self, s):
         if TRACE_DRAFT:
             s.dspark_admission = draft_blockers(s)
+            s.dspark_shadow = True
 
     def cancel(self, gone) -> list:
         """Filling requests whose clients left end now (their slots retire in ``finish``)."""
