@@ -60,6 +60,22 @@ def test_native_full_windows_use_real_snapshot_geometry_and_exact_graph_buckets(
     with pytest.raises(ValueError, match="cannot fund one"):
         plan(fits(1, 8, 1) - 1, 32)
 
+    draft_graph = 504 << 20
+    draft_state = lambda slots: slots << 20
+    exact = fits(3, 0, 3) + draft_graph + draft_state(4)
+
+    def draft_plan(free):
+        return full_window_plan(free, 1_048_576, 32, 0, layout, ring_bytes, len(target.c2),
+                                prompt_reserve=3072 << 20, graph_fixed=128 << 20, graph_each=40 << 20,
+                                draft_graph_bytes=draft_graph, draft_state_bytes=draft_state, min_lanes=3)
+
+    funded = draft_plan(exact)
+    assert funded["funded_lanes"] == 3 and funded["window_pages_each"] == 16_384
+    assert funded["draft_state_bytes"] == draft_state(4)
+    assert funded["draft_graph_allowance_bytes"] == draft_graph
+    with pytest.raises(ValueError, match="cannot fund 3"):
+        draft_plan(exact - 1)
+
 
 def _fill(target, slot, seed):
     g = torch.Generator().manual_seed(seed)
@@ -381,6 +397,7 @@ def test_decoder_finish_releases_uncached_slot(outcome):
     from tensorfold.families.deepseek_v4.cuda.engine import Decoder, DS41Engine, OP_ATTACH, OP_DETACH
 
     engine = _Engine(pages=16)
+    engine._draft_verify = None
     engine.target = _target(pages=16)
     engine.target.reset_slot = lambda slot: None
     pool = engine.target.pool

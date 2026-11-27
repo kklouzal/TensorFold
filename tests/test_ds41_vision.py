@@ -1,6 +1,7 @@
 """DeepSeek-V4.1 vision host pieces: resize plan, placeholder expansion, preprocessing and the vision bias file."""
 
 import hashlib
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -108,6 +109,99 @@ def test_preprocess_pads_grey_and_patchifies():
     from PIL import Image, ImageOps
     expected = np.asarray(ImageOps.pad(Image.fromarray(rgb), (best_w, best_h), color=V.PAD_COLOR)).transpose(2, 0, 1)
     assert np.array_equal(image, expected)
+
+
+@pytest.mark.parametrize(("limits", "message"), [
+    ({"max_visual_tokens": 919}, "the request's images take 920 visual tokens; at most 919"),
+    ({"max_prompt_tokens": 921, "max_visual_tokens": 920}, "context length exceeds 921 tokens"),
+])
+def test_prepare_rejects_over_budget_before_materializing_patches(limits, message):
+    frontend = V.Frontend.__new__(V.Frontend)
+    prompt = [5, *([V.IMAGE_TOKEN_ID] * 5), 8]
+    frontend.template = SimpleNamespace(encode=lambda _tokenizer, _rendered: prompt)
+    frontend.tokenizer = None
+
+    def premature_materialization():
+        pytest.fail("image patch preparation began before budget validation")
+
+    image = SimpleNamespace(width=448, height=448, to_pil=premature_materialization)
+    with pytest.raises(ValueError, match=message):
+        frontend.prepare("rendered", [image] * 5, **limits)
+
+
+def test_prepare_expands_five_images_at_the_exact_token_and_context_budgets():
+    pytest.importorskip("PIL")
+    from tensorfold.vision.images import ImageInput
+
+    frontend = V.Frontend.__new__(V.Frontend)
+    prompt = [5, *([V.IMAGE_TOKEN_ID] * 5), 8]
+    frontend.template = SimpleNamespace(encode=lambda _tokenizer, _rendered: prompt)
+    frontend.tokenizer = None
+    images = [ImageInput(1, 1, bytes((index, 0, 0))) for index in range(5)]
+    prepared = frontend.prepare("rendered", images, max_visual_tokens=920, max_prompt_tokens=922)
+    assert prepared.token_ids == (5,) + (V.IMAGE_TOKEN_ID,) * 920 + (8,)
+    assert prepared.image_hashes == tuple(image.content_hash for image in images)
+    assert all(isinstance(frame.pixels, np.ndarray) for frame in prepared.frames)
+
+
+def test_large_vision_prompt_retains_smaller_inputs_and_preserves_patch_pixels(monkeypatch):
+    pytest.importorskip("PIL")
+    from tensorfold.vision.images import ImageInput
+
+    frontend = V.Frontend.__new__(V.Frontend)
+    prompt = [5, *([V.IMAGE_TOKEN_ID] * 5), 8]
+    frontend.template = SimpleNamespace(encode=lambda _tokenizer, _rendered: prompt)
+    frontend.tokenizer = None
+    strip = ImageInput(8192, 1, bytes((12, 34, 56)) * 8192)
+    square = ImageInput(1400, 1400, bytes((1, 2, 3)) * (1400 * 1400))
+    eager_strip = V.preprocess(strip)
+    image_calls = []
+    patch_pixels = V._patch_pixels
+
+    def record(image, *geometry):
+        image_calls.append(image.content_hash)
+        return patch_pixels(image, *geometry)
+
+    monkeypatch.setattr(V, "_patch_pixels", record)
+    prepared = frontend.prepare("rendered", [strip] * 4 + [square], max_visual_tokens=5100, max_prompt_tokens=5100)
+    assert len(prepared.token_ids) == 5092
+    assert image_calls == [square.content_hash]
+    for frame in prepared.frames[:4]:
+        assert frame.pixels is strip and frame.tokens == 1024
+    square_patches = prepared.frames[-1].pixels
+    assert isinstance(square_patches, np.ndarray)
+    assert square_patches.nbytes < len(square.pixels)
+
+    # A scheduler turn estimates the deferred frame from its geometry. The
+    # stand-in engine submits a tower command without materializing any pixels.
+    decoder = _decoder(streams=3)
+    stream = SimpleNamespace(vision=prepared, encoded={}, encoding=None)
+    assert not decoder._encode(stream, *prepared.blocks[0])
+    assert image_calls == [square.content_hash]
+    materialized = V.pinned_patches(prepared.frames[0], pin=False).numpy()
+    assert image_calls == [square.content_hash, strip.content_hash]
+    assert np.array_equal(materialized, eager_strip.patches)
+
+
+def test_shared_window_counts_expanded_media_text_and_reply_together(tmp_path):
+    from tensorfold.server.errors import ContextLengthError
+    from tensorfold.vision.images import ImageLimits
+    from tests.test_vision_server import cuda_app, image_messages
+
+    frontend = V.Frontend.__new__(V.Frontend)
+    prompt = [5, *([V.IMAGE_TOKEN_ID] * 23), 8]
+    frontend.template = SimpleNamespace(encode=lambda _tokenizer, _rendered: prompt)
+    frontend.tokenizer = None
+    app = cuda_app(frontend, tmp_path)
+    app.context_window = app.engine.context_window = 4237
+    app.vision_image_tokens = 4237
+    app.image_limits = ImageLimits(max_images=4237, max_visual_tokens=4237)
+    body = {"messages": image_messages() * 23, "max_tokens": 3}
+    prepared = app.prepare(body, True)
+    assert len(prepared.prompt) == 4234 and prepared.max_tokens == 3
+    assert len(prepared.vision.frames) == 23
+    with pytest.raises(ContextLengthError, match="4234 tokens.*4 reply tokens"):
+        app.prepare(dict(body, max_tokens=4), True)
 
 
 def _span(frame):

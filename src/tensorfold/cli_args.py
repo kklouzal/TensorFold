@@ -169,10 +169,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                                "each image pays the copy)")
     endpoint.add_argument("--vision-max-images", type=int, default=None,
                           help="with --vision, maximum images across the full request history (default: 4); "
-                               "byte, pixel and visual-token limits still apply")
+                               "DeepSeek-V4.1 CUDA accepts 0 to use the visual-token budget without a separate "
+                               "count limit; byte and pixel limits still apply")
     endpoint.add_argument("--vision-image-tokens", type=int, default=None,
-                          help="with --vision on CUDA Qwen checkpoints, the visual tokens a request's images share "
-                               "(default: 4096, at most 65536); each image keeps at most 4096")
+                          help="visual tokens a CUDA request's images share (default: 4096 where supported, "
+                               "at most 65536); DeepSeek-V4.1 CUDA accepts 0 to share the full context with text. "
+                               "The model sets its per-image maximum")
 
     generation = serve.add_argument_group("model defaults and generation")
     generation.add_argument("--context", type=int, default=None,
@@ -242,6 +244,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="proposal method; none selects serial execution without loading a draft model; "
                             "auto detects the drafter architecture. Flash Next CUDA supports MTP, DSpark and "
                             "DFlash2; DFlash2 requires TP8 GGUF and an exact execution-profile pairing manifest. "
+                            "DeepSeek-V4.1 CUDA supports explicit D3 DSpark on the full-window RotorQuant profile. "
                             "--drafter selects the checkpoint")
     speed.add_argument("--drafter-bits", type=int, default=None,
                        help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
@@ -322,7 +325,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "(with --parallel P above N: N full windows plus P-N shorter resident windows). "
                             "Other Flash Next resident GGUF/RAM-expert modes reserve N full KV windows across slots. "
                             "DeepSeek-V4.1 TP8 RotorQuant Q4 at native context: auto selects only full-window lanes "
-                            "up to --parallel (default ceiling 32)")
+                            "up to --parallel (default ceiling 32), after loading any enabled vision tower")
     speed.add_argument("--kv-short-window", type=_short_window, default=None, metavar="TOKENS|auto",
                        help="Flash Next GGUF GPU histories with --parallel P above --kv-full-windows N: the "
                             "prompt-plus-reply window of the other P-N resident slots (auto: the largest that fits); "

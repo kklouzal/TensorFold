@@ -42,6 +42,8 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from tensorfold.vision.images import DEFAULT_LIMITS, ImageInput
+
 IMAGE_TOKEN_ID = 129264
 IMAGE_PLACEHOLDER = "<｜deepseek_image｜>"
 PATCH = 14
@@ -136,12 +138,18 @@ def image_token_types(n_llm_h: int, n_llm_w: int) -> np.ndarray:
 # ------------------------------------------------------------------------------------------- preprocessing
 @dataclass(frozen=True, slots=True)
 class ImageFrame:
-    """One image's ViT input: uint8 patches [n_vit_h * n_vit_w, 3, 14, 14] in reading order (CPU, owned)."""
+    """An owned CPU image with its final ViT patch geometry."""
 
-    patches: np.ndarray
+    pixels: np.ndarray | ImageInput
     n_vit_h: int
     n_vit_w: int
     content_hash: str            # tensorfold.vision.images.ImageInput.content_hash of the source pixels
+
+    @property
+    def patches(self) -> np.ndarray:
+        if isinstance(self.pixels, ImageInput):
+            return _patch_pixels(self.pixels, self.n_vit_h, self.n_vit_w)
+        return self.pixels
 
     @property
     def n_llm_h(self) -> int:
@@ -161,20 +169,33 @@ def preprocess(image) -> ImageFrame:
 
     Pixels exactly as image_processor.load_image: resize plan, ``ImageOps.pad`` (aspect-preserving resize, then
     centered grey-127 padding), patchify. The (x/255 - 0.5)/0.5 normalization runs on the device in FP32."""
+    return _preprocess(image, plan_image_grid(image.width, image.height))
+
+
+def _preprocess(image, plan: tuple[int, int, int, int], *, compact=False) -> ImageFrame:
+    n_llm_h, n_llm_w, best_height, best_width = plan
+    n_vit_h, n_vit_w = best_height // PATCH, best_width // PATCH
+    # Large requests keep at most the decoded RGB byte budget, even if tiny input
+    # images would expand into much larger patch buffers when padded for the tower.
+    if compact and len(image.pixels) < best_height * best_width * 3:
+        pixels = image
+    else:
+        pixels = _patch_pixels(image, n_vit_h, n_vit_w)
+    frame = ImageFrame(pixels, n_vit_h, n_vit_w, image.content_hash)
+    if (frame.n_llm_h, frame.n_llm_w) != (n_llm_h, n_llm_w):
+        raise AssertionError("DeepSeek-V4.1 token grid differs from its patch grid")
+    return frame
+
+
+def _patch_pixels(image, n_vit_h: int, n_vit_w: int) -> np.ndarray:
     from PIL import ImageOps
 
-    pil = image.to_pil()
-    n_llm_h, n_llm_w, best_height, best_width = plan_image_grid(pil.width, pil.height)
-    padded = ImageOps.pad(pil, (best_width, best_height), color=PAD_COLOR)
-    n_vit_h, n_vit_w = best_height // PATCH, best_width // PATCH
+    padded = ImageOps.pad(image.to_pil(), (n_vit_w * PATCH, n_vit_h * PATCH), color=PAD_COLOR)
     x = np.asarray(padded, dtype=np.uint8).transpose(2, 0, 1)
     patches = np.ascontiguousarray(
         x.reshape(3, n_vit_h, PATCH, n_vit_w, PATCH).transpose(1, 3, 0, 2, 4).reshape(n_vit_h * n_vit_w, 3, PATCH, PATCH))
     patches.flags.writeable = False
-    frame = ImageFrame(patches, n_vit_h, n_vit_w, image.content_hash)
-    if (frame.n_llm_h, frame.n_llm_w) != (n_llm_h, n_llm_w):
-        raise AssertionError("DeepSeek-V4.1 token grid differs from its patch grid")
-    return frame
+    return patches
 
 
 # ------------------------------------------------------------------------------------ prompt placeholders
@@ -239,15 +260,16 @@ class Frontend:
         tokens = self.template.encode(self.tokenizer, rendered_prompt)
         if not images or sum(t == IMAGE_TOKEN_ID for t in tokens) != len(images):
             raise ValueError("the DeepSeek-V4.1 prompt must hold exactly one image placeholder per image")
-        frames = [preprocess(image) for image in images]
-        visual = sum(f.tokens for f in frames)
+        plans = [plan_image_grid(image.width, image.height) for image in images]
+        visual = sum(num_image_tokens(h, w) for h, w, _, _ in plans)
         if max_visual_tokens is not None and visual > max_visual_tokens:
             raise ValueError(f"the request's images take {visual} visual tokens; at most {max_visual_tokens} are "
                              "admitted (--vision-image-tokens)")
-        prepared = expand_placeholders(tokens, frames)
-        if max_prompt_tokens is not None and len(prepared.token_ids) > max_prompt_tokens:
+        if max_prompt_tokens is not None and len(tokens) - len(images) + visual > max_prompt_tokens:
             raise ValueError(f"context length exceeds {max_prompt_tokens} tokens after image expansion")
-        return prepared
+        compact = visual > DEFAULT_LIMITS.max_visual_tokens
+        frames = [_preprocess(image, plan, compact=compact) for image, plan in zip(images, plans, strict=True)]
+        return expand_placeholders(tokens, frames)
 
     @staticmethod
     def continued(prepared: PreparedVision, ids) -> PreparedVision:

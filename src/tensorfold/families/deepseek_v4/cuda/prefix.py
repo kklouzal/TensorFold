@@ -118,29 +118,35 @@ def kept_points(keep_slots: int) -> int:
 
 
 def full_window_plan(free_bytes, context, ceiling, keep_slots, layout, ring_bytes_per_slot, c2_sources, *,
-                     prompt_reserve, graph_fixed, graph_each):
+                     prompt_reserve, graph_fixed, graph_each, draft_graph_bytes=0, draft_state_bytes=None,
+                     min_lanes=1):
     """Choose the highest ceiling whose shared pool funds every window and stable prefix points."""
     from .graphs import shape_keys
 
     window_pages = -(-context // layout.block_size)
     snapshot_raw = snapshot_bytes(ring_bytes_per_slot, c2_sources)
     snapshot_pages = -(-snapshot_raw // layout.page_bytes)
-    for lanes in range(ceiling, 0, -1):
+    for lanes in range(ceiling, min_lanes - 1, -1):
         keep = default_keep_slots(lanes) if keep_slots is None else keep_slots
         ring_bytes = (lanes + keep + 1) * ring_bytes_per_slot
         keys = shape_keys(lanes, context)
         graph_bytes = graph_fixed + graph_each * len(keys)
-        pages = (free_bytes - prompt_reserve - graph_bytes - ring_bytes) // layout.page_bytes
+        draft_state = draft_state_bytes(lanes + keep + 1) if draft_state_bytes is not None else 0
+        pages = (free_bytes - prompt_reserve - graph_bytes - ring_bytes - draft_graph_bytes - draft_state) // layout.page_bytes
         points = kept_points(keep)
         if pages >= lanes * window_pages + points * snapshot_pages:
-            return {"policy": "deepseek-full-windows-auto-v1", "context_window": context, "requested_lanes": ceiling,
+            plan = {"policy": "deepseek-full-windows-auto-v1", "context_window": context, "requested_lanes": ceiling,
                     "funded_lanes": lanes, "keep_slots": keep, "rank_min_free_bytes": free_bytes,
                     "page_tokens": layout.block_size, "page_bytes": layout.page_bytes, "pool_pages": pages,
                     "window_pages_each": window_pages, "stable_snapshot_points": points,
                     "snapshot_raw_bytes": snapshot_raw, "snapshot_pages_each": snapshot_pages,
                     "ring_bytes": ring_bytes, "prompt_reserve_bytes": prompt_reserve,
                     "graph_allowance_bytes": graph_bytes, "graph_keys": keys}
-    raise ValueError(f"DeepSeek-V4.1 SM70 cannot fund one {context}-token window with --kv-full-windows auto")
+            if draft_state_bytes is not None:
+                plan.update(draft_state_bytes=draft_state, draft_graph_allowance_bytes=draft_graph_bytes)
+            return plan
+    target = "one" if min_lanes == 1 else str(min_lanes)
+    raise ValueError(f"DeepSeek-V4.1 SM70 cannot fund {target} {context}-token window(s) with --kv-full-windows auto")
 
 
 class HostSlab:

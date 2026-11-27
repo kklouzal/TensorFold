@@ -11,6 +11,9 @@ V41 = "deepseek_v41"
 TITLE = "DeepSeek-V4-Flash"
 LANES = True
 CUDA_TP8 = True              # DeepSeek-V4.1 GGUF on eight V100s with TP8 attention and dense layers
+CUDA_DRAFT_METHODS = ("none", "dspark")
+CUDA_DRAFTER = ""            # CUDA DSpark requires an explicit local FT bundle.
+DS41_CUDA_DSPARK_DEPTH = 3
 ROTOR_KV_DTYPE = "rotorquant-iso64-norm4-h64"
 NATIVE_KV_DTYPE = "fp8-window+fp4-compressed"
 CUDA_KV_DTYPES = (NATIVE_KV_DTYPE, "bf16", ROTOR_KV_DTYPE)
@@ -143,12 +146,17 @@ def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
 
 
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0, master: str = "",
-                master_port: int = 29551, no_drafts: bool = False, context: int | None = None, **options: Any):
+                master_port: int = 29551, no_drafts: bool = False, context: int | None = None,
+                draft_method: str = "auto", mtp_drafts: int | None = None, **options: Any):
     """DeepSeek-V4.1-Flash GGUF on eight V100s with selectable routed-expert tensor parallelism."""
     from tensorfold.families import read_config
 
     if read_config(model_dir).get("model_type") != V41:
         raise ValueError("the CUDA engine serves DeepSeek-V4.1-Flash GGUF (model_type deepseek_v41)")
+    if draft_method == "dspark":
+        if no_drafts or not drafter or mtp_drafts not in (None, DS41_CUDA_DSPARK_DEPTH):
+            raise ValueError("DeepSeek-V4.1 CUDA DSpark requires an explicit draft bundle and depth 3")
+        options.update(draft_root=Path(drafter), draft_depth=DS41_CUDA_DSPARK_DEPTH)
     from .cuda.engine import DS41Engine
 
     return DS41Engine(Path(model_dir), rank=rank, tp=tp, master=master, master_port=master_port, context=context,

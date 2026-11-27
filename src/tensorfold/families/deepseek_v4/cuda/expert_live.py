@@ -118,6 +118,8 @@ class LiveExpertPlacement:
         engine.prefix.retire_placement_prefixes()
         # Release the previous captures only after the rank has fenced their readers in READY.
         engine.graphs = None
+        if engine._draft_verify is not None:
+            engine._draft_verify.release_graphs()
         pending.movement.enqueue()
         torch.cuda.current_stream(engine.comm.device).synchronize()
         engine.comm.check()

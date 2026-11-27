@@ -112,6 +112,14 @@ def snapshot(app: Any, *, server: Any = None,
     adaptive = runtime.snapshot(app)
     if adaptive is not None:
         result["runtime"] = adaptive
+    verify_rounds = getattr(decoder, "verify_rounds_by_active", None)
+    if verify_rounds is not None:
+        draft_stats = {"verify_rounds_by_active": {
+            str(active): rounds for active, rounds in enumerate(verify_rounds[1:], start=1)
+        }}
+        if credit is not None:
+            credit(draft_stats)
+        result["dspark"] = draft_stats
     pool = getattr(app, "host_payload_pool", None)
     if pool is not None:
         # Bounded scalar record: capacity, reserved/high-water bytes, owners and both wait queues.

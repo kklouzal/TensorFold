@@ -708,12 +708,15 @@ def _mu_commit_history_accepted(history, cand, cand_n, req_slot, counts, err, S:
     count = tl.load(counts + r).to(tl.int64)
     if (slot >= 0) & (slot < S) & (count >= 0):
         n = tl.load(cand_n + slot)
-        row = tl.where(n >= J - 1, J - 1, count)
-        bad = (count > n) | ((n >= J - 1) & (count != n))
-        col = tl.arange(0, 4)
-        value = tl.load(cand + (slot * J + row) * 4 + col)
-        tl.store(history + slot * 4 + col, value, ~bad)
-        tl.atomic_or(err, tl.where(bad, 4, 0).to(tl.int32))
+        full = n >= J - 1
+        bad = (n <= 0) | (count > n) | (full & (count != n))
+        if bad:
+            tl.atomic_or(err, 4)
+        else:
+            row = tl.where(full, J - 1, count)
+            col = tl.arange(0, 4)
+            value = tl.load(cand + (slot * J + row) * 4 + col)
+            tl.store(history + slot * 4 + col, value)
 
 
 @jit
@@ -770,15 +773,17 @@ def _mu_commit_c2_accepted(
     count = tl.load(counts + r).to(tl.int64)
     if (slot >= 0) & (slot < S) & (count >= 0):
         n = tl.load(cand_n + slot)
-        row = tl.where(n >= J - 1, J - 1, count)
-        bad = (count > n) | ((n >= J - 1) & (count != n))
-        d = tl.arange(0, BLOCK)
-        valid = (d < D) & ~bad
-        for part in tl.static_range(2):
-            value = tl.load(cand + ((slot * J + row) * 2 + part) * D + d, d < D, 0)
-            tl.store(partial + (slot * 2 + part) * D + d, value, valid)
-        tl.store(committed + slot, tl.load(cand_pos + slot * J + row), ~bad)
-        tl.atomic_or(err, tl.where(bad, 4, 0).to(tl.int32))
+        full = n >= J - 1
+        bad = (n <= 0) | (count > n) | (full & (count != n))
+        if bad:
+            tl.atomic_or(err, 4)
+        else:
+            row = tl.where(full, J - 1, count)
+            d = tl.arange(0, BLOCK)
+            for part in tl.static_range(2):
+                value = tl.load(cand + ((slot * J + row) * 2 + part) * D + d, d < D, 0)
+                tl.store(partial + (slot * 2 + part) * D + d, value, d < D)
+            tl.store(committed + slot, tl.load(cand_pos + slot * J + row))
 
 
 class MuSpeculation:

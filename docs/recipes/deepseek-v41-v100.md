@@ -125,8 +125,9 @@ remain to be verified.
 
 ### Experimental native-context window funding
 
-Use `--kv-dtype rotorquant-iso64-norm4-h64 --kv-full-windows auto` for TP8 text
+Use `--kv-dtype rotorquant-iso64-norm4-h64 --kv-full-windows auto` for TP8
 serving at the checkpoint's native context with native YaRN and decode graphs.
+Add `--vision` with the [vision artifacts](#image-input---vision) to serve images.
 The option works with ETP1/2/4 and honors the existing expert balancing opt-out.
 `--parallel N` caps the search, including `--parallel 1`. The ceiling is 32 when
 no numeric limit is supplied. The automatic keep-slot default uses the
@@ -134,7 +135,8 @@ selected lane count. Leave the compact 128K-only W576 and SP FP32 experiments
 unset when launching this profile.
 
 The planner uses the minimum free device bytes across the eight ranks after
-model and persistent expert workspace loading. For each lane count it charges
+loading the model, enabled vision tower and drafter, and persistent expert
+workspace. For each lane count it charges
 the window rings, the generic allowance for that count's actual graph keys,
 and the existing 3 GiB prompt reserve. The resulting shared pool must fund
 every selected full-context window and page-rounded stable prefix snapshots.
@@ -160,6 +162,25 @@ recapture at 1M, and long-context quality and throughput remain unmeasured.
 Long prefill bounds the per-head index score allocation by splitting the key
 range. The combined score plane still covers the whole range so hierarchical
 candidate selection and Top-K ordering use the same inputs.
+
+### Experimental DSpark D3 at native context
+
+On the full-window RotorQuant Q4 profile at TP8/ETP4, replace `--no-drafts`
+with `--draft-method dspark --drafter /models/ds41-dspark-1017 --mtp-drafts 3`.
+Use the local 1017 FT bundle with its `official` and `ft` directories. Keep
+`--temperature 0` if you want omitted-temperature requests to be eligible for
+drafting. The experimental path targets one to three eligible greedy decode
+streams. Check the funded lane count and configured depth in `/v1/stats`.
+The `dspark.verify_rounds_by_active` counters count committed verification
+rounds by the number of active requests in the vector. Image requests use target-only decoding.
+When a mixed batch cannot use the draft verifier, it uses the ordinary decode path.
+
+On eight V100s at 185 W, a controlled short-prompt run verified D3 work at
+one, two and three active requests and ordinary decode at four. Draft
+residency and graph captures reduced funded 1,048,576-token lanes from nine
+to seven. A fixed-prefix comparison found that the four-row verifier and
+ordinary decode could select different greedy tokens. Full-length D3
+validation and paired perplexity and 8K throughput measurements are pending.
 
 ### Experimental decode graph memory allowance
 
@@ -375,8 +396,12 @@ messages and tool results. The model directory's `config.json` names the mmproj 
   the message's parts joined with `\n\n`. Request text that spells the placeholder is refused. Each placeholder
   expands to the image's span, `[START] ([IMAGE] * w + [NEWLINE]) * h + [END]`, at most 1024 tokens per image
   (upstream's resize plan, Pillow `ImageOps.pad` with grey 127). Unlike the friend's server, EXIF orientation is
-  applied before the plan. `--vision-max-images` (default 4) and `--vision-image-tokens` (default 4096) bound a
-  request.
+  applied before the plan. `--vision-max-images 0` removes the separate image-count cap across the submitted
+  history (default 4). The images then share the `--vision-image-tokens` budget (default 4096); request byte,
+  decoded-pixel and prompt-plus-reply context limits also apply.
+  Set `--vision-image-tokens 0` to share the full context among image positions, text and the reply.
+  This keeps the model's 1,024-token maximum per image. For large requests, the frontend retains decoded
+  pixels when they occupy fewer bytes than the padded patches and materializes that frame when it is encoded.
 - Tower. The mmproj ViT (32 x 1024) and 3 x 3 aligner split their projection outputs across eight ranks. Gathers
   assemble FP16 features in input order, each GEMM accumulates its full input dimension in FP32, and the residual,
   norms and RoPE stay FP32. The deployment keeps the mmproj and vision bias files stable during loading. The tower
@@ -390,6 +415,25 @@ messages and tool results. The model directory's `config.json` names the mmproj 
   (`/v1/tensorfold/score`) stays text only.
 
 ### TP8 serving qualification
+
+With `--vision-image-tokens 0`, source `7be9d01b` on the same eight-V100
+hardware, image, checkpoint and profile below funded the same seven full
+windows. A 25-image request used 4,645 prompt tokens and correctly identified
+the last image. An image-and-text prompt with a requested reply budget totaling
+exactly 1,048,576 tokens was accepted. Increasing the reply budget by one was
+refused. This exercised admission and a short reply. Full-window image-heavy
+prefill, sustained mixed traffic and resize latency remain unmeasured.
+
+On eight 32 GiB V100s at 185 W, source `dc9f220a` on image `67b43e682057`
+served the 1017 checkpoint with TP8/ETP4, RotorQuant Q4, native 1,048,576-token
+context, `--kv-full-windows auto`, DSpark D3, `--vision` and `--vision-max-images 0`.
+Startup funded seven full windows in a pool of 122,977 64-token pages.
+A ten-image request expanded to 3,850 prompt tokens and correctly identified
+its last image. A twelve-image request above 4,096 visual tokens was refused.
+Single- and two-image cases and short concurrent text and extreme-aspect-ratio
+image requests completed. The greedy text smoke matched the preceding
+text-only deployment and logged nine DSpark verify rounds. Sustained mixed
+traffic at full context and paired throughput remain unmeasured.
 
 The corrected source `aef6e42a` passed the seven image checks, the 456-token image-cache repeat, and both extreme
 image orientations. It retained 7,697,600 shared KV tokens and a 235 MiB worst-rank tower warm-up transient.

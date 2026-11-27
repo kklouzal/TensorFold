@@ -69,7 +69,9 @@ def test_apply_rebuilds_with_cohort_wide_canonical_group_membership(monkeypatch)
 
     for rank in range(8):
         layers = [SimpleNamespace(expert_to_local=None, expert_groups_changed=False) for _ in move.current]
+        graph_actions = []
         engine = SimpleNamespace(rank=rank, expert_tensor_parallel_size=4, graphs=object(),
+                                 _draft_verify=SimpleNamespace(release_graphs=lambda: graph_actions.append("release")),
                                  w=SimpleNamespace(group=rank // 4, layers=layers),
                                  prefix=SimpleNamespace(retire_placement_prefixes=lambda: None),
                                  comm=SimpleNamespace(device="cpu", check=lambda: None, barrier=lambda: None))
@@ -78,13 +80,15 @@ def test_apply_rebuilds_with_cohort_wide_canonical_group_membership(monkeypatch)
 
         def capture():
             assert engine.graphs is None
+            assert graph_actions[-2:] == ["release", "move"]
+            graph_actions.append("capture")
             observed.append([layer.expert_groups_changed for layer in layers])
             engine.graphs = object()
 
         engine.recapture_expert_graphs = capture
         for epoch, proposed in enumerate((mixed, restored), 1):
             plan = plan_expert_transfers(live.placement, proposed, etp=4)
-            pending = SimpleNamespace(plan=plan, movement=SimpleNamespace(enqueue=lambda: None),
+            pending = SimpleNamespace(plan=plan, movement=SimpleNamespace(enqueue=lambda: graph_actions.append("move")),
                                       transaction=SimpleNamespace(target_epoch=epoch,
                                                                   target_digest=placement_digest(proposed, etp=4)))
             live._apply_prepared(pending)

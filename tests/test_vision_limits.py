@@ -3,6 +3,7 @@
 import copy
 import json
 import threading
+from dataclasses import replace
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace as NS
 
@@ -13,7 +14,7 @@ from tensorfold.cuda.http import make_handler as cuda_handler
 from tensorfold.server.errors import RequestError
 from tensorfold.server.http import make_handler as mlx_handler
 from tensorfold.server.prompts import prepare_images, prepare_prompt
-from tensorfold.vision.images import ImageLimits
+from tensorfold.vision.images import DEFAULT_LIMITS, ImageLimits
 from tests.cli_server_fixture import install_cli_server
 from tests.test_server_openai_compat import FakeApp, post_json
 from tests.test_vision_server import Frontend, cuda_app, image_messages, prompt_app
@@ -159,3 +160,27 @@ def test_cuda_cli_count_reaches_request_preparation(tmp_path, monkeypatch, reque
     args = cli.build_parser().parse_args(["serve", str(folder), "--vision", "--no-drafts", *flag])
     assert cli._serve_cuda(args, family, folder, 32) == 0
     assert seen == [accepted]
+
+
+@pytest.mark.parametrize("visual_tokens", [None, 950, 0])
+def test_deepseek_without_a_separate_count_cap_keeps_media_budgets(tmp_path, monkeypatch, request, visual_tokens):
+    from tensorfold.cuda import server
+    from tests.test_cuda_admission import model_dir as _model_dir
+
+    folder = _model_dir.__wrapped__(tmp_path)
+    engine = NS(vision=Frontend(), eos=(0,), context_window=1_048_576)
+    family = NS(title="fixture", model_type="deepseek_v41", package=NS(cuda_engine=lambda *a, **k: engine))
+    expected = {None: DEFAULT_LIMITS.max_visual_tokens, 0: engine.context_window}.get(visual_tokens, visual_tokens)
+    seen = []
+
+    def exercise(app):
+        seen.append(app.vision_image_tokens)
+        assert app.image_limits == replace(DEFAULT_LIMITS, max_images=expected, max_visual_tokens=expected)
+
+    install_cli_server(monkeypatch, request, server, on_serve=exercise)
+    command = ["serve", str(folder), "--vision", "--no-drafts", "--vision-max-images", "0"]
+    if visual_tokens is not None:
+        command += ["--vision-image-tokens", str(visual_tokens)]
+    args = cli.build_parser().parse_args(command)
+    assert cli._serve_cuda(args, family, folder, engine.context_window) == 0
+    assert seen == [expected]
