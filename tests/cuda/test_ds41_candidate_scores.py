@@ -30,7 +30,7 @@ def fixture(width, tokens, heads, seed):
 @pytest.mark.parametrize("score_dtype", [torch.float16, torch.float32])
 def test_candidate_rows_select_like_full_scoring(score_dtype):
     width, tokens, heads, blocks, block = 65536, 3, 4, 2048, 8
-    g, cache, table, q, w, layout = fixture(width, tokens, heads, 3)
+    _g, cache, table, q, w, layout = fixture(width, tokens, heads, 3)
     positions = torch.tensor([width - 5, 40000, 17000], device="cuda")
     valid = torch.ones(tokens, dtype=torch.bool, device="cuda")
     req = torch.arange(tokens, dtype=torch.int32, device="cuda")
