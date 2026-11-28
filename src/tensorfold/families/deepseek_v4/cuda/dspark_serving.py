@@ -99,6 +99,16 @@ def decide_sampled(sampling, logits, anchor, proposed, position, room, eos, cons
     return decide(choices + [(None, None)] * (len(tokens) - len(choices)), anchor, tokens[1:], room, eos)
 
 
+def decide_unmasked(constraint, choices, anchor, proposed, room, eos):
+    """A lane whose grammar is idle at its anchor, chosen from unmasked rows: only the rows before the first one the
+    grammar constrains along the proposals (or the first proposal it cannot keep) are reachable this round; that row
+    waits for the next round's masked choice. Row 0 is unconstrained, so a round always emits a token."""
+    tokens = [anchor, *proposed]
+    window = constraint.window(tokens, list(range(-1, len(proposed))))
+    limit = min(window.rows[0] if window.rows else len(tokens), len(window.tokens))
+    return decide(choices[:limit], anchor, tokens[1:limit], room, eos)
+
+
 def decide_constrained(constraint, logits, choices, anchor, proposed, room, eos):
     """Read only reachable target choices in the reply grammar's current state."""
     from .round_sampling import compact_packet, greedy_tokens

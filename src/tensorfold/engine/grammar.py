@@ -686,6 +686,13 @@ class Constraint(AnswerBoundary):
         return (self.active and self.m.is_terminated() or
                 self.direct_valid and self.direct_m is not None and self.direct_m.is_terminated())
 
+    def idle(self) -> bool:
+        """The row after the chosen tokens is unconstrained (``window``'s one-row early return): its token may come
+        from the unmasked row. A chosen token can end idleness (``advance``), so callers ask again each token."""
+
+        return (not self.finished and not self.active and self.direct_m is None
+                and self.pending_answer_offset is None)
+
     def window(self, tokens: Sequence[int], parents: Sequence[int]) -> Window:
         """The rows an accepted path can use (row 0 the pending token, parents first), each constrained row's bits."""
 
