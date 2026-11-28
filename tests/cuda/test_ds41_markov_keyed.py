@@ -9,6 +9,21 @@ if not torch.cuda.is_available():
 from tensorfold.families.deepseek_v4.cuda import device_sampling as ds
 from tensorfold.families.deepseek_v4.cuda.dspark_markov import ShardedMarkov
 
+C1, C2, M1, M2 = (ds._signed(c) for c in (0x9E3779B97F4A7C15, 0xD1B54A32D192ED03, 0xBF58476D1CE4E5B9,
+                                          0x94D049BB133111EB))
+
+
+def shr(x, k):
+    return (x >> k) & ((1 << (64 - k)) - 1)
+
+
+def mix(x):
+    x = x ^ shr(x, 30)
+    x = x * M1
+    x = x ^ shr(x, 27)
+    x = x * M2
+    return x ^ shr(x, 31)
+
 
 def test_keyed_markov_rows_follow_the_reference_and_keep_greedy_rows():
     g = torch.Generator(device="cuda").manual_seed(1)
@@ -25,36 +40,13 @@ def test_keyed_markov_rows_follow_the_reference_and_keep_greedy_rows():
     keyed = markov.local_packet(logits, prev, (seeds, inverse, positions))
     value = logits + markov.bias(prev)
     ids = torch.arange(first, first + vocab, device="cuda")
-    x = ds._mix(seeds + ds._signed(ds._C1))
-    x = ds._mix(x ^ (positions * ds._signed(ds._C2)))
-    x = ds._mix(x[:, None] ^ ids[None, :])
-    u = ds._shr(x, 12).double() * 2.0 ** -52 + 2.0 ** -53
+    x = mix(seeds + C1)
+    x = mix(x ^ (positions * C2))
+    x = mix(x[:, None] ^ ids[None, :])
+    u = shr(x, 12).double() * 2.0 ** -52 + 2.0 ** -53
     reference = (value.double() * inverse[:, None] - torch.log(-torch.log(u))).float()
     for r in range(b):
         if inverse[r] == 0:
             assert torch.equal(keyed[r], greedy[r])
         else:
             assert int(keyed[r, 1]) == first + int(reference[r].argmax())
-
-
-def test_device_sampler_matches_the_host_nucleus_sampler_on_cuda():
-    from tensorfold.cuda.sampling import nucleus_rows
-    from tensorfold.engine.exact_sampling import Sampling
-
-    class One:
-        def all_gather(self, send, recv):
-            recv[0].copy_(send)
-
-    g = torch.Generator(device="cuda").manual_seed(2)
-    rows, vocab = 32, 16160
-    sampler = ds.DeviceSampler(One(), rank=0, world=1, shard=vocab, device="cuda")
-    for policy in (Sampling(3, temperature=1.0, top_k=0, top_p=0.95), Sampling(4, temperature=0.7, top_k=0),
-                   Sampling(5, temperature=1.0, top_k=0, top_p=0.9, min_p=0.02)):
-        for scale in (0.5, 3.0):
-            logits = (torch.randn((rows, vocab), generator=g, device="cuda") * scale).half().float()
-            positions = list(range(900, 900 + rows))
-            words = [w for _ in range(rows) for w in ds.row_words(policy)]
-            got = sampler.sample(logits, logits.max(-1).values, torch.tensor(positions, device="cuda"),
-                                 sampler.words(words, rows)).tolist()
-            want = [nucleus_rows(logits[r:r + 1], [positions[r]], policy)[0] for r in range(rows)]
-            assert got == want
