@@ -1009,11 +1009,17 @@ class DS41Engine:
         raise RuntimeError(f"unknown DeepSeek-V4.1 control operation {op}")
 
     def _check_draft_vector(self, op, sequence, count, c, d, ids):
+        """c: lanes whose full rows rank 0 gathers (grammar); d: lanes drawing keyed tokens on the device, whose
+        ``device_sampling`` words follow the entries in lane order (verification only; disjoint from c)."""
+        from .device_sampling import WORDS
+
         verifier = getattr(self, "_draft_verify", None)
         width = 3 if op == OP_DRAFT_VERIFY_BATCH else 2
+        verify = op == OP_DRAFT_VERIFY_BATCH
         if (verifier is None or not 1 <= count <= verifier.bucket or sequence < 0
-                or d or len(ids) != count * width
-                or (not 0 <= c < (1 << count) if op == OP_DRAFT_VERIFY_BATCH else c != 0)):
+                or (not (0 <= c < (1 << count) and 0 <= d < (1 << count) and not c & d) if verify
+                    else c != 0 or d != 0)
+                or len(ids) != count * width + (WORDS * d.bit_count() if verify else 0)):
             raise ValueError("invalid DeepSeek DSpark control frame")
         if op == OP_DRAFT_VERIFY_BATCH and self.part is not None:
             paused_slots = self.part[2]
@@ -1028,9 +1034,11 @@ class DS41Engine:
         from .dspark_graph import VerifyEntry
 
         verifier, width = self._check_draft_vector(op, sequence, count, c, d, ids)
-        rows = tuple(tuple(ids[i:i + width]) for i in range(0, len(ids), width))
+        rows = tuple(tuple(ids[i:i + width]) for i in range(0, count * width, width))
         if op == OP_DRAFT_VERIFY_BATCH:
             output = verifier.verify_batch(sequence, tuple(VerifyEntry(*row) for row in rows))
+            if d:
+                output = self._sample_draft_rows(output, rows, d, ids[count * width:], verifier.depth + 1)
             if c:
                 width = verifier.depth + 1
                 if c == (1 << count) - 1:
@@ -1049,6 +1057,23 @@ class DS41Engine:
         if self.rank != 0:
             self.pipes.acknowledge(_HEAD.pack(op, sequence, count, c, d) + array.array("i", ids).tobytes())
         return None
+
+    def _sample_draft_rows(self, output, entries, lanes, words, width):
+        """Every rank: the keyed draw of each row of the ``lanes`` bitmask's lanes (row j of a lane at position
+        p samples p + 1 + j, the serial decoder's key), from the vector's local logits and gathered packet."""
+        import torch
+
+        from .device_sampling import WORDS
+
+        chosen = [i for i in range(len(entries)) if lanes >> i & 1]
+        index = torch.tensor([i * width + j for i in chosen for j in range(width)], device=output.local_logits.device)
+        positions = torch.tensor([entries[i][1] + 1 + j for i in chosen for j in range(width)],
+                                 device=output.local_logits.device)
+        per_row = [w for k in range(len(chosen)) for _ in range(width) for w in words[k * WORDS:(k + 1) * WORDS]]
+        tokens = self.sampler.sample(output.local_logits.index_select(0, index).contiguous(),
+                                     output.compact[:, index, 0].max(0).values, positions,
+                                     self.sampler.words(per_row, len(index)))
+        return output._replace(sampled=tokens) if self.rank == 0 else output
 
     def announce(self, op, a=0, b=0, c=0, d=0, ids=()):
         verifier = getattr(self, "_draft_verify", None)
@@ -2128,6 +2153,7 @@ class FixedDraftDecoder(Decoder):
         return super()._prefill_round_ms()
 
     def _fixed_round(self, live, entries):
+        from .device_sampling import eligible, row_words
         from .dspark_serving import decide, decide_constrained, decide_sampled
         from .round_sampling import greedy_tokens
 
@@ -2135,17 +2161,25 @@ class FixedDraftDecoder(Decoder):
         owner = e._draft_verify
         sequence, depth = owner.next_sequence, owner.depth
         count, width = len(entries), depth + 1
-        # Grammar and sampled lanes read their full rows (gathered in vector order); the rest the compact packet.
-        full = sum(1 << i for i, s in enumerate(live) if s.constraint is not None or s.sampling is not None)
-        output = e.announce(OP_DRAFT_VERIFY_BATCH, sequence, count, full,
-                            ids=(value for entry in entries for value in entry))
+        # Sampled lanes draw keyed tokens on the device (``device_sampling``); grammar lanes and other policies
+        # read their full rows (gathered in vector order); greedy lanes the compact packet.
+        device = [s.constraint is None and eligible(s.sampling) for s in live]
+        full = sum(1 << i for i, s in enumerate(live)
+                   if not device[i] and (s.constraint is not None or s.sampling is not None))
+        sampled = sum(1 << i for i in range(count) if device[i])
+        words = [w for s, on in zip(live, device) if on for w in row_words(s.sampling)]
+        output = e.announce(OP_DRAFT_VERIFY_BATCH, sequence, count, full, sampled,
+                            ids=[*(value for entry in entries for value in entry), *words])
         choices = greedy_tokens(output.compact[:, :count * width].cpu(), count * width)
+        drawn = iter(output.sampled.tolist()) if sampled else None
         proposals = output.drafts[:count].tolist()
         resolved = []
         full_at = 0
         for i, (s, (_, at, anchor), drafts) in enumerate(zip(live, entries, proposals, strict=True)):
             chosen = error = None
             rows = choices[i * width:(i + 1) * width]
+            if device[i]:                       # the packet's NaN/+inf/finite errors stay with each row
+                rows = [(next(drawn), error) for _, error in rows]
             logits = None
             if full >> i & 1:
                 logits = output.full_logits[full_at:full_at + width]

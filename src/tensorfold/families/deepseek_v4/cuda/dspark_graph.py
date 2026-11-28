@@ -36,6 +36,7 @@ class VerifyOutput(NamedTuple):
     drafts: torch.Tensor
     local_logits: torch.Tensor
     full_logits: torch.Tensor | None = None
+    sampled: torch.Tensor | None = None      # rank 0: device-sampled lanes' keyed tokens, their rows in vector order
 
 
 class SpecShape:

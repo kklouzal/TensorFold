@@ -517,8 +517,8 @@ def test_fixed_scheduler_cancels_a_lane_and_publishes_only_after_commit():
     compact = torch.tensor([[[1., 10., 0.], [1., 11., 0.], [0., 0., 1.], [0., 0., 1.],
                              [1., 12., 0.], [1., 13., 0.], [1., 14., 0.], [1., 15., 0.]]])
 
-    def announce(op, seq, count, grammar=0, *, ids):
-        assert grammar == 0
+    def announce(op, seq, count, grammar=0, sampled=0, *, ids):
+        assert grammar == sampled == 0
         sent.append((op, seq, count, tuple(ids)))
         assert emitted == []
         if op == OP_DRAFT_VERIFY_BATCH:
@@ -634,7 +634,7 @@ def test_constrained_verify_errors_and_cancellation_settle_only_the_affected_lan
             cancel_event.set()
         return [18]
 
-    def announce(op, sequence, count, grammar=0, *, ids):
+    def announce(op, sequence, count, grammar=0, sampled=0, *, ids):
         sent.append((op, sequence, count, grammar, tuple(ids)))
         assert not emitted
         if op == OP_DRAFT_VERIFY_BATCH:
@@ -1047,9 +1047,10 @@ def test_sampled_verify_honors_filters_room_and_end_tokens(cpu_effective_rows):
         decide_sampled(Sampling(1, temperature=1.0, top_k=0, top_p=1.0), logits[:3], 7, [0, 0, 0], 40, 8, ())
 
 
-def test_fixed_round_gathers_sampled_lane_rows_and_commits_rejection_output(cpu_effective_rows):
+def test_fixed_round_draws_sampled_lanes_on_the_device_and_commits_the_serial_tokens():
     from tensorfold.cuda.streams import Stream
     from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.deepseek_v4.cuda.device_sampling import WORDS, row_words
     from tensorfold.families.deepseek_v4.cuda.engine import (
         FixedDraftDecoder, OP_DRAFT_COMMIT_BATCH, OP_DRAFT_VERIFY_BATCH,
     )
@@ -1058,21 +1059,20 @@ def test_fixed_round_gathers_sampled_lane_rows_and_commits_rejection_output(cpu_
     decoder.eos = (99,)
     decoder.verify_rounds_by_active = [0] * 4
     sent = []
+    policy = Sampling(3, temperature=1.0, top_k=0, top_p=0.95)
     greedy = Stream([1] * 10, 8, out=[5])
-    sampled = Stream([1] * 10, 8, Sampling(3, temperature=1.0, top_k=0, top_p=0.5), out=[6])
+    sampled = Stream([1] * 10, 8, policy, out=[6])
     for slot, stream in enumerate((greedy, sampled)):
         stream.slot, stream.draft_seed = slot, True
     compact = torch.tensor([[[1., 10., 0.], [1., 11., 0.], [1., 12., 0.], [1., 13., 0.],
-                             [0., 0., 1.], [0., 0., 1.], [0., 0., 1.], [0., 0., 1.]]])
-    peaked = [-9.] * 16
-    peaked[4], peaked[2] = 2., 1.                  # only token 4 survives top_p 0.5
-    full = torch.tensor([peaked] * 4)
+                             [1., 1., 0.], [1., 1., 0.], [1., 1., 0.], [1., 1., 0.]]])
 
-    def announce(op, seq, count, mask=0, *, ids):
-        sent.append((op, seq, count, mask, tuple(ids)))
+    def announce(op, seq, count, grammar=0, lanes=0, *, ids):
+        sent.append((op, seq, count, grammar, lanes, tuple(ids)))
         if op == OP_DRAFT_VERIFY_BATCH:
+            # the sampled lane's device draws: rows 0 and 1 match drafts 4, 4; row 2 draws 9, not the draft 2
             return SimpleNamespace(compact=compact, drafts=torch.tensor([[10, 11, 12], [4, 4, 2]]),
-                                   full_logits=full)
+                                   sampled=torch.tensor([4, 4, 9, 3]))
 
     decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(next_sequence=4, depth=3, bucket=3), context=64,
                                 target=SimpleNamespace(pool=SimpleNamespace(owned={0: [0], 1: [1]})),
@@ -1080,6 +1080,8 @@ def test_fixed_round_gathers_sampled_lane_rows_and_commits_rejection_output(cpu_
     lanes = [greedy, sampled]
     entries = [decoder._draft_entry(stream) for stream in lanes]
     decoder._fixed_round(lanes, entries)
-    assert sent[0][3] == 0b10
-    assert sent[1] == (OP_DRAFT_COMMIT_BATCH, 4, 2, 0, (0, 4, 1, 3))
-    assert greedy.out == [5, 10, 11, 12, 13] and sampled.out == [6, 4, 4, 4]
+    op, _, _, grammar, device, ids = sent[0]
+    assert (op, grammar, device) == (OP_DRAFT_VERIFY_BATCH, 0, 0b10)
+    assert list(ids[6:]) == row_words(policy) and len(ids) == 6 + WORDS
+    assert sent[1] == (OP_DRAFT_COMMIT_BATCH, 4, 2, 0, 0, (0, 4, 1, 3))
+    assert greedy.out == [5, 10, 11, 12, 13] and sampled.out == [6, 4, 4, 9]
