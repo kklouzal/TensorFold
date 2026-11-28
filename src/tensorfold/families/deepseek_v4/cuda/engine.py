@@ -557,6 +557,8 @@ class DS41Engine:
         from .device_sampling import DeviceSampler
         from .graphs import DecodeGraphs, SlotPages
         self.sampler = DeviceSampler(self.comm, rank=rank, world=tp, shard=self.vocab // tp, device=device)
+        # rank 0: keyed draws of full gathered rows (grammar-masked verification rows)
+        self.full_sampler = DeviceSampler(None, rank=0, world=1, shard=self.vocab, device=device) if rank == 0 else None
         self.slot_pages = SlotPages(self.slots, -(-self.target.hash_state.max_context // BLOCK), device)
         self.graphs = None
         self._warm()
@@ -2200,7 +2202,8 @@ class FixedDraftDecoder(Decoder):
                     elif logits is None:
                         chosen = decide(rows, anchor, drafts, room, eos)
                     elif sampled_draftable(s.sampling):
-                        chosen = decide_sampled(s.sampling, logits, anchor, drafts, at, room, eos, s.constraint)
+                        chosen = decide_sampled(s.sampling, logits, anchor, drafts, at, room, eos, s.constraint,
+                                                e.full_sampler)
                         if s.constraint is not None and (s.cancel is None or not s.cancel.is_set()):
                             s.constraint.advance(chosen)
                     else:

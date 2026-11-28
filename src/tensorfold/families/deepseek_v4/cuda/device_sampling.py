@@ -279,6 +279,8 @@ class DeviceSampler:
         self.blocks = triton.cdiv(shard, BLOCK)
 
     def _gather(self, t):
+        if self.world == 1:                    # one rank holds the whole row (``comm`` may be None)
+            return t.unsqueeze(0)
         recv = torch.empty((self.world,) + tuple(t.shape), dtype=t.dtype, device=t.device)
         self.comm.all_gather(t, recv)
         return recv

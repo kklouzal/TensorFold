@@ -130,3 +130,23 @@ def test_exact_need_limbs():
     out = torch.empty(len(want), dtype=torch.int64, device="cuda")
     _probe_need[(len(want),)](t(totals), t(nums), t(shifts), out)
     assert out.tolist() == want
+
+
+def test_one_rank_full_rows_match_serial_draws_and_keep_row_errors():
+    from tensorfold.cuda.sampling import sample_rows
+    from tensorfold.families.deepseek_v4.cuda.dspark_serving import _device_rows
+
+    sampler = ds.DeviceSampler(None, rank=0, world=1, shard=129280, device="cuda")
+    g = torch.Generator(device="cuda").manual_seed(8)
+    for policy in (POLICIES[0], POLICIES[1], POLICIES[4]):
+        rows = (torch.randn((4, 129280), generator=g, device="cuda") * 3).half().float()
+        rows[1, ::2] = float("-inf")                              # a grammar mask
+        rows[2, :] = float("-inf")
+        rows[2, 77] = 1.5                                         # one allowed token
+        got = _device_rows(sampler, rows.clone(), 500, policy)
+        want = [sample_rows(rows[j:j + 1], [501 + j], policy)[0] for j in range(4)]
+        assert [t for t, _ in got] == want and all(e is None for _, e in got)
+    rows[3, :] = float("-inf")
+    rows[0, 5] = float("nan")
+    got = _device_rows(sampler, rows, 500, POLICIES[0])
+    assert "NaN" in str(got[0][1]) and "finite" in str(got[3][1]) and got[1][1] is None
