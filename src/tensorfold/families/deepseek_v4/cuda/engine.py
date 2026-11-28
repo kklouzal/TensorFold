@@ -2033,6 +2033,11 @@ class FixedDraftDecoder(Decoder):
             else:
                 ready.append((s, entry))
         bucket = self.e._draft_verify.bucket
+        if ready and len(ready) + len(ordinary) + len(self.filling) > bucket:
+            # More live requests than one verify vector holds: a vector would idle the waiting lanes or add a
+            # second forward per turn, both slower than one batched ordinary round over every stream.
+            ordinary.extend(s for s, _ in ready)
+            ready = []
         if len(ready) > bucket:
             # A turn verifies one captured vector. Waiting draft lanes retain
             # their rings and run before lanes served or admitted more recently.
