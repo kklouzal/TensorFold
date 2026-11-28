@@ -92,6 +92,10 @@ def select_decode(query, weights, positions, valid, token_req, cache, block_tabl
     q_all = gathered[:, :, :heads * 128].reshape(WORLD, tokens, heads, 128).permute(1, 0, 2, 3).reshape(
         tokens, HEADS, 128).contiguous()
     w_all = gathered[:, :, heads * 128:].permute(1, 0, 2).reshape(tokens, HEADS).contiguous()
+    if hierarchy is not None and not hierarchy[2]:
+        return _select_candidates(q_all, w_all, positions, valid, token_req, cache, block_table, layout=layout,
+                                  source=source, ratio=ratio, width=width, rank=rank, comm=comm, out=out, k=k,
+                                  hierarchy=hierarchy)
     # 2. this rank's key blocks, all heads
     part = width // WORLD
     shard = torch.empty(tokens, part, dtype=torch.float16, device=device)
@@ -120,3 +124,32 @@ def select_gathered(rows, positions, valid, ratio, *, out=None, k=512, hierarchy
         return select_ranked(result, scores, positions, valid, ratio, mu_topk.topk,
                              candidates=candidates, block=block, publish=publish)
     return mu_topk.topk(result, scores, positions, valid, ratio, k)
+
+
+def _select_candidates(q_all, w_all, positions, valid, token_req, cache, block_table, *, layout, source, ratio, width,
+                       rank, comm, out, k, hierarchy):
+    """A consumer layer of the decoder candidate pool: score only the pool's slots. Rank r scores candidate blocks
+    [r * C / 8, (r + 1) * C / 8) for all 32 heads (``mu_reindex._rx_scores``: ``_shard_scores``' per-key arithmetic,
+    FP32 head sum, one FP16 round), one FP16 all-gather assembles the compact slots in candidate order, and the
+    compact ranker of ``mu_reindex.select_ranked`` picks the top k. The compact scores equal those ``select_ranked``
+    compacts from the full row (dead slots -inf), so the selection is the same; each rank scores 1/8 of the pool
+    instead of 1/8 of every visible key."""
+    from .mu_reindex import candidate_lengths, candidate_scores, compact_to_positions
+
+    candidates, block, _ = hierarchy
+    tokens, blocks = candidates.shape
+    if blocks % WORLD:
+        raise ValueError("the decoder candidate pool must split evenly over the ranks")
+    per = blocks // WORLD
+    shard = torch.full((tokens, per * block), float("-inf"), dtype=torch.float16, device=q_all.device)
+    candidate_scores(q_all, w_all, cache, block_table, positions, valid, token_req,
+                     candidates[:, rank * per:(rank + 1) * per], layout=layout, layer=source, block=block, out=shard)
+    rows = torch.empty((WORLD, tokens, per * block), dtype=torch.float16, device=q_all.device)
+    comm.all_gather(shard, rows)
+    compact = rows.permute(1, 0, 2).reshape(tokens, blocks * block)
+    lengths = torch.where(valid != 0, ((positions + 1) // ratio).clamp(min=0, max=width), 0)
+    picked = torch.empty((tokens, k), dtype=torch.int32, device=q_all.device)
+    mu_topk.topk(picked, compact, candidate_lengths(candidates, lengths, block) - 1, valid, 1, k)
+    result = out if out is not None else torch.empty(tokens, k, dtype=torch.int32, device=q_all.device)
+    result.copy_(compact_to_positions(picked, candidates, block))
+    return result
