@@ -1061,14 +1061,11 @@ class DS41Engine:
     def _sample_draft_rows(self, output, entries, lanes, words, width):
         """Every rank: the keyed draw of each row of the ``lanes`` bitmask's lanes (row j of a lane at position
         p samples p + 1 + j, the serial decoder's key), from the vector's local logits and gathered packet."""
-        import torch
-
         from .device_sampling import WORDS
 
         chosen = [i for i in range(len(entries)) if lanes >> i & 1]
-        index = torch.tensor([i * width + j for i in chosen for j in range(width)], device=output.local_logits.device)
-        positions = torch.tensor([entries[i][1] + 1 + j for i in chosen for j in range(width)],
-                                 device=output.local_logits.device)
+        index = self.sampler.upload([i * width + j for i in chosen for j in range(width)])
+        positions = self.sampler.upload([entries[i][1] + 1 + j for i in chosen for j in range(width)])
         per_row = [w for k in range(len(chosen)) for _ in range(width) for w in words[k * WORDS:(k + 1) * WORDS]]
         tokens = self.sampler.sample(output.local_logits.index_select(0, index).contiguous(),
                                      output.compact[:, index, 0].max(0).values, positions,

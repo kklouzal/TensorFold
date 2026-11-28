@@ -119,19 +119,29 @@ class DeviceSampler:
     def __init__(self, comm, *, rank: int, world: int, shard: int, device):
         self.comm, self.rank, self.world, self.shard = comm, rank, world, shard
         self.ids = torch.arange(rank * shard, (rank + 1) * shard, dtype=torch.int64, device=device)
-        self.device = device
+        self.device = torch.device(device)
 
     def _gather(self, t):
         recv = torch.empty((self.world,) + tuple(t.shape), dtype=t.dtype, device=t.device)
         self.comm.all_gather(t.contiguous(), recv)
         return recv
 
+    def upload(self, values):
+        """A host int64 list on the device without a host wait: a pinned staging copy (the caching host
+        allocator keeps the block until the copy completes), queued behind the stream's work."""
+        return self._staged(torch.tensor(values, dtype=torch.int64))
+
+    def _staged(self, host):
+        if self.device.type == "cuda":
+            host = host.pin_memory()
+        return host.to(self.device, non_blocking=True)
+
     def words(self, words, rows: int):
-        """Host words [rows * WORDS] -> device policy tensors."""
+        """Host words [rows * WORDS] -> the device policy int64 [rows, 5]."""
         w = torch.tensor(words, dtype=torch.int64).view(rows, WORDS)
         pair = lambda i: (w[:, i] & 0xFFFFFFFF) | (w[:, i + 1] << 32)
         packed = torch.stack([pair(0), pair(2), pair(4), w[:, 6], pair(7)], 1)
-        return packed.to(self.device, non_blocking=True)
+        return self._staged(packed)
 
     def sample(self, local, top, positions, policy):
         """local FP32 [rows, shard]; top FP32 [rows] (global row maxima); positions int64 [rows] (the drawn
