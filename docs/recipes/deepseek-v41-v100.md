@@ -167,20 +167,59 @@ candidate selection and Top-K ordering use the same inputs.
 
 On the full-window RotorQuant Q4 profile at TP8/ETP4, replace `--no-drafts`
 with `--draft-method dspark --drafter /models/ds41-dspark-1017 --mtp-drafts 3`.
-Use the local 1017 FT bundle with its `official` and `ft` directories. Keep
-`--temperature 0` if you want omitted-temperature requests to be eligible for
-drafting. The experimental path targets one to three eligible greedy decode
-streams. Check the funded lane count and configured depth in `/v1/stats`.
+Use the local 1017 FT bundle with its `official` and `ft` directories. Greedy
+and positive-temperature requests both draft. Launch with
+`--temperature 1.0 --top-p 0.95` to serve omitted-temperature requests with
+the reported coding-agent settings. The experimental path targets one to
+three decoding streams. Check the funded lane count and configured depth in
+`/v1/stats`.
 The `dspark.verify_rounds_by_active` counters count committed verification
 rounds by the number of active requests in the vector. Greedy structured output
 and strict tool calls apply the reply grammar to the target's verification rows.
 Image requests use target-only decoding.
-When eligible foreground streams share a turn with ordinary streams, the
-decoder verifies one vector of up to three draft streams, then launches an
-ordinary batch for the other decoding streams. Additional eligible streams
-rotate through the draft vector without losing their seeded history.
-Background decoding stays ordinary so a yielded request can replay the
-tokens it already delivered.
+Draft streams verify in one vector of up to three streams. When more streams
+are decoding than one vector holds, every stream decodes in one ordinary
+batch instead. A vector would otherwise leave the waiting streams idle or add
+a second forward each turn. A stream that decodes ordinarily retires its
+draft ring and does not draft again. Background decoding stays ordinary so a
+yielded request can replay the tokens it already delivered.
+
+Sampled verification is coupled to serial decoding. Each verification row
+draws the target's own keyed token, using the serial sampler's seed, position
+and token key, and a proposal survives only if it equals its parent row's
+draw. Drafting therefore never changes a sampled reply: the emitted tokens
+are the tokens target-only decoding draws from the same logits. A proposal
+survives with probability equal to its target probability. For sampled
+streams the drafter's Markov steps add the target's keyed Gumbel noise at each
+draft position, so its proposals follow the same random draw where the two
+distributions agree. Greedy proposals are unchanged.
+
+Positive-temperature streams with top-k off and no grammar, penalties,
+probability output or forced reply draw on the GPU in decode graph rounds and
+DSpark verification rows. Each rank keeps its vocabulary shard. Fused Triton
+kernels apply the host sampler's rule exactly: fixed-point masses, an exact
+top-p boundary from a four-pass radix select with tied scores taken in token
+order, min-p, then the keyed Gumbel draw. GPU tests compare every draw with
+the host sampler, including ties, masked rows and eight simulated ranks. Those
+streams keep run-ahead decoding. Other policies keep the host sampler.
+
+On eight V100s at 185 W with the native-context profile above (image
+`67b43e682057`, seven funded 1,048,576-token lanes), the 10-cell sampled matrix
+compared source `bef83f5b` with base `24424648` at `--temperature 1.0 --top-p
+0.95`. The run used a frozen sampled plan from the `plan-ds41-v1` corpus and
+template, 512 output tokens and A B B A server sessions with one repeat each.
+Median decode per request rose 58% at C1 4K and 65% at C1 16K, and 10–13% in
+every 4K cell from C8 to C32. Aggregate decode rose in every cell, with a
+geometric mean of 1.155. Prefill rose up to 9.6% with no cell regressing.
+The 16K cells from C16 to C32 queue behind the seven lanes. There, median decode
+per request fell 7–10% and C32 was a significant regression. In the same cells
+makespan fell about 3%, total throughput and aggregate decode rose 3–6%, median
+TTFT fell 3–8%, and the p99 token gap stayed near 175 ms. Decode rounds were 14%
+shorter, and the unchanged prefill pacing gave that time to queued prompts. The
+project accepted this tradeoff. Source `a53132cb` adds review fixes that do not
+change these paths. Its greedy screen measured 103.0 and 38.0 tok/s at C1 and
+C8 4K against 103.9 and 26.0 at the base, whose C8 greedy streams idled behind
+the three-stream verify vector.
 
 On the eight-V100 native-context profile, three matched foreground strict-tool
 requests overlapping a 640-token background reply drafted zero proposals at
@@ -310,8 +349,9 @@ qualification remain pending.
 - Decode: CUDA graphs for batches 1-16, 24 and 32, captured at startup and recaptured at a live placement
   boundary. Each batch has
   index-score classes 8192 / 32768 / `--context`, sized by the batch's live maximum length. Decode also uses small
-  all-gathers and an LL row all-reduce for small sums, a compact device greedy argmax with batched round sampling
-  (one host wait per round), and expert-major routed experts (the friend's EM3 kernels, bit-exact with the per-6-row
+  all-gathers and an LL row all-reduce for small sums, a compact device greedy argmax and keyed device sampling
+  for top-k-off sampled streams (both feed run-ahead rounds), batched host sampling for other policies (one host
+  wait per round), and expert-major routed experts (the friend's EM3 kernels, bit-exact with the per-6-row
   op) below 128 rows.
 - Prefill: the friend's TurboMind lattice grouped GEMMs for routed experts at 128 or more rows. EM3 is faster up to
   about 320 rows, but its Q8_1 activations are less accurate, so the lattice keeps those chunks. They use TensorFold's
@@ -546,7 +586,3 @@ the 3 GiB prompt reserve. This was a functional run with a CPU suite in flight.
 - `TENSORFOLD_DS41_SCHED_TRACE=1`: prints the Decoder's layer-group plans and costs.
 - `TENSORFOLD_DS41_SMOKE_LAYERS=N`: loads only the first N layers (N=1 skips the Engram mapping) for plumbing
   checks. Outputs are meaningless.
-
-## Not yet
-
-DSpark drafting is not merged into the serving lane.

@@ -1,8 +1,15 @@
 """Private preparation of one DSpark verification owner on the measured profile."""
 
+import math
+
 import torch
 
 from . import dspark_weights as dw
+
+
+def sampled_draftable(sampling) -> bool:
+    """A positive finite temperature: verification draws the serial decoder's tokens (``decide_sampled``)."""
+    return sampling is not None and math.isfinite(sampling.temperature) and sampling.temperature > 0
 
 
 def prepare_128k_verifier(engine, weights: dw.DSparkWeights, *, bucket: int, depth: int):
@@ -61,6 +68,35 @@ def decide(choices, anchor, proposed, room, eos):
             yield token
 
     return accepted_prefix(reachable(), [anchor, *proposed], room, eos)
+
+
+def decide_sampled(sampling, logits, anchor, proposed, position, room, eos, constraint=None):
+    """Sampled verification coupled to serial decoding: every row draws the target's own keyed token.
+
+    Row j (the anchor, then each proposal) samples position ``position + 1 + j`` with ``sample_rows``, the serial
+    decoder's rule (seed, position and token keyed), and a proposal survives only its parent's draw, as greedy
+    verification keeps an argmax. Every emitted token is the token serial decoding draws, so drafting changes no
+    reply; a point-mass proposal survives with probability p(token), as under standard rejection. A reply grammar
+    first drops proposals no path can keep, then masks each retained row by its path.
+    """
+    from tensorfold.cuda.sampling import sample_rows
+
+    if len(logits) != len(proposed) + 1 or room <= 0:
+        raise ValueError("invalid DSpark verification result geometry")
+    tokens = [anchor, *proposed]
+    rows = logits
+    if constraint is not None:
+        window = constraint.window(tokens, list(range(-1, len(proposed))))
+        tokens = window.tokens
+        rows = constraint.mask(logits[:len(tokens)], window) if window.rows else logits[:len(tokens)]
+    # only rows a surviving parent can reach are drawn
+    choices = []
+    for j in range(len(tokens)):
+        choice = sample_rows(rows[j:j + 1], [position + 1 + j], sampling)[0]
+        choices.append((choice, None))
+        if j + 1 >= len(tokens) or choice != tokens[j + 1] or choice in eos or len(choices) >= room:
+            break
+    return decide(choices + [(None, None)] * (len(tokens) - len(choices)), anchor, tokens[1:], room, eos)
 
 
 def decide_constrained(constraint, logits, choices, anchor, proposed, room, eos):

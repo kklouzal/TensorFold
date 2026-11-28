@@ -75,7 +75,7 @@ def owners(device):
         rotary = torch.full((slots, 256), -1, dtype=torch.int64, device=device)
 
         @staticmethod
-        def draft(anchors, positions, owner, embed, project, *, depth):
+        def draft(anchors, positions, owner, embed, project, *, depth, noise=None):
             events.append(("draft", depth))
             return project(embed(anchors)).long() + torch.arange(1, depth + 1, device=device)
 
@@ -161,7 +161,7 @@ def test_verify_uses_the_installed_embedding_when_requested(monkeypatch):
     engine, head, spec, _ = owners(torch.device("cpu"))
     original = head.draft
 
-    def draft(anchors, positions, owners, embed, project, *, depth):
+    def draft(anchors, positions, owners, embed, project, *, depth, noise=None):
         assert embed is None
         return original(anchors, positions, owners, engine.target.embed, project, depth=depth)
 
@@ -467,9 +467,9 @@ def test_grammar_verify_gathers_only_flagged_lane_rows_in_vector_order():
     output = leader.announce(OP_DRAFT_VERIFY_BATCH, 9, 3, 0b101, ids=entries)
     payload = array.array("i", entries)
     assert frames == [_HEAD.pack(OP_DRAFT_VERIFY_BATCH, 9, 3, 0b101, 0) + payload.tobytes()]
-    assert follower._run(*_HEAD.unpack_from(frames[0]), payload).constrained_logits is None
+    assert follower._run(*_HEAD.unpack_from(frames[0]), payload).full_logits is None
     expected = [0., 1., 2., 3., 8., 9., 10., 11.]
-    assert output.constrained_logits.tolist() == [[value, value + 100] for value in expected]
+    assert output.full_logits.tolist() == [[value, value + 100] for value in expected]
     assert gathers == [expected, expected] and checked == [(9, [3, 2, 1]), (9, [3, 2, 1])]
     with pytest.raises(ValueError, match="control frame"):
         leader.announce(OP_DRAFT_VERIFY_BATCH, 9, 3, 0b1000, ids=entries)
@@ -517,8 +517,8 @@ def test_fixed_scheduler_cancels_a_lane_and_publishes_only_after_commit():
     compact = torch.tensor([[[1., 10., 0.], [1., 11., 0.], [0., 0., 1.], [0., 0., 1.],
                              [1., 12., 0.], [1., 13., 0.], [1., 14., 0.], [1., 15., 0.]]])
 
-    def announce(op, seq, count, grammar=0, *, ids):
-        assert grammar == 0
+    def announce(op, seq, count, grammar=0, sampled=0, *, ids):
+        assert grammar == sampled == 0
         sent.append((op, seq, count, tuple(ids)))
         assert emitted == []
         if op == OP_DRAFT_VERIFY_BATCH:
@@ -564,7 +564,6 @@ def test_strict_dsml_speculation_masks_only_reachable_rows_and_commits_selected_
     request.forced = request.head = None
     request.pos = 0
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
-    decoder._draft_turn = 0
     decoder._admitted(request)
     assert request.draft_seed
     matcher.advance([1])
@@ -622,7 +621,7 @@ def test_constrained_verify_errors_and_cancellation_settle_only_the_affected_lan
                for slot, event, constraint in ((0, None, first_constraint), (1, None, None),
                                                 (2, cancel_event, last_constraint))]
     compact = torch.tensor([[[1., float(index + 10), 0.] for index in range(12)]])
-    constrained_logits = torch.arange(8, dtype=torch.float32).view(-1, 1)
+    full_logits = torch.arange(8, dtype=torch.float32).view(-1, 1)
 
     def decision(constraint, logits, choices, anchor, drafts, room, eos):
         assert room == 1 and eos == (99,)
@@ -635,13 +634,13 @@ def test_constrained_verify_errors_and_cancellation_settle_only_the_affected_lan
             cancel_event.set()
         return [18]
 
-    def announce(op, sequence, count, grammar=0, *, ids):
+    def announce(op, sequence, count, grammar=0, sampled=0, *, ids):
         sent.append((op, sequence, count, grammar, tuple(ids)))
         assert not emitted
         if op == OP_DRAFT_VERIFY_BATCH:
             return SimpleNamespace(
                 compact=compact, drafts=torch.tensor([[10, 11, 12], [14, 15, 16], [18, 19, 20]]),
-                constrained_logits=constrained_logits,
+                full_logits=full_logits,
             )
 
     monkeypatch.setattr(serving, "decide_constrained", decision)
@@ -661,9 +660,8 @@ def test_fixed_scheduler_verifies_disjoint_lanes_through_a_paused_prompt(monkeyp
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
     decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(bucket=3))
     decoder._broken = decoder.inflight = decoder.split = None
-    decoder._draft_turn = 0
     decoder.streams = {}
-    decoder.filling = [SimpleNamespace(sid=i, draft_seed=True, draft_turn=0, done=False, cancel=None, out=[10])
+    decoder.filling = [SimpleNamespace(sid=i, draft_seed=True, done=False, cancel=None, out=[10])
                        for i in range(3)]
     first, second, third = decoder.filling
     decoder.finishing = (first, ())
@@ -702,7 +700,7 @@ def test_fixed_scheduler_verifies_disjoint_lanes_through_a_paused_prompt(monkeyp
                      ("publish-first", second.sid), ("verify-and-commit", 2), ("one-prompt-group", third.sid),
                      ("publish-first", third.sid), ("verify-and-commit", 3)]
     # A fourth filling request does not invalidate any ready draft rings.
-    decoder.filling.append(SimpleNamespace(sid=3, draft_seed=True, draft_turn=decoder._draft_turn,
+    decoder.filling.append(SimpleNamespace(sid=3, draft_seed=True,
                                           done=False, cancel=None, out=[10]))
     assert decoder.round() == []
     assert calls[-2:] == [("verify-and-commit", 3), ("one-prompt-group", 3)]
@@ -714,7 +712,6 @@ def test_vision_prefill_does_not_disable_ready_text_draft_rounds(monkeypatch):
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
     decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(bucket=3))
     decoder._broken = decoder.inflight = decoder.finishing = decoder.split = None
-    decoder._draft_turn = 0
     options = dict(draft=True, background=False, owed=False, token_limit=None, head=None, pos=0, prompt=[1, 2],
                    forced=None, constraint=None, history=None, probabilities=None, sampling=None,
                    done=False, cancel=None, out=[10])
@@ -750,7 +747,6 @@ def test_mixed_round_drains_old_ordinary_work_then_admits_draft_and_advances_bac
     calls = []
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
     decoder._broken = decoder.ahead = decoder.split = decoder._draft_round_ms = None
-    decoder._draft_turn = 0
     decoder.eos = (99,)
     decoder.rounds = SimpleNamespace(
         add=lambda bucket, ms: calls.append(("ordinary_time", bucket, ms)),
@@ -764,7 +760,7 @@ def test_mixed_round_drains_old_ordinary_work_then_admits_draft_and_advances_bac
     def stream(sid, out, *, draft_seed=False, **options):
         value = Stream([1] * (63 if sid == 2 else 12), 9, sid=sid, out=out, **options)
         value.slot, value.forced = sid, None
-        value.draft_seed, value.draft_turn = draft_seed, 0
+        value.draft_seed = draft_seed
         return value
 
     ordinary = stream(1, [4], background=True, emit=lambda values: calls.append(("emit", values)))
@@ -780,7 +776,7 @@ def test_mixed_round_drains_old_ordinary_work_then_admits_draft_and_advances_bac
     packet = torch.tensor([[[1., 11., 0.], [1., 12., 0.]]])
     started = SimpleNamespace(elapsed_time=lambda _end: 10)
     ended = SimpleNamespace(synchronize=lambda: calls.append("drain"))
-    decoder.inflight = ([retired, ordinary], [13, 13], packet, None, None, 0., (started, ended, 2), ())
+    decoder.inflight = ([retired, ordinary], [13, 13], packet, None, None, 0., (started, ended, 2), (), None)
 
     def finish_prompt(value, completed):
         assert value is joining and completed == "finished prompt"
@@ -814,40 +810,25 @@ def test_mixed_round_drains_old_ordinary_work_then_admits_draft_and_advances_bac
     assert joining.draft_seed and cancelled.done and decoder._draft_round_ms is None
 
 
-def test_full_draft_vectors_do_not_starve_waiting_lane_when_short_requests_churn():
+def test_more_decoding_streams_than_a_verify_vector_decode_ordinarily():
     from tensorfold.cuda.streams import Stream
     from tensorfold.families.deepseek_v4.cuda.engine import FixedDraftDecoder
 
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
     decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(bucket=3))
-    decoder._draft_turn = 0
     decoder._draft_entry = lambda stream: stream.sid
     decoder.streams = {}
-
-    def add(sid):
-        value = Stream([1] * 10, count=2, sid=sid, out=[10])
+    for sid in range(4):
+        value = Stream([1] * 10, count=8, sid=sid, out=[10])
         value.forced = value.head = None
         value.pos = 0
         decoder._admitted(value)
         decoder.streams[sid] = value
-
-    for sid in range(4):
-        add(sid)
-    next_sid, selected_long = 4, []
-    for turn in range(8):
-        ready, ordinary, cancelled = decoder._decode_groups()
-        assert len(ready) == 3 and not ordinary and not cancelled
-        assert all(stream.draft_seed for stream in decoder.streams.values())
-        for stream, entry in ready:
-            assert entry == stream.sid
-            if stream.sid == 0:
-                selected_long.append(turn)
-                continue
-            del decoder.streams[stream.sid]
-            add(next_sid)
-            next_sid += 1
-    assert selected_long[0] == 0 and selected_long[-1] >= 6
-    assert all(b - a <= 2 for a, b in zip(selected_long, selected_long[1:]))
+    ready, ordinary, cancelled = decoder._decode_groups()
+    assert not ready and not cancelled and [s.sid for s in ordinary] == [0, 1, 2, 3]
+    del decoder.streams[3]
+    ready, ordinary, _ = decoder._decode_groups()
+    assert [s.sid for s, _ in ready] == [0, 1, 2] and not ordinary
 
 
 def test_cold_long_prompt_seeds_the_whole_draft_window_across_singleton_tail():
@@ -856,7 +837,6 @@ def test_cold_long_prompt_seeds_the_whole_draft_window_across_singleton_tail():
     from tensorfold.families.deepseek_v4.cuda.prefix import chunk_end, chunk_splits
 
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
-    decoder._draft_turn = 0
     tapped = []
 
     def step(entries, ids, logits_rows, flags, *, tap_from=None):
@@ -942,7 +922,6 @@ def test_draft_trace_distinguishes_shadow_admission_and_active_fallback(monkeypa
         return result
 
     decoder = engine.FixedDraftDecoder.__new__(engine.FixedDraftDecoder)
-    decoder._draft_turn = 0
     monkeypatch.setattr(engine, "TRACE_DRAFT", False)
     hidden = stream()
     decoder._admitted(hidden)
@@ -993,3 +972,116 @@ def test_engine_ordinary_announce_keeps_its_existing_wire(monkeypatch):
     with pytest.raises(ValueError, match="control frame"):
         engine.announce(OP_DRAFT_VERIFY_BATCH, 0, 1, ids=(0, 1, 2))
     assert len(sent) == 1
+
+
+def _sampled_rows(*rows):
+    return torch.tensor(rows, dtype=torch.float32)
+
+
+@pytest.fixture
+def cpu_effective_rows(monkeypatch):
+    import tensorfold.cuda.sampling as sampling
+
+    def cpu_metadata(logits, positions, policy):
+        assert not logits.is_cuda and logits.ndim == 2 and logits.shape[0] == len(positions)
+        sampling.validate_policy(positions, policy)
+    # The real effective_rows/nucleus/rejection code runs; only its CUDA geometry check is substituted.
+    monkeypatch.setattr(sampling, "validate_rows", cpu_metadata)
+
+
+def test_sampled_verify_keeps_the_target_law_for_point_mass_proposals(cpu_effective_rows):
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.deepseek_v4.cuda.dspark_serving import decide_sampled
+
+    first = [2., 1., 0., -1., -3.]
+    second = [0., 3., 1., 0., 0.]
+    logits = _sampled_rows(first, second, second, second)
+    target = torch.softmax(torch.tensor(first, dtype=torch.float64), -1).numpy()
+    draws, followers = 6000, {}
+    counts = [0] * 5
+    for seed in range(draws):
+        chosen = decide_sampled(Sampling(seed, temperature=1.0, top_k=0, top_p=1.0), logits, 7, [1, 1, 1], 40, 8, ())
+        assert 1 <= len(chosen) <= 4
+        counts[chosen[0]] += 1
+        if chosen[0] == 1 and len(chosen) > 1:
+            followers[chosen[1]] = followers.get(chosen[1], 0) + 1
+    # Pearson chi-square with 4 degrees of freedom: p = 1e-4 at 23.5.
+    chi = sum((c - draws * p) ** 2 / (draws * p) for c, p in zip(counts, target))
+    assert chi < 23.5, (counts, chi)
+    # The accepted first proposal's child follows the second row's law.
+    law = torch.softmax(torch.tensor(second, dtype=torch.float64), -1).numpy()
+    n = sum(followers.values())
+    chi = sum((followers.get(t, 0) - n * p) ** 2 / (n * p) for t, p in enumerate(law))
+    assert chi < 23.5, (followers, chi)
+
+
+def test_sampled_verify_emits_the_serial_decoders_draws(cpu_effective_rows):
+    from tensorfold.cuda.sampling import sample_rows
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.deepseek_v4.cuda.dspark_serving import decide_sampled
+
+    g = torch.Generator().manual_seed(9)
+    for seed in range(200):
+        policy = Sampling(seed, temperature=1.0, top_k=0, top_p=0.95)
+        logits = torch.randn((4, 32), generator=g) * 2
+        serial = [sample_rows(logits[j:j + 1], [41 + j], policy)[0] for j in range(4)]
+        drafts = [serial[0], serial[1], (serial[2] + 1) % 32] if seed % 2 else [serial[0], (serial[1] + 1) % 32, 0]
+        chosen = decide_sampled(policy, logits, 7, drafts, 40, 8, ())
+        assert chosen == serial[:len(chosen)]
+        assert len(chosen) == (3 if seed % 2 else 2)
+
+
+def test_sampled_verify_honors_filters_room_and_end_tokens(cpu_effective_rows):
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.deepseek_v4.cuda.dspark_serving import decide_sampled
+
+    peaked = [2., 1., 0., -1., -3.]                # p(0) ~ 0.64: top_p 0.5 keeps only token 0
+    logits = _sampled_rows(peaked, peaked, peaked, peaked)
+    for seed in range(50):
+        narrow = Sampling(seed, temperature=1.0, top_k=0, top_p=0.5)
+        assert decide_sampled(narrow, logits, 7, [1, 0, 0], 40, 8, ()) == [0]
+        assert decide_sampled(narrow, logits, 7, [0, 0, 0], 40, 8, ()) == [0, 0, 0, 0]
+        assert decide_sampled(narrow, logits, 7, [0, 0, 0], 40, 2, ()) == [0, 0]
+        assert decide_sampled(narrow, logits, 7, [0, 0, 0], 40, 8, (0,)) == [0]
+    with pytest.raises(ValueError, match="geometry"):
+        decide_sampled(Sampling(1, temperature=1.0, top_k=0, top_p=1.0), logits[:3], 7, [0, 0, 0], 40, 8, ())
+
+
+def test_fixed_round_draws_sampled_lanes_on_the_device_and_commits_the_serial_tokens():
+    from tensorfold.cuda.streams import Stream
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.deepseek_v4.cuda.device_sampling import WORDS, row_words
+    from tensorfold.families.deepseek_v4.cuda.engine import (
+        FixedDraftDecoder, OP_DRAFT_COMMIT_BATCH, OP_DRAFT_VERIFY_BATCH,
+    )
+
+    decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
+    decoder.eos = (99,)
+    decoder.verify_rounds_by_active = [0] * 4
+    sent = []
+    policy = Sampling(3, temperature=1.0, top_k=0, top_p=0.95)
+    greedy = Stream([1] * 10, 8, out=[5])
+    sampled = Stream([1] * 10, 8, policy, out=[6])
+    for slot, stream in enumerate((greedy, sampled)):
+        stream.slot, stream.draft_seed = slot, True
+    compact = torch.tensor([[[1., 10., 0.], [1., 11., 0.], [1., 12., 0.], [1., 13., 0.],
+                             [1., 1., 0.], [1., 1., 0.], [1., 1., 0.], [1., 1., 0.]]])
+
+    def announce(op, seq, count, grammar=0, lanes=0, *, ids):
+        sent.append((op, seq, count, grammar, lanes, tuple(ids)))
+        if op == OP_DRAFT_VERIFY_BATCH:
+            # the sampled lane's device draws: rows 0 and 1 match drafts 4, 4; row 2 draws 9, not the draft 2
+            return SimpleNamespace(compact=compact, drafts=torch.tensor([[10, 11, 12], [4, 4, 2]]),
+                                   sampled=torch.tensor([4, 4, 9, 3]))
+
+    decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(next_sequence=4, depth=3, bucket=3), context=64,
+                                target=SimpleNamespace(pool=SimpleNamespace(owned={0: [0], 1: [1]})),
+                                announce=announce)
+    lanes = [greedy, sampled]
+    entries = [decoder._draft_entry(stream) for stream in lanes]
+    decoder._fixed_round(lanes, entries)
+    op, _, _, grammar, device, ids = sent[0]
+    assert (op, grammar, device) == (OP_DRAFT_VERIFY_BATCH, 0, 0b10)
+    assert list(ids[6:]) == row_words(policy) and len(ids) == 6 + WORDS
+    assert sent[1] == (OP_DRAFT_COMMIT_BATCH, 4, 2, 0, 0, (0, 4, 1, 3))
+    assert greedy.out == [5, 10, 11, 12, 13] and sampled.out == [6, 4, 4, 9]

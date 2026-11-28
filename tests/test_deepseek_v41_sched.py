@@ -23,7 +23,7 @@ def test_w576_experimental_math_flag_is_independent_of_packet_format():
     shape = Shape(engine, 1, 131072)
     entries, ids = [(0, 3, 1)], [42]
 
-    def replay(entries, ids, compact, *, full, ahead, expert_sample, retain_routed):
+    def replay(entries, ids, compact, *, full, ahead, expert_sample, retain_routed, sample=None):
         shape.stage(entries, ids, 2, retain_routed=retain_routed)
         return (compact, ahead, shape.step.round_w576_routed.item(), shape.step.expert_sample.item(),
                 shape.step.ids.item())
@@ -366,10 +366,10 @@ def _timeline_decoder(monkeypatch, unit_ms, round_ms=20.0, units=8, warm_rows=25
             self.at = stop
             return Logits() if stop == self.units else None
 
-        def step(self, entries, ids, logits_rows, flags=0):
+        def step(self, entries, ids, logits_rows, flags=0, *, sample=None):
             if flags & E.F_COMPACT:
                 clock.run(round_ms)
-                return ("packet", None)
+                return ("packet", None, None)
             stop = flags & 0xFFFF
             self.rows, self.at = sum(c for _, _, c in entries), 0
             return self._units(stop if 0 < stop < self.units else self.units)
@@ -431,7 +431,7 @@ def test_a_cancelled_one_row_prompt_does_not_supply_run_ahead_tokens(monkeypatch
     step = d.e.step
     last_graph_slot = None
 
-    def replay(entries, ids, logits_rows, flags=0):
+    def replay(entries, ids, logits_rows, flags=0, *, sample=None):
         nonlocal last_graph_slot
         if len(entries) == 1 and entries[0][2] == 1 and logits_rows == [0]:
             slot = entries[0][0]
@@ -521,7 +521,7 @@ def test_the_warm_up_cost_sample_is_not_the_first_prompt_forward(monkeypatch):
         def elapsed_time(self, other):
             return other.at - self.at
 
-    def step(entries, ids, rows, stop=0):
+    def step(entries, ids, rows, stop=0, *, sample=None):
         if entries[0][2] > 1:
             first = not prompts
             prompts.append(e.layer_marks is not None)
