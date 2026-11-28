@@ -2210,6 +2210,9 @@ class App:
                 print(warning, flush=True)
             self._ended_thinking(request_id, body, prompt, out, finish, chat and thinking, content, calls, reasoning,
                                  raw_text, stopped["stop"], ends, stats)
+            remember = getattr(self.template, "remember_reply", None)
+            if chat and reasoning and remember is not None:
+                remember(body.get("messages"), content, calls, reasoning)
             print_done(request_id, len(prompt), (cached or [0])[0], thinking, out, finish, stats, request)
             if body.get("return_token_ids"):              # the reply's ids in the "tensorfold" block, for exactness checks
                 stats = {**(stats or {}), "token_ids": [int(t) for t in out]}

@@ -349,6 +349,104 @@ class _Route:
     numeric_efforts: bool = True     # reasoning_effort may be an integer 1-100
 
 
+REASONING_FIELDS = ("reasoning_content", "reasoning", "thinking")   # DeepSeek's field, then vLLM's and the template's
+
+
+def _replayed_reasoning(message: dict[str, Any]) -> str | None:
+    """An assistant turn's reasoning under any accepted field name (DeepSeek's ``reasoning_content`` first)."""
+    for field in REASONING_FIELDS:
+        value = message.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _canonical(message: dict[str, Any]) -> bytes:
+    """A message's identity for reasoning recall: role, text, tool names with parsed arguments and tool results.
+    Reasoning fields and call ids are left out, so a client that drops, trims or renames the reasoning, renumbers
+    calls or re-serializes arguments still names the same turn."""
+    content = message.get("content")
+    if isinstance(content, list) and all(isinstance(p, dict) and p.get("type") == "text" for p in content):
+        content = "".join(str(p.get("text", "")) for p in content)
+    if isinstance(content, list):
+        content = [hashlib.sha256(json.dumps(part, sort_keys=True, default=str).encode()).hexdigest()
+                   for part in content]
+    elif isinstance(content, str):
+        content = content.strip()
+    calls = []
+    for call in message.get("tool_calls") or ():
+        function = (call or {}).get("function") or {}
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except ValueError:
+                pass
+        calls.append([function.get("name"), arguments])
+    return json.dumps([message.get("role"), content or None, calls], sort_keys=True, ensure_ascii=False,
+                      default=str).encode()
+
+
+class ReasoningMemory:
+    """Reasoning this server generated, recalled when a client sends that reply back without it.
+
+    DeepSeek-V4.1 keeps every assistant turn's reasoning once tools are advertised; a client that drops it makes
+    each earlier tool call follow an empty thought, which the model never saw in training. A turn is identified by
+    a hash chain over the whole conversation up to and including it (``_canonical`` per message), so only the same
+    conversation recalls it. Bounded by entries and stored characters, least recently used first; process memory
+    only (a restart forgets, and those turns render as before)."""
+
+    def __init__(self, entries: int = 8192, characters: int = 64 << 20) -> None:
+        import threading
+        from collections import OrderedDict
+
+        self._items: OrderedDict[bytes, str] = OrderedDict()
+        self._entries, self._characters, self._held = entries, characters, 0
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def chain(messages: list[dict[str, Any]]):
+        """The digest after each message, in order."""
+        digest = b""
+        for message in messages:
+            digest = hashlib.sha256(digest + _canonical(message)).digest()
+            yield digest
+
+    def remember(self, messages: list[dict[str, Any]], reply: dict[str, Any], reasoning: str) -> None:
+        if not reasoning:
+            return
+        digest = b""
+        for digest in self.chain(messages):
+            pass
+        key = hashlib.sha256(digest + _canonical(reply)).digest()
+        with self._lock:
+            old = self._items.pop(key, None)
+            if old is not None:
+                self._held -= len(old)
+            self._items[key] = reasoning
+            self._held += len(reasoning)
+            while self._items and (len(self._items) > self._entries or self._held > self._characters):
+                _, dropped = self._items.popitem(last=False)
+                self._held -= len(dropped)
+
+    def restore(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """``messages`` with each assistant turn's reasoning under ``reasoning_content``: its own (any accepted
+        field) or, when it has none, the reasoning this server generated for that turn of this conversation."""
+        out = []
+        for message, digest in zip(messages, self.chain(messages)):
+            if message.get("role") == "assistant":
+                reasoning = _replayed_reasoning(message)
+                if reasoning is None:
+                    with self._lock:
+                        reasoning = self._items.get(digest)
+                        if reasoning is not None:
+                            self._items.move_to_end(digest)
+                if reasoning is not None and message.get("reasoning_content") != reasoning:
+                    message = {**message, "reasoning_content": reasoning}
+            out.append(message)
+        return out
+
+
 class V41ChatTemplate:
     """DeepSeek-V4.1 prompts for the CUDA server, by DeepSeek's V4.1 encoder (``cuda.chat_template.ChatTemplate``'s
     methods). Tools join the first system message, as DeepSeek's ``load_cases`` attaches them."""
@@ -386,6 +484,20 @@ class V41ChatTemplate:
             digest.update((here / name).read_bytes())
         sha = digest.hexdigest()
         self._route = _Route(_Source("deepseek_v41", _DESCRIPTION, SOURCE, sha), _Probe(self), EFFORTS, "system", sha)
+        self.reasoning = ReasoningMemory()
+
+    def remember_reply(self, messages, content, calls, reasoning) -> None:
+        """Keep a finished reply's reasoning for ``render``'s recall (``ReasoningMemory``)."""
+        from tensorfold.server.messages import RequestError, normalize_messages
+
+        if not reasoning or not isinstance(messages, list) or not messages:
+            return
+        try:
+            history = normalize_messages(messages, allow_images=True, preserve_text_parts=True)
+        except RequestError:
+            return                       # a history ``render`` refuses is never recalled either
+        reply = {"role": "assistant", "content": content or None, "tool_calls": calls or None}
+        self.reasoning.remember(history, reply, reasoning)
 
     def selected(self, *, tools=False) -> _Route:
         return self._route
@@ -410,6 +522,7 @@ class V41ChatTemplate:
         # leading instructions merged; later system turns kept; image parts only where the server's vision frontend
         # asks (``allow_images``: it expands each image's one placeholder)
         messages = normalize_messages(messages, allow_images=bool(allow_images), preserve_text_parts=True)
+        messages = self.reasoning.restore(messages)
         limit = MAX_RENDER_BYTES if max_render_bytes is None else max_render_bytes
         try:
             if extra is not None and not isinstance(extra, dict):
