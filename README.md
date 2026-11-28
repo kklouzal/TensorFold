@@ -1668,6 +1668,12 @@ All scoped candidate, source, build, native, packaging and fresh API gates are c
 
 #### DeepSeek-V4.1-Flash on eight V100s (2026-11-21)
 
+Long-context and strict-tool decode (2026-11-28): at C1, sampled DSpark decode
+measured 85.0 tok/s at 4K and 77.7 at 1M context (base 83.8 and 64.7), and
+single-row decode measured 62.0 tok/s at 1M. Strict-tool requests no longer
+take the host sampling path while their grammar is idle; one measured 30.7 to
+112.5 tok/s. See the [DeepSeek recipe](docs/recipes/deepseek-v41-v100.md#experimental-dspark-d3-at-native-context).
+
 The SM70 target follows the checkpoint's hierarchical decoder indexer.
 Layer 20 publishes candidate blocks for later reindexing layers. Source
 `4fc31cf2` passed native startup and cutoff checks for both KV modes on eight

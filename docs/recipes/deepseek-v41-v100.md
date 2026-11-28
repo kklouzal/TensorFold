@@ -203,6 +203,42 @@ order, min-p, then the keyed Gumbel draw. GPU tests compare every draw with
 the host sampler, including ties, masked rows and eight simulated ranks. Those
 streams keep run-ahead decoding. Other policies keep the host sampler.
 
+A reply grammar such as strict tool calling constrains nothing until the reply
+reaches it. While a stream's grammar is idle, for example during thinking, the
+stream uses the device greedy packet or keyed draw. Verification keeps only the
+rows before the first row the grammar constrains along the proposals. Rows the
+grammar does constrain are drawn on rank 0 by a full-vocabulary device sampler
+over the gathered masked rows, under the same keyed rule. On eight V100s, a
+short strict-tool request rose from 30.7 to 112.5 tok/s. A 3,488-token strict
+`write_file` call rose from 50.4 to 99.7 tok/s with the same tokens.
+
+Decode index layers 24–36 rank their top 512 among layer 20's 2,048
+candidate blocks. They now score only those blocks' 16,384 slots instead of
+every visible key, so their work no longer grows with context. The selections
+equal the old full-row scoring followed by compaction. Single decode rows
+(requests that do not draft) use the position-sharded indexer, as verification
+rows do.
+
+At C1 on the native-context profile (eight V100s at 185 W, image `67b43e682057`,
+`--temperature 1.0 --top-p 1.0`, frozen long-context plan from the
+`plan-ds41-v1` corpus, 256 output tokens, thinking off), source `5fbf31e4`
+against base `a53132cb` measured the following median decode tok/s per
+request. Drafted replies were byte-identical to the base at every length.
+Single-row rows are exact prefix-cache repeats, which do not draft.
+
+| Context | 4K | 16K | 64K | 128K | 256K | 512K | 768K | 1M |
+|---|---|---|---|---|---|---|---|---|
+| DSpark, base | 83.8 | 84.9 | 88.0 | 86.1 | 69.9 | 59.5 | 68.7 | 64.7 |
+| DSpark, `5fbf31e4` | 85.0 | 85.8 | 90.9 | 88.6 | 75.2 | 67.1 | 79.8 | 77.7 |
+| Single row, `5fbf31e4` | 71.2 | 67.5 | 67.3 | 65.9 | 65.8 | 64.4 | 63.3 | 62.0 |
+
+Verification rounds took 27.7 to 32.7 ms from 4K to 1M, against 28.4 to
+39.2 ms at the base. Single rows at the base measured 64.6 tok/s at 4K and
+50.6 at 512K. Draft acceptance varies with the prompt, so compare within a
+column. These are one-session C1 measurements; concurrency cells are covered
+by the 10-cell matrix above, whose paths only gained the bitwise-equal
+candidate scoring.
+
 On eight V100s at 185 W with the native-context profile above (image
 `67b43e682057`, seven funded 1,048,576-token lanes), the 10-cell sampled matrix
 compared source `bef83f5b` with base `24424648` at `--temperature 1.0 --top-p
