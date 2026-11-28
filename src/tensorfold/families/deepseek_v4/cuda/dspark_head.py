@@ -348,7 +348,7 @@ class DSparkHead:
         return self._markov_sharded
 
     def draft(self, anchors, anchor_pos, slots, embed, head, *, depth: int = dw.BLOCK, noise=None):
-        """Greedy drafts int64 [B, depth] (positions p+1 .. p+depth), graph-capturable.
+        """Drafts int64 [B, depth] (positions p+1 .. p+depth; greedy, or keyed ``noise`` rows), graph-capturable.
 
         Depth is fixed for the graph and shared by every rank. The bidirectional forward and target head retain
         all five rows per request. Only the sequential Markov steps are limited to the requested prefix.

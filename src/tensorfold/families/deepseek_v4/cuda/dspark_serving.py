@@ -1,8 +1,8 @@
 """Private preparation of one DSpark verification owner on the measured profile."""
 
-import torch
-
 import math
+
+import torch
 
 from . import dspark_weights as dw
 

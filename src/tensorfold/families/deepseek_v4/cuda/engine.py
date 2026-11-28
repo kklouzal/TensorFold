@@ -2,7 +2,8 @@
 
 Rank 0 drives; ranks 1-7 run ``follow``. Every model operation is announced to the followers through the
 same-host control pipes as one small frame before rank 0 issues its own identical kernels and collectives
-(the Gemma 4 SM70 provider's protocol), so all ranks submit the same NCCL sequence. Only rank 0 samples.
+(the Gemma 4 SM70 provider's protocol), so all ranks submit the same NCCL sequence. Rank 0 samples on the host; keyed device draws
+(``device_sampling``: decode graph rounds and sampled DSpark verify rows) run on every rank alike.
 
 Per-stream state lives in slots (patch 85's SlotTable semantics): KV pages, the window rings, the Engram n-gram
 history and the ratio-2 compressor partials. A slot is reset when a stream takes it; the last slot is scratch.
@@ -2157,7 +2158,7 @@ class FixedDraftDecoder(Decoder):
 
     def _fixed_round(self, live, entries):
         from .device_sampling import eligible, row_words
-        from .dspark_serving import decide, decide_constrained, decide_sampled
+        from .dspark_serving import decide, decide_constrained, decide_sampled, sampled_draftable
         from .round_sampling import greedy_tokens
 
         e = self.e
@@ -2168,7 +2169,7 @@ class FixedDraftDecoder(Decoder):
         # read their full rows (gathered in vector order); greedy lanes the compact packet.
         device = [s.constraint is None and eligible(s.sampling) for s in live]
         full = sum(1 << i for i, s in enumerate(live)
-                   if not device[i] and (s.constraint is not None or s.sampling is not None))
+                   if not device[i] and (s.constraint is not None or sampled_draftable(s.sampling)))
         sampled = sum(1 << i for i in range(count) if device[i])
         words = [w for s, on in zip(live, device) if on for w in row_words(s.sampling)]
         output = e.announce(OP_DRAFT_VERIFY_BATCH, sequence, count, full, sampled,
@@ -2192,7 +2193,7 @@ class FixedDraftDecoder(Decoder):
                     room, eos = s.count - len(s.out), self._ends(s)
                     if logits is None:
                         chosen = decide(rows, anchor, drafts, room, eos)
-                    elif s.sampling is not None:
+                    elif sampled_draftable(s.sampling):
                         chosen = decide_sampled(s.sampling, logits, anchor, drafts, at, room, eos, s.constraint)
                         if s.constraint is not None and (s.cancel is None or not s.cancel.is_set()):
                             s.constraint.advance(chosen)

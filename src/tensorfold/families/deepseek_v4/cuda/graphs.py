@@ -9,7 +9,8 @@ NaN/+inf flag; all-gathered, 8 x [B, 3] FP32: ``round_sampling``); the full-voca
 the replay only when a caller needs them (every rank alike: the OP_STEP flags). Every rank also derives each row's
 greedy token from the gathered packet on the device (``Shape.next_ids``: the first rank holding the row maximum,
 its column; the same rule as ``round_sampling.greedy_tokens`` on the host), so a run-ahead round (``run(ahead=True)``)
-takes its token ids from the previous replay without a host round trip (``engine.Decoder``). Captured identically on every rank at startup (bodies contain NCCL calls), largest bucket first, in
+takes its token ids from the previous replay without a host round trip (``engine.Decoder``). A sampled round
+(``run(sample=...)``) replaces positive-temperature rows' greedy tokens with keyed draws (``device_sampling``). Captured identically on every rank at startup (bodies contain NCCL calls), largest bucket first, in
 one shared memory pool; never lazily.
 
 Padding rows (B real streams in a larger bucket) are position-0 tokens of the scratch slot (the last slot) whose
