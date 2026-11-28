@@ -1,5 +1,9 @@
 """One decode round's token choices for every DeepSeek-V4.1 SM70 stream with one host wait (rank 0).
 
+Positive-temperature streams with top_k off and no grammar, penalties, probabilities or forced reply draw on the
+device in a decode graph round (``device_sampling``: the host rule below, bit for bit, on each rank's vocabulary
+shard); their tokens land in the same wait. Eager rounds keep the host path for them.
+
 Plain greedy streams (no sampling, grammar, penalties, probabilities or forced reply) choose from the decode graph's
 compact packet: per rank and row the shard maximum, its first column (global ID) and a NaN/+inf flag, all-gathered in
 the graph (8 x [rows, 3] FP32) and copied to pinned host memory behind it (``graphs.Shape``). The first rank holding
@@ -26,15 +30,32 @@ from tensorfold.cuda.sampling import (MARGIN, MASS, NUCLEUS, _draw_support, _gro
 GREEDY, TOPK, NUCLEUS_KIND, FORCED = "greedy", "topk", "nucleus", "forced"
 
 
+def _unmodified(s) -> bool:
+    return s.forced is None and s.constraint is None and s.history is None and s.probabilities is None
+
+
 def plain(s) -> bool:
     """A stream whose token is the argmax of its unmodified row (the compact packet decides it)."""
-    return (s.forced is None and s.constraint is None and s.history is None and s.probabilities is None
-            and (s.sampling is None or s.sampling.temperature <= 0))
+    return _unmodified(s) and (s.sampling is None or s.sampling.temperature <= 0)
 
 
-def needs_row(s) -> bool:
-    """A stream that needs its full-vocabulary row this round (sampling, masks/penalties or a probabilities sink)."""
-    return not plain(s) and not (s.forced is not None and s.probabilities is None)
+def device_sampled(s) -> bool:
+    """A positive-temperature stream the decode graph's keyed draw serves (``device_sampling``)."""
+    from .device_sampling import eligible
+
+    return _unmodified(s) and eligible(s.sampling)
+
+
+def device_decided(s) -> bool:
+    """A stream whose token the decode graph decides on the device (run-ahead may follow it)."""
+    return plain(s) or device_sampled(s)
+
+
+def needs_row(s, graph: bool = True) -> bool:
+    """A stream that needs its full-vocabulary row this round (sampling, masks/penalties or a probabilities sink);
+    ``graph``: a decode graph round, whose keyed draw serves ``device_sampled`` streams."""
+    return (not plain(s) and not (graph and device_sampled(s))
+            and not (s.forced is not None and s.probabilities is None))
 
 
 def compact_packet(local: torch.Tensor, rank: int) -> torch.Tensor:

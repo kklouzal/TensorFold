@@ -106,6 +106,9 @@ class Shape:
         # rank 0: the compact packet's landing buffers, alternating (two decode batches in flight: run-ahead)
         self.host_compact = [torch.empty((engine.world, count, 3), dtype=torch.float32, pin_memory=True)
                              for _ in range(2)] if engine.rank == 0 else None
+        # rank 0: the rows' device-decided tokens (greedy or ``device_sampling``), alternating with the packets
+        self.host_ids = [torch.empty(count, dtype=torch.int64, pin_memory=True)
+                         for _ in range(2)] if engine.rank == 0 else None
         self.flip = 0
 
     def stage(self, entries, ids, expert_sample=0, *, retain_routed=False) -> None:
@@ -211,13 +214,17 @@ class DecodeGraphs:
         need = max(entry[1] for entry in entries) + 1
         return next(c for c in self.classes[bucket] if c >= need)
 
-    def run(self, entries, ids, compact=False, full=True, ahead=False, *, expert_sample=0, retain_routed=False):
+    def run(self, entries, ids, compact=False, full=True, ahead=False, *, expert_sample=0, retain_routed=False,
+            sample=None):
         """Replay the smallest bucket holding ``entries``. ``full``: the real rows' full-vocabulary FP32 logits are
         gathered after the replay (every rank). Rank 0 gets those rows (``compact`` False), or (the compact packet's
         pinned host buffer [world, bucket, 3], copied behind the replay, landed once the caller's later event
         completes; the rows or None); other ranks get None. ``ahead``: the rows' token ids are the previous replay's
         device greedy tokens (``ids`` ignored): the same rows in the same order, one position on, stream-ordered
-        behind that replay. A packet buffer stays valid until the second later run."""
+        behind that replay. A packet buffer stays valid until the second later run. ``sample``: the rows'
+        ``device_sampling`` words; their positive-temperature rows replace the device greedy tokens with keyed draws
+        (every rank alike; a later run-ahead round reads them). With ``compact`` rank 0 gets (packet, rows,
+        device tokens), the tokens' pinned buffer landing with the packet."""
         n = len(entries)
         bucket = self.bucket(n)
         shape = self.shapes[(bucket, self.index_class(bucket, entries))]
@@ -231,12 +238,18 @@ class DecodeGraphs:
             shape.stage(entries, ids, expert_sample, retain_routed=retain_routed)
         packet = shape.run()
         self.last = (shape, n)
+        if sample is not None:
+            sampler = self.e.sampler
+            policy = sampler.words(sample, n)
+            tokens = sampler.sample(shape.local[:n], packet[:, :n, 0].max(0).values, shape.staged[1, :n] + 1, policy)
+            shape.next_ids[:n] = torch.where(policy[:, 1] != 0, tokens, shape.next_ids[:n])
         rows = self.e.coll.gather(shape.local[:n]) if full else None
         if self.e.rank != 0:
             return None
         if not compact:
             return rows
-        host = shape.host_compact[shape.flip]
+        host, tokens = shape.host_compact[shape.flip], shape.host_ids[shape.flip]
         shape.flip ^= 1
         host.copy_(packet, non_blocking=True)
-        return host, rows
+        tokens.copy_(shape.next_ids, non_blocking=True)
+        return host, rows, tokens

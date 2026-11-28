@@ -564,7 +564,6 @@ def test_strict_dsml_speculation_masks_only_reachable_rows_and_commits_selected_
     request.forced = request.head = None
     request.pos = 0
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
-    decoder._draft_turn = 0
     decoder._admitted(request)
     assert request.draft_seed
     matcher.advance([1])
@@ -661,9 +660,8 @@ def test_fixed_scheduler_verifies_disjoint_lanes_through_a_paused_prompt(monkeyp
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
     decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(bucket=3))
     decoder._broken = decoder.inflight = decoder.split = None
-    decoder._draft_turn = 0
     decoder.streams = {}
-    decoder.filling = [SimpleNamespace(sid=i, draft_seed=True, draft_turn=0, done=False, cancel=None, out=[10])
+    decoder.filling = [SimpleNamespace(sid=i, draft_seed=True, done=False, cancel=None, out=[10])
                        for i in range(3)]
     first, second, third = decoder.filling
     decoder.finishing = (first, ())
@@ -702,7 +700,7 @@ def test_fixed_scheduler_verifies_disjoint_lanes_through_a_paused_prompt(monkeyp
                      ("publish-first", second.sid), ("verify-and-commit", 2), ("one-prompt-group", third.sid),
                      ("publish-first", third.sid), ("verify-and-commit", 3)]
     # A fourth filling request does not invalidate any ready draft rings.
-    decoder.filling.append(SimpleNamespace(sid=3, draft_seed=True, draft_turn=decoder._draft_turn,
+    decoder.filling.append(SimpleNamespace(sid=3, draft_seed=True,
                                           done=False, cancel=None, out=[10]))
     assert decoder.round() == []
     assert calls[-2:] == [("verify-and-commit", 3), ("one-prompt-group", 3)]
@@ -714,7 +712,6 @@ def test_vision_prefill_does_not_disable_ready_text_draft_rounds(monkeypatch):
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
     decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(bucket=3))
     decoder._broken = decoder.inflight = decoder.finishing = decoder.split = None
-    decoder._draft_turn = 0
     options = dict(draft=True, background=False, owed=False, token_limit=None, head=None, pos=0, prompt=[1, 2],
                    forced=None, constraint=None, history=None, probabilities=None, sampling=None,
                    done=False, cancel=None, out=[10])
@@ -750,7 +747,6 @@ def test_mixed_round_drains_old_ordinary_work_then_admits_draft_and_advances_bac
     calls = []
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
     decoder._broken = decoder.ahead = decoder.split = decoder._draft_round_ms = None
-    decoder._draft_turn = 0
     decoder.eos = (99,)
     decoder.rounds = SimpleNamespace(
         add=lambda bucket, ms: calls.append(("ordinary_time", bucket, ms)),
@@ -764,7 +760,7 @@ def test_mixed_round_drains_old_ordinary_work_then_admits_draft_and_advances_bac
     def stream(sid, out, *, draft_seed=False, **options):
         value = Stream([1] * (63 if sid == 2 else 12), 9, sid=sid, out=out, **options)
         value.slot, value.forced = sid, None
-        value.draft_seed, value.draft_turn = draft_seed, 0
+        value.draft_seed = draft_seed
         return value
 
     ordinary = stream(1, [4], background=True, emit=lambda values: calls.append(("emit", values)))
@@ -780,7 +776,7 @@ def test_mixed_round_drains_old_ordinary_work_then_admits_draft_and_advances_bac
     packet = torch.tensor([[[1., 11., 0.], [1., 12., 0.]]])
     started = SimpleNamespace(elapsed_time=lambda _end: 10)
     ended = SimpleNamespace(synchronize=lambda: calls.append("drain"))
-    decoder.inflight = ([retired, ordinary], [13, 13], packet, None, None, 0., (started, ended, 2), ())
+    decoder.inflight = ([retired, ordinary], [13, 13], packet, None, None, 0., (started, ended, 2), (), None)
 
     def finish_prompt(value, completed):
         assert value is joining and completed == "finished prompt"
@@ -814,40 +810,25 @@ def test_mixed_round_drains_old_ordinary_work_then_admits_draft_and_advances_bac
     assert joining.draft_seed and cancelled.done and decoder._draft_round_ms is None
 
 
-def test_full_draft_vectors_do_not_starve_waiting_lane_when_short_requests_churn():
+def test_more_decoding_streams_than_a_verify_vector_decode_ordinarily():
     from tensorfold.cuda.streams import Stream
     from tensorfold.families.deepseek_v4.cuda.engine import FixedDraftDecoder
 
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
     decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(bucket=3))
-    decoder._draft_turn = 0
     decoder._draft_entry = lambda stream: stream.sid
     decoder.streams = {}
-
-    def add(sid):
-        value = Stream([1] * 10, count=2, sid=sid, out=[10])
+    for sid in range(4):
+        value = Stream([1] * 10, count=8, sid=sid, out=[10])
         value.forced = value.head = None
         value.pos = 0
         decoder._admitted(value)
         decoder.streams[sid] = value
-
-    for sid in range(4):
-        add(sid)
-    next_sid, selected_long = 4, []
-    for turn in range(8):
-        ready, ordinary, cancelled = decoder._decode_groups()
-        assert len(ready) == 3 and not ordinary and not cancelled
-        assert all(stream.draft_seed for stream in decoder.streams.values())
-        for stream, entry in ready:
-            assert entry == stream.sid
-            if stream.sid == 0:
-                selected_long.append(turn)
-                continue
-            del decoder.streams[stream.sid]
-            add(next_sid)
-            next_sid += 1
-    assert selected_long[0] == 0 and selected_long[-1] >= 6
-    assert all(b - a <= 2 for a, b in zip(selected_long, selected_long[1:]))
+    ready, ordinary, cancelled = decoder._decode_groups()
+    assert not ready and not cancelled and [s.sid for s in ordinary] == [0, 1, 2, 3]
+    del decoder.streams[3]
+    ready, ordinary, _ = decoder._decode_groups()
+    assert [s.sid for s, _ in ready] == [0, 1, 2] and not ordinary
 
 
 def test_cold_long_prompt_seeds_the_whole_draft_window_across_singleton_tail():
@@ -856,7 +837,6 @@ def test_cold_long_prompt_seeds_the_whole_draft_window_across_singleton_tail():
     from tensorfold.families.deepseek_v4.cuda.prefix import chunk_end, chunk_splits
 
     decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
-    decoder._draft_turn = 0
     tapped = []
 
     def step(entries, ids, logits_rows, flags, *, tap_from=None):
@@ -942,7 +922,6 @@ def test_draft_trace_distinguishes_shadow_admission_and_active_fallback(monkeypa
         return result
 
     decoder = engine.FixedDraftDecoder.__new__(engine.FixedDraftDecoder)
-    decoder._draft_turn = 0
     monkeypatch.setattr(engine, "TRACE_DRAFT", False)
     hidden = stream()
     decoder._admitted(hidden)

@@ -42,6 +42,7 @@ F_AHEAD = 1 << 25          # run-ahead round: token ids from the previous replay
 EXPERT_SAMPLE_SHIFT = 26   # OP_STEP: 0 off, 1 prefill, 2 decode, visible only to the rank-zero observer
 F_W576_FP32 = 1 << 28      # experimental continuation math, independent of output packet format
 F_DRAFT_TAPS = 1 << 29     # OP_STEP appends the first local row to tap in an ordinary prompt forward
+F_SAMPLE = 1 << 30         # OP_STEP appends every row's device_sampling words (a compact decode graph round)
 # The TP8 vision tower's operations (``OP_TOWER``, kind in a; every rank runs its shard, ``DS41Engine._tower``)
 OP_TOWER = 32
 OP_EXPERT_PLACEMENT = 33
@@ -552,7 +553,9 @@ class DS41Engine:
         self.prompt_rows = max_tokens
         self.part = None                    # a paused prompt forward (state, logits rows, slots), same on all ranks
         self.layer_marks = None             # rank 0: per-unit CUDA events of the prompt forward being timed
+        from .device_sampling import DeviceSampler
         from .graphs import DecodeGraphs, SlotPages
+        self.sampler = DeviceSampler(self.comm, rank=rank, world=tp, shard=self.vocab // tp, device=device)
         self.slot_pages = SlotPages(self.slots, -(-self.target.hash_state.max_context // BLOCK), device)
         self.graphs = None
         self._warm()
@@ -794,7 +797,7 @@ class DS41Engine:
         """Ledger bytes of a slot holding ``capacity`` positions: its pages."""
         return -(-capacity // 64) * self.page_bytes
 
-    def _step(self, entries, ids, logits_rows, stop=0, tap_from=None):
+    def _step(self, entries, ids, logits_rows, stop=0, tap_from=None, sample=None):
         flags, stop = stop & ~0xFFFF, stop & 0xFFFF
         """entries: [(slot, start, count)] in row order; ids: the tokens; logits_rows: token rows to score.
         Returns rank 0's full-vocabulary FP32 logits [len(logits_rows), vocab] (None elsewhere). With
@@ -827,7 +830,8 @@ class DS41Engine:
                 and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
             compact = bool(flags & F_COMPACT)
             return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL),
-                                   ahead=bool(flags & F_AHEAD), expert_sample=expert_sample, retain_routed=retain_routed)
+                                   ahead=bool(flags & F_AHEAD), expert_sample=expert_sample, retain_routed=retain_routed,
+                                   sample=sample if compact else None)
         # The experiment applies only to graph continuations. Eager and prompt forwards keep stock arithmetic.
         if retain_routed:
             raise RuntimeError("experimental W576 FP32 continuation must replay a startup graph")
@@ -976,9 +980,15 @@ class DS41Engine:
             tokens = ids[n:n + b]
             rows = ids[n + b:n + b + c]
             if d & F_DRAFT_TAPS:
-                if len(ids) != n + b + c + 1:
+                if len(ids) != n + b + c + 1 or d & F_SAMPLE:
                     raise ValueError("invalid DeepSeek DSpark tap frame")
                 return self._step(entries, tokens, rows, d & ~F_DRAFT_TAPS, ids[-1])
+            if d & F_SAMPLE:
+                from .device_sampling import WORDS
+
+                if len(ids) != n + b + c + WORDS * a:
+                    raise ValueError("invalid DeepSeek sampled decode frame")
+                return self._step(entries, tokens, rows, d & ~F_SAMPLE, sample=list(ids[n + b + c:]))
             return self._step(entries, tokens, rows, d)
         if op == OP_LAYERS:
             return self._layers(a)
@@ -1193,11 +1203,16 @@ class DS41Engine:
                                f"(sized {self._draft_graph_budget >> 20} MiB); {spare >> 20} MiB left, "
                                f"{prompt_reserve >> 20} MiB required for prompt transients")
 
-    def step(self, entries, ids, logits_rows, stop=0, *, tap_from=None):
+    def step(self, entries, ids, logits_rows, stop=0, *, tap_from=None, sample=None):
         payload = [v for e in entries for v in e] + list(ids) + list(logits_rows)
         if tap_from is not None:
             stop |= F_DRAFT_TAPS
             payload.append(tap_from)
+        if sample is not None:
+            if tap_from is not None:
+                raise ValueError("a sampled decode round has no draft taps")
+            stop |= F_SAMPLE
+            payload.extend(sample)
         observer = self.expert_observer
         if observer is not None:
             # Polling history can fail. Prepare the sample before notifying peers to enter the TP8 forward.
@@ -1851,19 +1866,32 @@ class Decoder(PrefixOwner):
             token = extra[-1] if extra else s.out[-1]
             entries.append((s.slot, len(s.prompt) + len(s.out) + len(extra) - 1, 1))
             ids.append(token)
-        need = [g for g, s in enumerate(live) if needs_row(s)]
+        graph = e.graphs is not None and len(entries) <= e.graphs.sizes[-1]
+        need = [g for g, s in enumerate(live) if needs_row(s, graph)]
         started, done = self._events()
         started.record()
         t0 = time.perf_counter()
-        out = e.step(entries, ids, list(range(len(entries))), F_COMPACT | (F_FULL if need else 0) | self.decode_math)
-        compact, rows = out if isinstance(out, tuple) else (None, out)      # an eager forward: full rows only
+        out = e.step(entries, ids, list(range(len(entries))), F_COMPACT | (F_FULL if need else 0) | self.decode_math,
+                     sample=self._sample_words(live) if graph else None)
+        compact, rows, tokens = out if isinstance(out, tuple) else (None, out, None)   # eager: full rows only
         if compact is None:
             need = list(range(len(live)))
         positions = [entry[1] + 1 for entry in entries]
         sampled = RowSampling(live, positions, rows, need) if need else None
         done.record()
         self.inflight = (live, positions, compact, rows, sampled, t0, (started, done, self._bucket(len(entries))),
-                         entries)
+                         entries, tokens)
+
+    @staticmethod
+    def _sample_words(live):
+        """Every row's device_sampling words when a row draws on the device, else None (no sampler work)."""
+        from .device_sampling import row_words
+        from .round_sampling import device_sampled
+
+        chosen = [s.sampling if device_sampled(s) else None for s in live]
+        if all(c is None for c in chosen):
+            return None
+        return [w for c in chosen for w in row_words(c)]
 
     def _events(self):
         pair = self.events[self.flip]
@@ -1877,14 +1905,14 @@ class Decoder(PrefixOwner):
         launch. A stream that ends on an end token in the batch in flight wastes its run-ahead row: that row writes the
         stream's state one position past its reply, inside its admitted pages, as a reply token would (the slot is
         retired behind it in stream order; prefix points never lie past a prompt end)."""
-        from .round_sampling import plain
+        from .round_sampling import device_decided
         live, compact, entries = self.inflight[0], self.inflight[2], self.inflight[7]
         if compact is None or self.e.graphs is None:
             return False
         current = [s for s in self.streams.values() if not s.done]
         if len(current) != len(live) or any(a is not b for a, b in zip(current, live)):
             return False
-        return all(plain(s) and len(s.out) + 2 <= s.count for s in live)
+        return all(device_decided(s) and len(s.out) + 2 <= s.count for s in live)
 
     def _launch_ahead(self) -> None:
         """Launch the run-ahead successor of the batch in flight: same streams and rows, one position on, token ids
@@ -1895,16 +1923,16 @@ class Decoder(PrefixOwner):
         started, done = self._events()
         started.record()
         t0 = time.perf_counter()
-        compact, rows = e.step(entries, [0] * len(entries), list(range(len(entries))),
-                               F_COMPACT | F_AHEAD | self.decode_math)
+        compact, rows, tokens = e.step(entries, [0] * len(entries), list(range(len(entries))),
+                                       F_COMPACT | F_AHEAD | self.decode_math, sample=self._sample_words(live))
         done.record()
         self.ahead = (live, [entry[1] + 1 for entry in entries], compact, rows, None, t0,
-                      (started, done, self._bucket(len(entries))), entries)
+                      (started, done, self._bucket(len(entries))), entries, tokens)
 
     def _collect(self):
         """Wait for the batch in flight; decide each stream's token: [(stream, [token] | None)]."""
-        from .round_sampling import greedy_tokens
-        live, positions, compact, rows, sampled, t0, (started, done, bucket), _ = self.inflight
+        from .round_sampling import device_sampled, greedy_tokens
+        live, positions, compact, rows, sampled, t0, (started, done, bucket), _, tokens = self.inflight
         self.inflight = None
         done.synchronize()
         self.rounds.add(bucket, started.elapsed_time(done))
@@ -1920,9 +1948,11 @@ class Decoder(PrefixOwner):
                 elif g in chosen_rows:
                     token = chosen_rows[g]
                 else:
-                    token, error = greedy[g]
+                    token, error = greedy[g]            # the packet's NaN/+inf/finite checks cover every row
                     if error is not None:
                         raise error
+                    if device_sampled(s):
+                        token = int(tokens[g])
                 if isinstance(token, Exception):
                     raise token
                 if s.probabilities is not None:
@@ -1985,14 +2015,12 @@ class FixedDraftDecoder(Decoder):
         super().__init__(engine)
         self.verify_rounds_by_active = [0] * (engine._draft_verify.bucket + 1)
         self._draft_round_ms = None
-        self._draft_turn = 0
 
     def _admitted(self, s):
         # A kept prefix has target state only. Every row of the last draft
         # window must be recomputed for this slot before the first proposal.
         blockers = draft_blockers(s)
         s.draft_seed = not blockers
-        s.draft_turn = self._draft_turn
         if TRACE_DRAFT:
             s.dspark_admission = blockers
 
@@ -2032,21 +2060,12 @@ class FixedDraftDecoder(Decoder):
                 ordinary.append(s)
             else:
                 ready.append((s, entry))
-        bucket = self.e._draft_verify.bucket
-        if ready and len(ready) + len(ordinary) + len(self.filling) > bucket:
-            # More live requests than one verify vector holds: a vector would idle the waiting lanes or add a
-            # second forward per turn, both slower than one batched ordinary round over every stream.
+        if len(ready) + len(ordinary) > self.e._draft_verify.bucket:
+            # More decoding streams than one verify vector holds: a vector would idle the waiting lanes or add a
+            # second forward per turn, both slower than one batched ordinary round over every stream. Ordinary
+            # decode retires their draft rings (``_launch``).
             ordinary.extend(s for s, _ in ready)
             ready = []
-        if len(ready) > bucket:
-            # A turn verifies one captured vector. Waiting draft lanes retain
-            # their rings and run before lanes served or admitted more recently.
-            ready.sort(key=lambda pair: (pair[0].draft_turn, pair[0].sid))
-            ready = ready[:bucket]
-        if ready:
-            self._draft_turn += 1
-            for stream, _ in ready:
-                stream.draft_turn = self._draft_turn
         return ready, ordinary, cancelled
 
     def _launch(self, live, pending):
