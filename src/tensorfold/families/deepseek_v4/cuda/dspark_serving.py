@@ -2,7 +2,14 @@
 
 import torch
 
+import math
+
 from . import dspark_weights as dw
+
+
+def sampled_draftable(sampling) -> bool:
+    """A positive finite temperature: rejection keeps the target sampler's law (``decide_sampled``)."""
+    return sampling is not None and math.isfinite(sampling.temperature) and sampling.temperature > 0
 
 
 def prepare_128k_verifier(engine, weights: dw.DSparkWeights, *, bucket: int, depth: int):
@@ -61,6 +68,34 @@ def decide(choices, anchor, proposed, room, eos):
             yield token
 
     return accepted_prefix(reachable(), [anchor, *proposed], room, eos)
+
+
+def decide_sampled(sampling, logits, anchor, proposed, position, room, eos, constraint=None):
+    """Standard rejection over a deterministic (Markov argmax) proposal chain.
+
+    Each proposal's actual q row is a point mass, so it survives with probability p(token) and
+    a rejection draws from p without it: the emitted law is exactly the target sampler's
+    (Leviathan et al. 2023). ``logits`` holds the target's full rows for the anchor and each
+    proposal; ``position`` is the anchor's. A reply grammar first drops proposals no path can
+    keep, then masks each retained row by its path; descendants it drops are unreachable.
+    """
+    from tensorfold.engine.rejection import ChainPacket, ProbabilityRow, verify
+
+    from tensorfold.cuda.sampling import effective_rows
+
+    if len(logits) != len(proposed) + 1 or room <= 0:
+        raise ValueError("invalid DSpark verification result geometry")
+    tokens = [anchor, *proposed]
+    rows = logits
+    if constraint is not None:
+        window = constraint.window(tokens, list(range(-1, len(proposed))))
+        tokens = window.tokens
+        rows = constraint.mask(logits[:len(tokens)], window) if window.rows else logits[:len(tokens)]
+    chain = ChainPacket(tuple(int(t) for t in tokens[1:]),
+                        tuple(ProbabilityRow([int(t)], [1.0]) for t in tokens[1:]), position + 1)
+    p_rows = effective_rows(rows, sampling)
+    path, terminal = verify(chain, p_rows, sampling.seed, room=room, eos=eos)
+    return [*chain.tokens[:len(path) - 1], terminal]
 
 
 def decide_constrained(constraint, logits, choices, anchor, proposed, room, eos):

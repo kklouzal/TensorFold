@@ -467,9 +467,9 @@ def test_grammar_verify_gathers_only_flagged_lane_rows_in_vector_order():
     output = leader.announce(OP_DRAFT_VERIFY_BATCH, 9, 3, 0b101, ids=entries)
     payload = array.array("i", entries)
     assert frames == [_HEAD.pack(OP_DRAFT_VERIFY_BATCH, 9, 3, 0b101, 0) + payload.tobytes()]
-    assert follower._run(*_HEAD.unpack_from(frames[0]), payload).constrained_logits is None
+    assert follower._run(*_HEAD.unpack_from(frames[0]), payload).full_logits is None
     expected = [0., 1., 2., 3., 8., 9., 10., 11.]
-    assert output.constrained_logits.tolist() == [[value, value + 100] for value in expected]
+    assert output.full_logits.tolist() == [[value, value + 100] for value in expected]
     assert gathers == [expected, expected] and checked == [(9, [3, 2, 1]), (9, [3, 2, 1])]
     with pytest.raises(ValueError, match="control frame"):
         leader.announce(OP_DRAFT_VERIFY_BATCH, 9, 3, 0b1000, ids=entries)
@@ -622,7 +622,7 @@ def test_constrained_verify_errors_and_cancellation_settle_only_the_affected_lan
                for slot, event, constraint in ((0, None, first_constraint), (1, None, None),
                                                 (2, cancel_event, last_constraint))]
     compact = torch.tensor([[[1., float(index + 10), 0.] for index in range(12)]])
-    constrained_logits = torch.arange(8, dtype=torch.float32).view(-1, 1)
+    full_logits = torch.arange(8, dtype=torch.float32).view(-1, 1)
 
     def decision(constraint, logits, choices, anchor, drafts, room, eos):
         assert room == 1 and eos == (99,)
@@ -641,7 +641,7 @@ def test_constrained_verify_errors_and_cancellation_settle_only_the_affected_lan
         if op == OP_DRAFT_VERIFY_BATCH:
             return SimpleNamespace(
                 compact=compact, drafts=torch.tensor([[10, 11, 12], [14, 15, 16], [18, 19, 20]]),
-                constrained_logits=constrained_logits,
+                full_logits=full_logits,
             )
 
     monkeypatch.setattr(serving, "decide_constrained", decision)
@@ -993,3 +993,98 @@ def test_engine_ordinary_announce_keeps_its_existing_wire(monkeypatch):
     with pytest.raises(ValueError, match="control frame"):
         engine.announce(OP_DRAFT_VERIFY_BATCH, 0, 1, ids=(0, 1, 2))
     assert len(sent) == 1
+
+
+def _sampled_rows(*rows):
+    return torch.tensor(rows, dtype=torch.float32)
+
+
+@pytest.fixture
+def cpu_effective_rows(monkeypatch):
+    import tensorfold.cuda.sampling as sampling
+
+    def cpu_metadata(logits, positions, policy):
+        assert not logits.is_cuda and logits.ndim == 2 and logits.shape[0] == len(positions)
+        sampling.validate_policy(positions, policy)
+    # The real effective_rows/nucleus/rejection code runs; only its CUDA geometry check is substituted.
+    monkeypatch.setattr(sampling, "validate_rows", cpu_metadata)
+
+
+def test_sampled_verify_keeps_the_target_law_for_point_mass_proposals(cpu_effective_rows):
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.deepseek_v4.cuda.dspark_serving import decide_sampled
+
+    first = [2., 1., 0., -1., -3.]
+    second = [0., 3., 1., 0., 0.]
+    logits = _sampled_rows(first, second, second, second)
+    target = torch.softmax(torch.tensor(first, dtype=torch.float64), -1).numpy()
+    draws, followers = 6000, {}
+    counts = [0] * 5
+    for seed in range(draws):
+        chosen = decide_sampled(Sampling(seed, temperature=1.0, top_k=0, top_p=1.0), logits, 7, [1, 1, 1], 40, 8, ())
+        assert 1 <= len(chosen) <= 4
+        counts[chosen[0]] += 1
+        if chosen[0] == 1 and len(chosen) > 1:
+            followers[chosen[1]] = followers.get(chosen[1], 0) + 1
+    # Pearson chi-square with 4 degrees of freedom: p = 1e-4 at 23.5.
+    chi = sum((c - draws * p) ** 2 / (draws * p) for c, p in zip(counts, target))
+    assert chi < 23.5, (counts, chi)
+    # The accepted first proposal's child follows the second row's law.
+    law = torch.softmax(torch.tensor(second, dtype=torch.float64), -1).numpy()
+    n = sum(followers.values())
+    chi = sum((followers.get(t, 0) - n * p) ** 2 / (n * p) for t, p in enumerate(law))
+    assert chi < 23.5, (followers, chi)
+
+
+def test_sampled_verify_honors_filters_room_and_end_tokens(cpu_effective_rows):
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.deepseek_v4.cuda.dspark_serving import decide_sampled
+
+    peaked = [2., 1., 0., -1., -3.]                # p(0) ~ 0.64: top_p 0.5 keeps only token 0
+    logits = _sampled_rows(peaked, peaked, peaked, peaked)
+    for seed in range(50):
+        narrow = Sampling(seed, temperature=1.0, top_k=0, top_p=0.5)
+        assert decide_sampled(narrow, logits, 7, [1, 0, 0], 40, 8, ()) == [0]
+        assert decide_sampled(narrow, logits, 7, [0, 0, 0], 40, 8, ()) == [0, 0, 0, 0]
+        assert decide_sampled(narrow, logits, 7, [0, 0, 0], 40, 2, ()) == [0, 0]
+        assert decide_sampled(narrow, logits, 7, [0, 0, 0], 40, 8, (0,)) == [0]
+    with pytest.raises(ValueError, match="geometry"):
+        decide_sampled(Sampling(1, temperature=1.0, top_k=0, top_p=1.0), logits[:3], 7, [0, 0, 0], 40, 8, ())
+
+
+def test_fixed_round_gathers_sampled_lane_rows_and_commits_rejection_output(cpu_effective_rows):
+    from tensorfold.cuda.streams import Stream
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.deepseek_v4.cuda.engine import (
+        FixedDraftDecoder, OP_DRAFT_COMMIT_BATCH, OP_DRAFT_VERIFY_BATCH,
+    )
+
+    decoder = FixedDraftDecoder.__new__(FixedDraftDecoder)
+    decoder.eos = (99,)
+    decoder.verify_rounds_by_active = [0] * 4
+    sent = []
+    greedy = Stream([1] * 10, 8, out=[5])
+    sampled = Stream([1] * 10, 8, Sampling(3, temperature=1.0, top_k=0, top_p=0.5), out=[6])
+    for slot, stream in enumerate((greedy, sampled)):
+        stream.slot, stream.draft_seed = slot, True
+    compact = torch.tensor([[[1., 10., 0.], [1., 11., 0.], [1., 12., 0.], [1., 13., 0.],
+                             [0., 0., 1.], [0., 0., 1.], [0., 0., 1.], [0., 0., 1.]]])
+    peaked = [-9.] * 16
+    peaked[4], peaked[2] = 2., 1.                  # only token 4 survives top_p 0.5
+    full = torch.tensor([peaked] * 4)
+
+    def announce(op, seq, count, mask=0, *, ids):
+        sent.append((op, seq, count, mask, tuple(ids)))
+        if op == OP_DRAFT_VERIFY_BATCH:
+            return SimpleNamespace(compact=compact, drafts=torch.tensor([[10, 11, 12], [4, 4, 2]]),
+                                   full_logits=full)
+
+    decoder.e = SimpleNamespace(_draft_verify=SimpleNamespace(next_sequence=4, depth=3, bucket=3), context=64,
+                                target=SimpleNamespace(pool=SimpleNamespace(owned={0: [0], 1: [1]})),
+                                announce=announce)
+    lanes = [greedy, sampled]
+    entries = [decoder._draft_entry(stream) for stream in lanes]
+    decoder._fixed_round(lanes, entries)
+    assert sent[0][3] == 0b10
+    assert sent[1] == (OP_DRAFT_COMMIT_BATCH, 4, 2, 0, (0, 4, 1, 3))
+    assert greedy.out == [5, 10, 11, 12, 13] and sampled.out == [6, 4, 4, 4]
