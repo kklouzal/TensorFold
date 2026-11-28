@@ -8,7 +8,7 @@ from . import dspark_weights as dw
 
 
 def sampled_draftable(sampling) -> bool:
-    """A positive finite temperature: rejection keeps the target sampler's law (``decide_sampled``)."""
+    """A positive finite temperature: verification draws the serial decoder's tokens (``decide_sampled``)."""
     return sampling is not None and math.isfinite(sampling.temperature) and sampling.temperature > 0
 
 
@@ -71,17 +71,15 @@ def decide(choices, anchor, proposed, room, eos):
 
 
 def decide_sampled(sampling, logits, anchor, proposed, position, room, eos, constraint=None):
-    """Standard rejection over a deterministic (Markov argmax) proposal chain.
+    """Sampled verification coupled to serial decoding: every row draws the target's own keyed token.
 
-    Each proposal's actual q row is a point mass, so it survives with probability p(token) and
-    a rejection draws from p without it: the emitted law is exactly the target sampler's
-    (Leviathan et al. 2023). ``logits`` holds the target's full rows for the anchor and each
-    proposal; ``position`` is the anchor's. A reply grammar first drops proposals no path can
-    keep, then masks each retained row by its path; descendants it drops are unreachable.
+    Row j (the anchor, then each proposal) samples position ``position + 1 + j`` with ``sample_rows``, the serial
+    decoder's rule (seed, position and token keyed), and a proposal survives only its parent's draw, as greedy
+    verification keeps an argmax. Every emitted token is the token serial decoding draws, so drafting changes no
+    reply; a point-mass proposal survives with probability p(token), as under standard rejection. A reply grammar
+    first drops proposals no path can keep, then masks each retained row by its path.
     """
-    from tensorfold.engine.rejection import ChainPacket, ProbabilityRow, verify
-
-    from tensorfold.cuda.sampling import effective_rows
+    from tensorfold.cuda.sampling import sample_rows
 
     if len(logits) != len(proposed) + 1 or room <= 0:
         raise ValueError("invalid DSpark verification result geometry")
@@ -91,11 +89,14 @@ def decide_sampled(sampling, logits, anchor, proposed, position, room, eos, cons
         window = constraint.window(tokens, list(range(-1, len(proposed))))
         tokens = window.tokens
         rows = constraint.mask(logits[:len(tokens)], window) if window.rows else logits[:len(tokens)]
-    chain = ChainPacket(tuple(int(t) for t in tokens[1:]),
-                        tuple(ProbabilityRow([int(t)], [1.0]) for t in tokens[1:]), position + 1)
-    p_rows = effective_rows(rows, sampling)
-    path, terminal = verify(chain, p_rows, sampling.seed, room=room, eos=eos)
-    return [*chain.tokens[:len(path) - 1], terminal]
+    # only rows a surviving parent can reach are drawn
+    choices = []
+    for j in range(len(tokens)):
+        choice = sample_rows(rows[j:j + 1], [position + 1 + j], sampling)[0]
+        choices.append((choice, None))
+        if j + 1 >= len(tokens) or choice != tokens[j + 1] or choice in eos or len(choices) >= room:
+            break
+    return decide(choices + [(None, None)] * (len(tokens) - len(choices)), anchor, tokens[1:], room, eos)
 
 
 def decide_constrained(constraint, logits, choices, anchor, proposed, room, eos):

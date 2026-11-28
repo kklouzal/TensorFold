@@ -1015,6 +1015,22 @@ def test_sampled_verify_keeps_the_target_law_for_point_mass_proposals(cpu_effect
     assert chi < 23.5, (followers, chi)
 
 
+def test_sampled_verify_emits_the_serial_decoders_draws(cpu_effective_rows):
+    from tensorfold.cuda.sampling import sample_rows
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.deepseek_v4.cuda.dspark_serving import decide_sampled
+
+    g = torch.Generator().manual_seed(9)
+    for seed in range(200):
+        policy = Sampling(seed, temperature=1.0, top_k=0, top_p=0.95)
+        logits = torch.randn((4, 32), generator=g) * 2
+        serial = [sample_rows(logits[j:j + 1], [41 + j], policy)[0] for j in range(4)]
+        drafts = [serial[0], serial[1], (serial[2] + 1) % 32] if seed % 2 else [serial[0], (serial[1] + 1) % 32, 0]
+        chosen = decide_sampled(policy, logits, 7, drafts, 40, 8, ())
+        assert chosen == serial[:len(chosen)]
+        assert len(chosen) == (3 if seed % 2 else 2)
+
+
 def test_sampled_verify_honors_filters_room_and_end_tokens(cpu_effective_rows):
     from tensorfold.engine.exact_sampling import Sampling
     from tensorfold.families.deepseek_v4.cuda.dspark_serving import decide_sampled
