@@ -61,3 +61,17 @@ def decide(choices, anchor, proposed, room, eos):
             yield token
 
     return accepted_prefix(reachable(), [anchor, *proposed], room, eos)
+
+
+def decide_constrained(constraint, logits, choices, anchor, proposed, room, eos):
+    """Read only reachable target choices in the reply grammar's current state."""
+    from .round_sampling import compact_packet, greedy_tokens
+
+    window = constraint.window([anchor, *proposed], list(range(-1, len(proposed))))
+    # A linear proposal chain can only lose a suffix. The target has already
+    # evaluated all its rows, but only the retained prefix can be selected.
+    width = len(window.tokens)
+    if window.rows:
+        rows = constraint.mask(logits[:width], window)
+        choices = greedy_tokens(compact_packet(rows, 0).cpu().unsqueeze(0), width)
+    return decide(choices[:width], anchor, window.tokens[1:], room, eos)

@@ -65,6 +65,28 @@ H64_128K_GRAPH_KEYS = (
 )
 H64_128K_GRAPH_BYTES = 1536 << 20
 TRACE = bool(os.environ.get("TENSORFOLD_DS41_SCHED_TRACE"))   # diagnostic: the Decoder's group plans and costs
+TRACE_DRAFT = os.environ.get("TENSORFOLD_DS41_DRAFT_TRACE") == "1"
+
+
+def draft_blockers(s) -> tuple[str, ...]:
+    """Request-local reasons D3 cannot seed a draft ring from this prompt."""
+    from .dspark_head import WINDOW
+
+    return tuple(reason for blocked, reason in (
+        (not s.draft, "draft_disabled"),
+        (s.vision is not None, "image_input"),
+        (s.background, "background"),
+        (bool(s.owed), "replay"),
+        (s.token_limit is not None, "token_limit"),
+        (s.forced is not None, "forced_tokens"),
+        (s.constraint is not None and not s.stop_eos, "grammar_without_eos"),
+        (s.constraint is not None and not callable(getattr(s.constraint, "window", None)), "grammar_without_window"),
+        (s.history is not None, "penalties"),
+        (s.probabilities is not None, "probabilities"),
+        (s.sampling is not None and not s.sampling.temperature <= 0, "sampling"),
+        (s.head is not None, "exact_cache_hit"),
+        (s.head is None and s.pos > max(0, len(s.prompt) - WINDOW), "short_uncached_tail"),
+    ) if blocked)
 
 
 class DS41Engine:
@@ -784,10 +806,10 @@ class DS41Engine:
         if tap_from is not None:
             from .dspark_head import WINDOW
 
-            if (self._draft_verify is None or len(entries) != 1 or len(ids) < 2
+            if (self._draft_verify is None or len(entries) != 1
                     or entries[0][2] != len(ids) or not 0 <= tap_from < len(ids)
                     or len(ids) - tap_from > WINDOW or flags & (F_IMAGE | F_SCORE | F_COMPACT | F_FULL | F_AHEAD)):
-                raise ValueError("DeepSeek DSpark taps require an ordinary multirow text prompt tail")
+                raise ValueError("DeepSeek DSpark taps require an ordinary text prompt tail")
         device = self.target.device
         pool = self.target.pool
         positions, token_req, qsl = [], [], [0]
@@ -799,7 +821,8 @@ class DS41Engine:
         retain_routed = bool(flags & F_W576_FP32)
         if retain_routed and (not self._experimental_w576_fp32 or flags & (F_SCORE | F_LAST | F_IMAGE)):
             raise ValueError("experimental W576 FP32 is only for continuation frames")
-        if (stop == 0 and not flags & F_IMAGE and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
+        if (tap_from is None and stop == 0 and not flags & F_IMAGE and self.graphs is not None
+                and len(entries) <= self.graphs.sizes[-1]
                 and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
             compact = bool(flags & F_COMPACT)
             return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL),
@@ -978,7 +1001,8 @@ class DS41Engine:
         verifier = getattr(self, "_draft_verify", None)
         width = 3 if op == OP_DRAFT_VERIFY_BATCH else 2
         if (verifier is None or not 1 <= count <= verifier.bucket or sequence < 0
-                or c or d or len(ids) != count * width):
+                or d or len(ids) != count * width
+                or (not 0 <= c < (1 << count) if op == OP_DRAFT_VERIFY_BATCH else c != 0)):
             raise ValueError("invalid DeepSeek DSpark control frame")
         if op == OP_DRAFT_VERIFY_BATCH and self.part is not None:
             paused_slots = self.part[2]
@@ -995,7 +1019,20 @@ class DS41Engine:
         verifier, width = self._check_draft_vector(op, sequence, count, c, d, ids)
         rows = tuple(tuple(ids[i:i + width]) for i in range(0, len(ids), width))
         if op == OP_DRAFT_VERIFY_BATCH:
-            return verifier.verify_batch(sequence, tuple(VerifyEntry(*row) for row in rows))
+            output = verifier.verify_batch(sequence, tuple(VerifyEntry(*row) for row in rows))
+            if c:
+                width = verifier.depth + 1
+                if c == (1 << count) - 1:
+                    local = output.local_logits[:count * width]
+                else:
+                    import torch
+
+                    local = torch.cat([output.local_logits[i * width:(i + 1) * width]
+                                       for i in range(count) if c & (1 << i)], dim=0)
+                full = self.coll.gather(local)
+                if self.rank == 0:
+                    output = output._replace(constrained_logits=full)
+            return output
         verifier.commit_batch(sequence, rows)
         # commit_batch fences the local device and checks sticky errors first.
         if self.rank != 0:
@@ -1500,7 +1537,9 @@ class Decoder(PrefixOwner):
         self.filling.append(s)
 
     def _admitted(self, s):
-        pass
+        if TRACE_DRAFT:
+            s.dspark_admission = draft_blockers(s)
+            s.dspark_shadow = True
 
     def cancel(self, gone) -> list:
         """Filling requests whose clients left end now (their slots retire in ``finish``)."""
@@ -1945,15 +1984,16 @@ class FixedDraftDecoder(Decoder):
         super().__init__(engine)
         self.verify_rounds_by_active = [0] * (engine._draft_verify.bucket + 1)
         self._draft_round_ms = None
+        self._draft_turn = 0
 
     def _admitted(self, s):
-        from .dspark_head import WINDOW
-        from .round_sampling import plain
-
         # A kept prefix has target state only. Every row of the last draft
         # window must be recomputed for this slot before the first proposal.
-        s.draft_seed = (s.draft and s.vision is None and not s.background and not s.owed and s.token_limit is None
-                        and plain(s) and s.head is None and s.pos <= max(0, len(s.prompt) - WINDOW))
+        blockers = draft_blockers(s)
+        s.draft_seed = not blockers
+        s.draft_turn = self._draft_turn
+        if TRACE_DRAFT:
+            s.dspark_admission = blockers
 
     def _text_chunk(self, s, start, stop, last, flags, **options):
         if s.draft_seed:
@@ -1961,72 +2001,94 @@ class FixedDraftDecoder(Decoder):
 
             first = max(start, len(s.prompt) - WINDOW)
             if first < stop:
-                if stop - start == 1:
-                    # Keep the ordinary graph for a one-row prompt tail.
-                    s.draft_seed = False
-                else:
-                    options["tap_from"] = first - start
+                options["tap_from"] = first - start
         return super()._text_chunk(s, start, stop, last, flags, **options)
 
-    def _fixed_entries(self, live):
+    def _draft_entry(self, s):
         from .dspark_weights import BLOCK as DRAFT_BLOCK
         from .target import BLOCK
 
         e = self.e
-        owner = e._draft_verify
-        if not 1 <= len(live) <= owner.bucket:
-            return ()
-        entries = []
-        for s in live:
-            if not s.draft_seed or not s.out or (s.cancel is not None and s.cancel.is_set()):
-                return ()
-            at = len(s.prompt) + len(s.out) - 1
-            if (at + DRAFT_BLOCK > e.context
-                    or at + owner.depth + 1 > len(e.target.pool.owned[s.slot]) * BLOCK):
-                return ()
-            entries.append((s.slot, at, s.out[-1]))
-        return entries
+        at = len(s.prompt) + len(s.out) - 1
+        if (at + DRAFT_BLOCK > e.context
+                or at + e._draft_verify.depth + 1 > len(e.target.pool.owned[s.slot]) * BLOCK):
+            if TRACE_DRAFT:
+                s.dspark_fallback = "insufficient_draft_room"
+            return None
+        return s.slot, at, s.out[-1]
+
+    def _decode_groups(self):
+        ready, ordinary, cancelled = [], [], []
+        for s in self.streams.values():
+            if s.done:
+                continue
+            if s.cancel is not None and s.cancel.is_set():
+                s.done, s.finished = True, time.perf_counter()
+                cancelled.append(s)
+                continue
+            entry = self._draft_entry(s) if s.draft_seed and s.out else None
+            if entry is None:
+                ordinary.append(s)
+            else:
+                ready.append((s, entry))
+        bucket = self.e._draft_verify.bucket
+        if len(ready) > bucket:
+            # A turn verifies one captured vector. Waiting draft lanes retain
+            # their rings and run before lanes served or admitted more recently.
+            ready.sort(key=lambda pair: (pair[0].draft_turn, pair[0].sid))
+            ready = ready[:bucket]
+        if ready:
+            self._draft_turn += 1
+            for stream, _ in ready:
+                stream.draft_turn = self._draft_turn
+        return ready, ordinary, cancelled
 
     def _launch(self, live, pending):
         for s in live:
             # Ordinary continuation does not populate the draft ring.
+            if TRACE_DRAFT and s.draft_seed and getattr(s, "dspark_fallback", None) is None:
+                s.dspark_fallback = "ordinary_decode"
             s.draft_seed = False
         super()._launch(live, pending)
 
     def round(self):
         self._check()
-        if self.inflight is not None:
-            return super().round()
-        live = [s for s in self.streams.values() if not s.done]
-        # Consume a completed chunk before choosing the live width. For an
-        # unfinished prompt, verify and settle the other slots before its
-        # next bounded layer group. Never wait for a filling lane to join.
-        filling = self.filling
         finishing = self.finishing
-        if (len(live) + len(filling) > self.e._draft_verify.bucket
-                or any(not s.draft_seed for s in filling)
-                or live and not self._fixed_entries(live)
-                or not (live or finishing is not None and finishing[0] is not None)):
+        joining = finishing[0] if finishing is not None else None
+        if not ((joining is not None and joining.draft_seed)
+                or any(s.draft_seed and not s.done for s in self.streams.values())):
+            # Preserve the target-only run-ahead path when no draft lane can
+            # join this turn.
             return super().round()
         import torch
 
         try:
             with torch.inference_mode():
                 done = []
+                if self.inflight is not None:
+                    for s, chosen in self._collect():
+                        if chosen is not None:
+                            s.take(chosen, self._ends(s))
+                        if s.done:
+                            done.append(s)
                 if finishing is not None:
                     self.finishing = None
-                    if finishing[0] is not None:
+                    if joining is not None:
                         done += self._filled(*finishing)
-                        live = [s for s in self.streams.values() if not s.done]
-                entries = self._fixed_entries(live)
-                if entries:
-                    start = time.perf_counter() if self.filling else None
+                ready, ordinary, cancelled = self._decode_groups()
+                done.extend(cancelled)
+                filling = bool(self.filling) or self.split is not None
+                if ready:
+                    live, entries = zip(*ready, strict=True)
+                    start = time.perf_counter() if filling else None
                     done += self._fixed_round(live, entries)
                     if start is not None:
                         self._draft_round_ms = (time.perf_counter() - start) * 1000
-                elif live:
-                    self._launch(live, {})
-                if self.filling:
+                        if ordinary:
+                            self._draft_round_ms += self.rounds.estimate(self._bucket(len(ordinary)))
+                if ordinary:
+                    self._launch(ordinary, {})
+                if filling:
                     done += self._fill()
                 return done
         except BaseException as error:
@@ -2041,24 +2103,37 @@ class FixedDraftDecoder(Decoder):
         return super()._prefill_round_ms()
 
     def _fixed_round(self, live, entries):
-        from .dspark_serving import decide
+        from .dspark_serving import decide, decide_constrained
         from .round_sampling import greedy_tokens
 
         e = self.e
         owner = e._draft_verify
         sequence, depth = owner.next_sequence, owner.depth
         count, width = len(entries), depth + 1
-        output = e.announce(OP_DRAFT_VERIFY_BATCH, sequence, count,
+        grammar = sum(1 << i for i, s in enumerate(live) if s.constraint is not None)
+        output = e.announce(OP_DRAFT_VERIFY_BATCH, sequence, count, grammar,
                             ids=(value for entry in entries for value in entry))
         choices = greedy_tokens(output.compact[:, :count * width].cpu(), count * width)
         proposals = output.drafts[:count].tolist()
         resolved = []
+        grammar_at = 0
         for i, (s, (_, _, anchor), drafts) in enumerate(zip(live, entries, proposals, strict=True)):
             chosen = error = None
+            rows = choices[i * width:(i + 1) * width]
+            logits = None
+            if s.constraint is not None:
+                logits = output.constrained_logits[grammar_at:grammar_at + width]
+                grammar_at += width
             if s.cancel is None or not s.cancel.is_set():
                 try:
-                    chosen = decide(choices[i * width:(i + 1) * width], anchor, drafts,
-                                    s.count - len(s.out), self._ends(s))
+                    room, eos = s.count - len(s.out), self._ends(s)
+                    if logits is None:
+                        chosen = decide(rows, anchor, drafts, room, eos)
+                    else:
+                        accepted = decide_constrained(s.constraint, logits, rows, anchor, drafts, room, eos)
+                        if s.cancel is None or not s.cancel.is_set():
+                            s.constraint.advance(accepted)
+                            chosen = accepted
                 except Exception as failed:  # Roll back this slot and settle the rest of the vector.
                     error = failed
             resolved.append((chosen, error))

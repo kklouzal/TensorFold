@@ -35,6 +35,7 @@ class VerifyOutput(NamedTuple):
     compact: torch.Tensor
     drafts: torch.Tensor
     local_logits: torch.Tensor
+    constrained_logits: torch.Tensor | None = None
 
 
 class SpecShape:

@@ -172,8 +172,49 @@ Use the local 1017 FT bundle with its `official` and `ft` directories. Keep
 drafting. The experimental path targets one to three eligible greedy decode
 streams. Check the funded lane count and configured depth in `/v1/stats`.
 The `dspark.verify_rounds_by_active` counters count committed verification
-rounds by the number of active requests in the vector. Image requests use target-only decoding.
-When a mixed batch cannot use the draft verifier, it uses the ordinary decode path.
+rounds by the number of active requests in the vector. Greedy structured output
+and strict tool calls apply the reply grammar to the target's verification rows.
+Image requests use target-only decoding.
+When eligible foreground streams share a turn with ordinary streams, the
+decoder verifies one vector of up to three draft streams, then launches an
+ordinary batch for the other decoding streams. Additional eligible streams
+rotate through the draft vector without losing their seeded history.
+Background decoding stays ordinary so a yielded request can replay the
+tokens it already delivered.
+
+On the eight-V100 native-context profile, three matched foreground strict-tool
+requests overlapping a 640-token background reply drafted zero proposals at
+`57794eac` and 165–168 each at `a81495cf`. The foreground median rose from
+53.85 to 82.20 tok/s with identical tool names and argument strings. The
+background median fell from 47.79 to 43.67 tok/s, and the time from submitting
+the foreground request until both finished rose from 13.37 to 14.59 s. The
+solo smoke test was about 131–132 tok/s in both arms. All four requests in
+a concurrent foreground test drafted. These are scoped mixed-workload checks.
+
+Set `TENSORFOLD_DS41_DRAFT_TRACE=1` to include DSpark admission reasons in
+completed-request logs, including on a target-only deployment. The trace
+records eligibility labels without recording prompt or tool content.
+When a D3 stream falls back after admission the log also records ordinary
+decoding. A one-token prompt chunk can supply its draft tap through the eager
+forward instead of losing the draft seed.
+
+On the eight-V100 native-context profile at source `9a23665e`, the
+8,193-token singleton-tail reproducer accepted 36 proposals and matched all
+48 target-only output tokens. The exact-cache repeat drafted zero. A cold
+189,326-token greedy request with thinking and an ordinary tool declaration
+accepted 32 of 48 proposals. This exercises those paths, with no claim of
+production throughput or general output equivalence.
+
+The production admission trace found a grammar on six consecutive zero-draft
+requests at 217K–220K context. With grammar-aware verification at `57794eac`,
+four synthetic greedy strict-tool pairs on the same host and profile produced
+identical tool names and argument strings. Decode was 127.16–130.29 tok/s
+with DSpark and 60.23–60.96 tok/s without it across three 9.5K–9.7K cases.
+The 216,482-token pair decoded at 118.61 and 47.96 tok/s, respectively,
+with about 54.4 s of prefill in both runs. Two pairs differed in reasoning
+tokens, including the long pair. These checks establish tool-call parity
+for the fixtures only. Live throughput and broader output quality are
+separate checks.
 
 On eight V100s at 185 W, a controlled short-prompt run verified D3 work at
 one, two and three active requests and ordinary decode at four. Draft

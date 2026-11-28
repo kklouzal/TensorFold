@@ -124,6 +124,11 @@ class Stream:
                "rounds": self.rounds, "drafts": self.draft, "cached": self.cached, "min_rows": self.min_rows,
                "drafted": self.drafted, "accepted": self.accepted, "queue_s": round(self.queue_s, 4)}
         own["committed_output_tokens"] = self.committed_output_tokens
+        if (admission := getattr(self, "dspark_admission", None)) is not None:
+            own["dspark_admission"] = admission
+            own["dspark_fallback"] = getattr(self, "dspark_fallback", None)
+            if getattr(self, "dspark_shadow", False):
+                own["dspark_shadow"] = True
         if self.carry is None:
             return own
         both = {k: round(self.carry[k] + own[k], 4) for k in ("prefill_s", "decode_s", "queue_s")}
