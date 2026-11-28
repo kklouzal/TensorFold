@@ -557,6 +557,8 @@ class DS41Engine:
         from .device_sampling import DeviceSampler
         from .graphs import DecodeGraphs, SlotPages
         self.sampler = DeviceSampler(self.comm, rank=rank, world=tp, shard=self.vocab // tp, device=device)
+        # rank 0: keyed draws of full gathered rows (grammar-masked verification rows)
+        self.full_sampler = DeviceSampler(None, rank=0, world=1, shard=self.vocab, device=device) if rank == 0 else None
         self.slot_pages = SlotPages(self.slots, -(-self.target.hash_state.max_context // BLOCK), device)
         self.graphs = None
         self._warm()
@@ -1941,7 +1943,7 @@ class Decoder(PrefixOwner):
         current = [s for s in self.streams.values() if not s.done]
         if len(current) != len(live) or any(a is not b for a, b in zip(current, live)):
             return False
-        return all(device_decided(s) and len(s.out) + 2 <= s.count for s in live)
+        return all(device_decided(s) and s.constraint is None and len(s.out) + 2 <= s.count for s in live)
 
     def _launch_ahead(self) -> None:
         """Launch the run-ahead successor of the batch in flight: same streams and rows, one position on, token ids
@@ -2158,18 +2160,20 @@ class FixedDraftDecoder(Decoder):
 
     def _fixed_round(self, live, entries):
         from .device_sampling import eligible, row_words
-        from .dspark_serving import decide, decide_constrained, decide_sampled, sampled_draftable
-        from .round_sampling import greedy_tokens
+        from .dspark_serving import decide, decide_constrained, decide_sampled, decide_unmasked, sampled_draftable
+        from .round_sampling import greedy_tokens, unmasked
 
         e = self.e
         owner = e._draft_verify
         sequence, depth = owner.next_sequence, owner.depth
         count, width = len(entries), depth + 1
-        # Sampled lanes draw keyed tokens on the device (``device_sampling``); grammar lanes and other policies
-        # read their full rows (gathered in vector order); greedy lanes the compact packet.
-        device = [s.constraint is None and eligible(s.sampling) for s in live]
+        # Lanes whose grammar (if any) is idle at the anchor choose on the device: sampled lanes draw keyed tokens
+        # (``device_sampling``), greedy lanes read the compact packet. Lanes with an active grammar and other
+        # sampling policies read their full rows (gathered in vector order).
+        idle = [unmasked(s) for s in live]
+        device = [idle[i] and eligible(s.sampling) for i, s in enumerate(live)]
         full = sum(1 << i for i, s in enumerate(live)
-                   if not device[i] and (s.constraint is not None or sampled_draftable(s.sampling)))
+                   if not device[i] and (not idle[i] or sampled_draftable(s.sampling)))
         sampled = sum(1 << i for i in range(count) if device[i])
         words = [w for s, on in zip(live, device) if on for w in row_words(s.sampling)]
         output = e.announce(OP_DRAFT_VERIFY_BATCH, sequence, count, full, sampled,
@@ -2191,10 +2195,15 @@ class FixedDraftDecoder(Decoder):
             if s.cancel is None or not s.cancel.is_set():
                 try:
                     room, eos = s.count - len(s.out), self._ends(s)
-                    if logits is None:
+                    if logits is None and s.constraint is not None:
+                        chosen = decide_unmasked(s.constraint, rows, anchor, drafts, room, eos)
+                        if s.cancel is None or not s.cancel.is_set():
+                            s.constraint.advance(chosen)
+                    elif logits is None:
                         chosen = decide(rows, anchor, drafts, room, eos)
                     elif sampled_draftable(s.sampling):
-                        chosen = decide_sampled(s.sampling, logits, anchor, drafts, at, room, eos, s.constraint)
+                        chosen = decide_sampled(s.sampling, logits, anchor, drafts, at, room, eos, s.constraint,
+                                                e.full_sampler)
                         if s.constraint is not None and (s.cancel is None or not s.cancel.is_set()):
                             s.constraint.advance(chosen)
                     else:

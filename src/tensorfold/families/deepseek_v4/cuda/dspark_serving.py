@@ -70,16 +70,20 @@ def decide(choices, anchor, proposed, room, eos):
     return accepted_prefix(reachable(), [anchor, *proposed], room, eos)
 
 
-def decide_sampled(sampling, logits, anchor, proposed, position, room, eos, constraint=None):
+def decide_sampled(sampling, logits, anchor, proposed, position, room, eos, constraint=None, sampler=None):
     """Sampled verification coupled to serial decoding: every row draws the target's own keyed token.
 
     Row j (the anchor, then each proposal) samples position ``position + 1 + j`` with ``sample_rows``, the serial
     decoder's rule (seed, position and token keyed), and a proposal survives only its parent's draw, as greedy
     verification keeps an argmax. Every emitted token is the token serial decoding draws, so drafting changes no
     reply; a point-mass proposal survives with probability p(token), as under standard rejection. A reply grammar
-    first drops proposals no path can keep, then masks each retained row by its path.
+    first drops proposals no path can keep, then masks each retained row by its path. ``sampler``: a one-rank
+    full-vocabulary ``DeviceSampler`` that draws every retained row at once under the same rule (a top-k-off
+    policy); each row keeps ``sample_rows``' NaN/+inf and no-finite-score errors, raised only if the row is reached.
     """
     from tensorfold.cuda.sampling import sample_rows
+
+    from .device_sampling import eligible
 
     if len(logits) != len(proposed) + 1 or room <= 0:
         raise ValueError("invalid DSpark verification result geometry")
@@ -89,6 +93,8 @@ def decide_sampled(sampling, logits, anchor, proposed, position, room, eos, cons
         window = constraint.window(tokens, list(range(-1, len(proposed))))
         tokens = window.tokens
         rows = constraint.mask(logits[:len(tokens)], window) if window.rows else logits[:len(tokens)]
+    if sampler is not None and eligible(sampling):
+        return decide(_device_rows(sampler, rows[:len(tokens)], position, sampling), anchor, tokens[1:], room, eos)
     # only rows a surviving parent can reach are drawn
     choices = []
     for j in range(len(tokens)):
@@ -97,6 +103,40 @@ def decide_sampled(sampling, logits, anchor, proposed, position, room, eos, cons
         if j + 1 >= len(tokens) or choice != tokens[j + 1] or choice in eos or len(choices) >= room:
             break
     return decide(choices + [(None, None)] * (len(tokens) - len(choices)), anchor, tokens[1:], room, eos)
+
+
+def _device_rows(sampler, rows, position, sampling):
+    """[(token, error)] of full rows [n, vocab] drawn at positions position + 1 + j (one host read)."""
+    import torch
+
+    from .device_sampling import row_words
+
+    n = rows.shape[0]
+    rows = rows.float().contiguous()
+    top = rows.max(-1).values
+    tokens = sampler.sample(rows, top, sampler.upload([position + 1 + j for j in range(n)]),
+                            sampler.words(row_words(sampling) * n, n))
+    bad = (torch.isnan(rows) | torch.isposinf(rows)).any(-1)
+    flags = torch.stack([tokens, bad.long(), (~torch.isfinite(top)).long()], 1).tolist()
+    out = []
+    for token, nan, empty in flags:
+        if nan:
+            out.append((None, ValueError("sampling scores contain NaN or positive infinity")))
+        elif empty:
+            out.append((None, ValueError("a complete vocabulary row needs at least one finite score")))
+        else:
+            out.append((token, None))
+    return out
+
+
+def decide_unmasked(constraint, choices, anchor, proposed, room, eos):
+    """A lane whose grammar is idle at its anchor, chosen from unmasked rows: only the rows before the first one the
+    grammar constrains along the proposals (or the first proposal it cannot keep) are reachable this round; that row
+    waits for the next round's masked choice. Row 0 is unconstrained, so a round always emits a token."""
+    tokens = [anchor, *proposed]
+    window = constraint.window(tokens, list(range(-1, len(proposed))))
+    limit = min(window.rows[0] if window.rows else len(tokens), len(window.tokens))
+    return decide(choices[:limit], anchor, tokens[1:limit], room, eos)
 
 
 def decide_constrained(constraint, logits, choices, anchor, proposed, room, eos):

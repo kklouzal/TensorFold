@@ -30,8 +30,14 @@ from tensorfold.cuda.sampling import (MARGIN, MASS, NUCLEUS, _draw_support, _gro
 GREEDY, TOPK, NUCLEUS_KIND, FORCED = "greedy", "topk", "nucleus", "forced"
 
 
+def unmasked(s) -> bool:
+    """No grammar mask applies to the stream's next row: no grammar, or one idle at the chosen tokens."""
+    idle = getattr(s.constraint, "idle", None)
+    return s.constraint is None or (callable(idle) and idle())
+
+
 def _unmodified(s) -> bool:
-    return s.forced is None and s.constraint is None and s.history is None and s.probabilities is None
+    return s.forced is None and s.history is None and s.probabilities is None and unmasked(s)
 
 
 def plain(s) -> bool:
@@ -47,7 +53,8 @@ def device_sampled(s) -> bool:
 
 
 def device_decided(s) -> bool:
-    """A stream whose token the decode graph decides on the device (run-ahead may follow it)."""
+    """A stream whose token the decode graph decides on the device this round (its grammar, if any, advances on
+    the host after the round: a run-ahead round needs ``s.constraint is None`` as well)."""
     return plain(s) or device_sampled(s)
 
 

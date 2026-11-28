@@ -378,10 +378,11 @@ class Target:
                 if ly.index == self.g.index_sources[-1]:
                     del shared["index_candidates"]
                 hierarchy = candidates, block, publish
-        if (tokens > 1 and not step.prefill and step.decode_index is None
+        if (not step.prefill and step.decode_index is None
                 and index_shard.eligible(query.shape[1], WORLD, width)):
-            # decode rows: every rank scores all 32 heads over its 1/8 of the key blocks (K4, index_shard; one row
-            # keeps the head-sharded scores: 98-118 vs 104-123 us per rank, dec-k4r / dec-k4b)
+            # decode rows: every rank scores all 32 heads over its 1/8 of the key blocks (K4, index_shard). One row
+            # also takes it: the head-sharded scores pad 4 heads to a 16-head tile over every key and all-reduce a
+            # full-width FP32 row, 15.5 vs 14.1 ms per token at 4K and 19.8 vs 15.5 ms at 512K (2026-11-28).
             return index_shard.select_decode(query, weights, step.positions, step.valid, step.token_req,
                                              self.pool.cache, step.block_table, layout=self.pool.layout,
                                              source=ly.source, ratio=ly.ratio, width=width, rank=self.w.rank,

@@ -1085,3 +1085,53 @@ def test_fixed_round_draws_sampled_lanes_on_the_device_and_commits_the_serial_to
     assert list(ids[6:]) == row_words(policy) and len(ids) == 6 + WORDS
     assert sent[1] == (OP_DRAFT_COMMIT_BATCH, 4, 2, 0, 0, (0, 4, 1, 3))
     assert greedy.out == [5, 10, 11, 12, 13] and sampled.out == [6, 4, 4, 9]
+
+
+def test_idle_strict_grammar_lane_uses_unmasked_choices_until_the_grammar_starts():
+    xgr = pytest.importorskip("xgrammar")
+
+    from tensorfold.engine.grammar import Grammars
+    from tensorfold.families.deepseek_v4.cuda.dspark_serving import decide_unmasked
+    from tensorfold.families.deepseek_v4.strict_tools_v41 import CLOSE, INVOKE_END, OPEN, Plan
+
+    tools = [{"type": "function", "function": {"name": "now", "strict": True}}]
+    plan = Plan(tools, required=False, parallel=False)
+    header = plan.thinking_headers[0][len(OPEN):]
+    words = ["", "thinking\n", "</think>", OPEN, header, f"{INVOKE_END}\n{CLOSE}", "invalid"]
+    info = xgr.TokenizerInfo(words, xgr.VocabType.RAW, vocab_size=len(words), stop_token_ids=[0])
+    grammars = Grammars(info)
+    matcher = grammars.constraint(
+        grammars.compile(plan.spec), think_end=2, answer_start=3,
+        answer_opener=plan.opener, answer_headers=plan.thinking_headers,
+        decode=lambda ids, **_kwargs: "".join(words[t] for t in ids),
+    )
+    matcher.advance([1])
+    assert matcher.idle()
+    # free thinking rows: every unmasked choice that follows its draft is kept
+    rows = [(1, None), (1, None), (1, None), (1, None)]
+    assert decide_unmasked(matcher, rows, 1, [1, 1, 1], 8, (0,)) == [1, 1, 1, 1]
+    # a drafted </think> reaches the answer grammar: only the rows before the first constrained row are reachable
+    tokens = [1, 1, 2, 3]
+    window = matcher.window(tokens, [-1, 0, 1, 2])
+    limit = min(window.rows[0] if window.rows else 4, len(window.tokens))
+    assert 1 <= limit < 4
+    rows = [(t, None) for t in tokens[1:]] + [(6, None)]
+    chosen = decide_unmasked(matcher, rows, 1, tokens[1:], 8, (0,))
+    assert chosen == tokens[1:limit + 1][:limit] and len(chosen) == limit
+    assert matcher.observed == 1                  # the window rolled itself back
+    matcher.advance(chosen)
+    assert not matcher.idle() or limit == 1
+
+
+def test_unmasked_streams_and_run_ahead_with_an_idle_grammar():
+    from types import SimpleNamespace as NS
+
+    from tensorfold.families.deepseek_v4.cuda.round_sampling import device_decided, needs_row, plain, unmasked
+
+    idle = NS(idle=lambda: True)
+    busy = NS(idle=lambda: False)
+    stream = lambda constraint: NS(forced=None, history=None, probabilities=None, sampling=None, constraint=constraint)
+    assert unmasked(stream(None)) and unmasked(stream(idle)) and not unmasked(stream(busy))
+    assert unmasked(stream(NS())) is False                       # a constraint without ``idle`` is always masked
+    assert plain(stream(idle)) and device_decided(stream(idle)) and not needs_row(stream(idle))
+    assert not plain(stream(busy)) and needs_row(stream(busy))

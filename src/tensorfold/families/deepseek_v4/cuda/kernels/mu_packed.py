@@ -632,6 +632,21 @@ def select_positions(
         pick = (lambda t: t) if rows is None else (lambda t: t.index_select(0, rows))
         q_d, w_d, pos_d = pick(query), pick(weights), pick(positions)
         valid_d, req_d = pick(step.valid), pick(step.token_req)
+        if hierarchy is not None and not hierarchy[2] and width > hierarchy[0].shape[1] * hierarchy[1]:
+            # A consumer of the decoder candidate pool scores only the pool's slots (``_candidate_rows``).
+            picked = result if rows is None else torch.empty(q_d.shape[0], 512, dtype=torch.int32, device=query.device)
+            _candidate_rows(picked, q_d, w_d, pos_d, valid_d, req_d, cache, block_table,
+                            hierarchy[0] if rows is None else pick(hierarchy[0]), hierarchy[1],
+                            layout=layout, source=source, ratio=ratio, width=width, all_reduce=all_reduce,
+                            score_dtype=score_dtype)
+            if rows is not None:
+                result.index_copy_(0, rows, picked)
+            decode_rows = 0
+    if decode_rows > 0:
+        rows = step.decode_index
+        pick = (lambda t: t) if rows is None else (lambda t: t.index_select(0, rows))
+        q_d, w_d, pos_d = pick(query), pick(weights), pick(positions)
+        valid_d, req_d = pick(step.valid), pick(step.token_req)
         scores = torch.empty(q_d.shape[0], width, dtype=score_dtype, device=query.device)
         index_scores(
             q_d, w_d, cache, block_table, pos_d, valid_d, req_d,
@@ -681,6 +696,29 @@ def select_positions(
             ratio, all_reduce, hierarchy=policy,
         )
     return result
+
+
+def _candidate_rows(picked, q, w, positions, valid, token_req, cache, block_table, candidates, block, *, layout,
+                    source, ratio, width, all_reduce, score_dtype):
+    """Decode rows of a candidate-pool consumer layer: the rank-local head scores of the pool's slots only
+    (``mu_reindex.candidate_scores``, ``index_scores``' arithmetic and output type), the same TP sum, dead slots
+    -inf, then ``select_ranked``'s compact ranker: the compact scores ``select_ranked`` forms from the full row."""
+    from .mu_reindex import candidate_lengths, candidate_scores, compact_to_positions
+
+    tokens, blocks = candidates.shape
+    capacity = blocks * block
+    local = torch.zeros((tokens, capacity), dtype=score_dtype, device=q.device)
+    candidate_scores(q, w, cache, block_table, positions, valid, token_req, candidates, layout=layout,
+                     layer=source, block=block, out=local)
+    compact = all_reduce(local).to(torch.float16)
+    lengths = torch.where(valid != 0, ((positions + 1) // ratio).clamp(min=0, max=width), 0)
+    slot = torch.arange(capacity, device=q.device)
+    blk = candidates.to(torch.int64).gather(1, (slot // block).expand(tokens, -1))
+    live = (blk >= 0) & (blk * block + slot % block < lengths[:, None])
+    compact = compact.masked_fill(~live, float("-inf"))
+    choice = torch.empty_like(picked)
+    _topk(choice, compact.contiguous(), candidate_lengths(candidates, lengths, block) - 1, valid, 1, picked.shape[1])
+    picked.copy_(compact_to_positions(choice, candidates, block))
 
 
 def gather_buffers(tokens, width, device):

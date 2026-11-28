@@ -229,7 +229,7 @@ def test_greedy_draft_depth_keeps_full_projection_and_markov_prefix():
         calls.append("head")
         return base
 
-    def step(rows, previous):
+    def step(rows, previous, noise=None):
         assert rows.shape == (b, vocab) and rows.stride() == ((vocab + 1) * dw.BLOCK, 1)
         assert not rows.is_contiguous()
         calls.append("markov")
