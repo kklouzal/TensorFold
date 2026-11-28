@@ -1036,7 +1036,13 @@ class DS41Engine:
         verifier, width = self._check_draft_vector(op, sequence, count, c, d, ids)
         rows = tuple(tuple(ids[i:i + width]) for i in range(0, count * width, width))
         if op == OP_DRAFT_VERIFY_BATCH:
-            output = verifier.verify_batch(sequence, tuple(VerifyEntry(*row) for row in rows))
+            from .device_sampling import WORDS, lane_noise
+
+            words = ids[count * width:]
+            lanes = [i for i in range(count) if d >> i & 1]
+            noise = {i: lane_noise(words[k * WORDS:(k + 1) * WORDS]) for k, i in enumerate(lanes)}
+            output = verifier.verify_batch(sequence, tuple(VerifyEntry(*row, noise=noise.get(i))
+                                                           for i, row in enumerate(rows)))
             if d:
                 output = self._sample_draft_rows(output, rows, d, ids[count * width:], verifier.depth + 1)
             if c:

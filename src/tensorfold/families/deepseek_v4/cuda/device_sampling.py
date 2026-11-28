@@ -80,6 +80,12 @@ def row_words(sampling) -> list[int]:
             *_split(_bits(sampling.min_log))]
 
 
+def lane_noise(words) -> tuple[int, int]:
+    """A row's (keyed seed, inverse temperature FP64 bits) as signed64, from its words (draft proposals)."""
+    pair = lambda i: _signed((words[i] & 0xFFFFFFFF) | (words[i + 1] << 32))
+    return pair(0), pair(2)
+
+
 def _shr(x, k):
     return (x >> k) & ((1 << (64 - k)) - 1)                     # logical shift of uint64 bits held in int64
 

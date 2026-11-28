@@ -347,12 +347,14 @@ class DSparkHead:
                                                  gather, self.w.layout.world)
         return self._markov_sharded
 
-    def draft(self, anchors, anchor_pos, slots, embed, head, *, depth: int = dw.BLOCK):
+    def draft(self, anchors, anchor_pos, slots, embed, head, *, depth: int = dw.BLOCK, noise=None):
         """Greedy drafts int64 [B, depth] (positions p+1 .. p+depth), graph-capturable.
 
         Depth is fixed for the graph and shared by every rank. The bidirectional forward and target head retain
         all five rows per request. Only the sequential Markov steps are limited to the requested prefix.
         ``head(fp16 [B*5, 5120]) -> FP32 [B*5, V_local]`` is this rank's vocabulary shard of the target head.
+        ``noise``: (seeds int64 [B], inverse temperatures FP64 [B]): rows with a positive inverse temperature propose
+        the keyed Gumbel maximum the target's sampler draws at each draft position (coupled proposals).
         """
         if type(depth) is not int or not 1 <= depth <= dw.BLOCK:
             raise ValueError(f"DSpark draft depth must be an integer in [1, {dw.BLOCK}]")
@@ -363,7 +365,8 @@ class DSparkHead:
         tokens = torch.empty(b, depth, dtype=torch.int64, device=self.device)
         prev = anchors
         for step in range(depth):
-            prev = markov.step(base[:, step], prev)
+            keyed = None if noise is None else (noise[0], noise[1], anchor_pos + 1 + step)
+            prev = markov.step(base[:, step], prev, keyed)
             tokens[:, step] = prev
         return tokens
 

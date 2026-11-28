@@ -29,6 +29,7 @@ class VerifyEntry:
     position: int
     anchor: int
     pending: VerifyCommit | None = None
+    noise: tuple[int, int] | None = None    # (keyed seed, inverse temperature FP64 bits) of a sampled lane
 
 
 class VerifyOutput(NamedTuple):
@@ -83,9 +84,11 @@ class SpecShape:
                 or head.ring.shape != (engine.slots, len(DRAFT_TAP_LAYERS), DRAFT_RING, target.g.head_dim)
                 or head.ring.dtype != torch.float16 or head.ring.device != device or not head.ring.is_contiguous()):
             raise ValueError("DSpark requires contiguous device page storage and the prepared draft ring")
-        self._host = np.empty((5, bucket), dtype=np.int64)
-        self._padding = np.array([engine.geometry.bos, 0, self.scratch, -1, self.scratch], dtype=np.int64)[:, None]
-        self._staged = torch.empty((5, bucket), dtype=torch.int64, device=device)
+        # anchor, position, slot, pending accepted count, pending slot, keyed seed, inverse temperature FP64 bits
+        self._host = np.empty((7, bucket), dtype=np.int64)
+        self._padding = np.array([engine.geometry.bos, 0, self.scratch, -1, self.scratch, 0, 0],
+                                 dtype=np.int64)[:, None]
+        self._staged = torch.empty((7, bucket), dtype=torch.int64, device=device)
         self.commit_slots = torch.full((bucket,), self.scratch, dtype=torch.int32, device=device)
         self.offsets = torch.arange(rows, dtype=torch.int64, device=device)
         self.row_indices = torch.arange(tokens, dtype=torch.int64, device=device)
@@ -118,7 +121,10 @@ class SpecShape:
         owned = self.target.pool.owned
         for entry in entries:
             if (type(entry) is not VerifyEntry or any(type(v) is not int for v in (
-                    entry.slot, entry.position, entry.anchor))):
+                    entry.slot, entry.position, entry.anchor))
+                    or entry.noise is not None and (
+                        type(entry.noise) is not tuple or len(entry.noise) != 2
+                        or any(type(v) is not int or not -(1 << 63) <= v < 1 << 63 for v in entry.noise))):
                 raise ValueError("DSpark verify entries require integer slot, position and token")
             slot, pos = entry.slot, entry.position
             end = pos + self.rows
@@ -145,8 +151,10 @@ class SpecShape:
         for i, entry in enumerate(entries):
             host[:3, i] = entry.anchor, entry.position, entry.slot
             if entry.pending is not None:
-                host[3:, i] = entry.pending.accepted, entry.slot
+                host[3:5, i] = entry.pending.accepted, entry.slot
                 pending_any = True
+            if entry.noise is not None:
+                host[5:, i] = entry.noise
         # Like SlotPages.set, the pageable input is staged before the host can rewrite it.
         self._staged.copy_(torch.from_numpy(host), non_blocking=True)
         return pending_any
@@ -160,7 +168,8 @@ class SpecShape:
         step.req_slot[:self.bucket].copy_(slots)
         step.valid.copy_((slots != self.scratch).repeat_interleave(self.rows))
         if self.depth:
-            drafts = self.head.draft(anchors, positions, slots, self._embed, self._head_logits, depth=self.depth)
+            drafts = self.head.draft(anchors, positions, slots, self._embed, self._head_logits, depth=self.depth,
+                                     noise=(self._staged[5], self._staged[6].view(torch.float64)))
             step.ids.copy_(torch.cat((anchors[:, None], drafts), 1).reshape(-1))
         else:
             drafts = self.empty_drafts

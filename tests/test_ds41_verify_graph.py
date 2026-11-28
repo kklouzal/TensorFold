@@ -75,7 +75,7 @@ def owners(device):
         rotary = torch.full((slots, 256), -1, dtype=torch.int64, device=device)
 
         @staticmethod
-        def draft(anchors, positions, owner, embed, project, *, depth):
+        def draft(anchors, positions, owner, embed, project, *, depth, noise=None):
             events.append(("draft", depth))
             return project(embed(anchors)).long() + torch.arange(1, depth + 1, device=device)
 
@@ -161,7 +161,7 @@ def test_verify_uses_the_installed_embedding_when_requested(monkeypatch):
     engine, head, spec, _ = owners(torch.device("cpu"))
     original = head.draft
 
-    def draft(anchors, positions, owners, embed, project, *, depth):
+    def draft(anchors, positions, owners, embed, project, *, depth, noise=None):
         assert embed is None
         return original(anchors, positions, owners, engine.target.embed, project, depth=depth)
 
